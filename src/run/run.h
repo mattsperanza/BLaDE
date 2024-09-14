@@ -19,6 +19,7 @@ struct Cutoffs {
 };
 
 typedef enum emin {
+  elbfgs, // limited memory BFGS
   esd, // steepest descent
   esdfd, // steepest descent with finite difference to choose step length
   eminend} EMin;

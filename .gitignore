@@ -7,3 +7,4 @@ run/*.cpt
 run/*.profile
 run/slurm-*
 githubnotes
+.idea

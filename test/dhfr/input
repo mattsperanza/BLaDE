@@ -23,7 +23,7 @@ run setvariable fnmxtc prod.xtc
 run setvariable fnmnrg prod.nrg
 run setvariable fnmlmd prod.lmd_0
 
-run setvariable nsteps 500000
+run setvariable nsteps 500
 run setvariable T 298
 run setvariable freqxtc 500000
 run setvariable freqnrg 50000 ! 200 ! charmm does it every 200 because of ntrfrq
@@ -42,4 +42,4 @@ run setvariable shaketolerance 0.00000001
 
 run setvariable dt 0.002
 
-run dynamics
+run minimize

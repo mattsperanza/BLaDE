@@ -1,5 +1,7 @@
 #include <cuda_runtime.h>
 #include <math.h>
+#include <cublas_v2.h>
+#include <cublas_api.h>
 #include <stdlib.h>
 
 #include "system/system.h"
@@ -9,10 +11,91 @@
 #include "domdec/domdec.h"
 #include "holonomic/holonomic.h"
 #include "io/io.h"
-
 #include "main/real3.h"
 
+void lbfgsForward(real* q, real* rho, real* alpha, real* s, real* y, int mIndex, int N, cublasHandle_t handle) {
+  // Launch kernels for alpha and update q
+  cublasSdot_v2(handle, 3*N, s+mIndex, 1, q, 1, alpha+mIndex);
+  alpha[mIndex] *= -rho[mIndex]; // How do I get this onto the gpu?!
+  cublasSaxpy_v2(handle, 3*N, alpha+mIndex, y+mIndex, 1, q, 1); // writes over q
+}
 
+void lbfgsGamma(real* q, const real* s, const real* y, int mID, int N, cublasHandle_t handle) {
+  // Launch kernels to compute gamma and multiply into q
+  real numerator, denominator;
+  cublasSdot_v2(handle, N, s+mID*N, 1, y+mID*N, 1, &numerator);
+  cublasSdot_v2(handle, N, y+mID*N, 1, y+mID*N, 1, &denominator);
+  real gammaVal = numerator / denominator; // How do I get this onto the gpu?!
+  cublasSscal_v2(handle, N, &gammaVal, q, 1);
+}
+
+void lbfgsBackward(real* q, real* rho, real* alpha, real* s, real* y, int mIndex, int N, cublasHandle_t handle) {
+  // Launch kernels for beta and update q
+  real beta = 0.0;
+  cublasSdot_v2(handle, 3*N, y+mIndex, 1, q, 1, &beta);
+  beta = alpha[mIndex] - beta; // How do I get this onto the gpu?!
+  cublasSaxpy_v2(handle, 3*N, &beta, s+mIndex, 1, q, 1); // writes over q
+}
+
+void lbfgsUpdate(real* q, real* rho, real* alpha, real* beta, real* s, real* y, int mID, int N, cublasHandle_t handle) {
+  // Launch kernels for rho, alpha, s, y
+  int one = 1;
+}
+
+/**
+ * 1. Compute new L-BFGS step direction
+ *   Pseudocode from wikipedia:
+ *   q = g.i // search direction to be updated
+ *   for j = i-1 to i-m:  <<<forward kernel>>>
+ *     alpha.j = rho.j * s.j.T * q // dot product
+ *     q = q - alpha.j * y.j // vector scale & subtraction
+ *   gamma.i = s.i-1.T * y.i-1 / y.i-1.T * y.i-1 // dot products in numerator and denominator
+ *   q = gamma.i * q <<<gamma kernel>>>
+ *   for j = i-m to i-1: // <<<backward kernel>>>
+ *     beta = rho.j * y.j.T * q // dot product
+ *     q = q + (alpha.j - beta) * s.j // vector scale & addition
+ *   q = -q  // negate applied above instead of here most likely
+ *   <<<update kernel>>>
+ *
+ *   rho.j = 1 / (y.j.T * s.j)
+ *
+ * Eventually implement CG-Decent since H & Z report it as faster
+ */
+void lbfgsDirection(System* system, int step) {
+  if(step == 0) {
+    // Just do a steepest descent step w/ a line search
+    return;
+  }
+  Run *r = system->run;
+  // Current force is stored in leapState->f
+  int stepM = step + min(system->state->m, step); // as many as you have
+  for(int i = step; i < stepM; i++) {
+    int id = (i-1) % system->state->m; // index into length m arrays
+    lbfgsForward(system->state->search, system->state->rho, system->state->alpha,
+                 system->state->position_residuals, system->state->gradient_residuals, id,
+                 system->state->atomCount, system->state->cublasHandle);
+  }
+  int mID = (stepM-1) % system->state->m;
+  lbfgsGamma(system->state->search, system->state->position_residuals, system->state->gradient_residuals,
+             mID, system->state->atomCount, system->state->cublasHandle);
+  for(int i = stepM; i > step; i--) {
+    int id = (i-1) % system->state->m;
+    lbfgsBackward(system->state->search, system->state->rho, system->state->alpha,
+                  system->state->position_residuals, system->state->gradient_residuals, id,
+                  system->state->atomCount, system->state->cublasHandle);
+  }
+}
+
+
+/**
+ * Finds optimial step size along by performing energy evaluations along the direction.
+ * Returns step size & resets X so proper scaling can be applied later.
+ * @param system
+ * @return step size
+ */
+double wolfeLineSearch(System* system) {
+  return 0.0;
+}
 
 __global__ void no_mass_weight_kernel(int N,real* masses,real* ones)
 {
@@ -89,6 +172,17 @@ void State::min_init(System *system)
   no_mass_weight_kernel<<<(3*atomCount+lambdaCount+BLUP-1)/BLUP,BLUP,
     0,system->run->updateStream>>>
     (3*atomCount+lambdaCount,invsqrtMassBuffer_d,leapState->ism);
+  if (system->run->minType==elbfgs) {
+    system->state->cublasHandle = nullptr;
+    cublasCreate_v2(&cublasHandle);
+    cublasSetStream_v2(cublasHandle, system->run->updateStream);
+    cudaMalloc(&search, 3*atomCount*sizeof(real));
+    cudaMalloc(&position_residuals, 3*atomCount*m*sizeof(real)); // indexed like [m][3*atomCount]
+    cudaMalloc(&gradient_residuals, 3*atomCount*m*sizeof(real)); // indexed like [m][3*atomCount]
+    cudaMalloc(&rho, m*sizeof(real)); // [m]
+    cudaMalloc(&alpha, m*sizeof(real)); // [m]
+    cudaMalloc(&gamma, sizeof(real));
+  }
   if (system->run->minType==esd || system->run->minType==esdfd) {
     cudaMalloc(&grads2_d,2*sizeof(real_e));
     cudaMemset(grads2_d,0,2*sizeof(real_e));
@@ -120,7 +214,46 @@ void State::min_move(int step,int nsteps,System *system)
   real scaling, rescaling;
   real frac;
 
-  if (r->minType==esd) {
+  if (r->minType == elbfgs) {
+    if(system->id==0) {
+      recv_energy();
+      if (system->verbose>0) display_nrg(system);
+      prevEnergy=energy[eepotential];
+      // Compute L-BFGS direction & step size
+      lbfgsDirection(system, nsteps);
+      real stepSize = wolfeLineSearch(system);
+
+      // Update positions just like in SD
+      sd_acceleration_kernel<<<(3*atomCount+BLUP-1)/BLUP,BLUP,
+        0,r->updateStream>>>(3*atomCount,*leapState);
+      holonomic_velocity(system);
+      sd_scaling_kernel<<<(atomCount+BLUP-1)/BLUP,BLUP,
+        BLUP*sizeof(real)/32,r->updateStream>>>
+        (atomCount,*leapState,grads2_d);
+      cudaMemcpy(grads2,grads2_d,2*sizeof(real_e),cudaMemcpyDeviceToHost);
+      cudaMemset(grads2_d,0,2*sizeof(real_e));
+      fprintf(stdout,"rmsgrad = %f\n",sqrt(grads2[0]));
+      fprintf(stdout,"maxgrad = %f\n",sqrt(grads2[1]));
+      // scaling factor to achieve desired rms displacement
+      scaling=r->dxRMS/sqrt(grads2[0]);
+      // ratio of allowed maximum displacement over actual maximum displacement
+      rescaling=r->dxAtomMax/(scaling*sqrt(grads2[1]));
+      fprintf(stdout,"scaling = %f, rescaling = %f\n",scaling,rescaling);
+      // decrease scaling factor if actual max violates allowed max
+      if (rescaling<1) {
+        scaling*=rescaling;
+        r->dxRMS*=rescaling;
+      }
+      sd_position_kernel<<<(3*atomCount+BLUP-1)/BLUP,BLUP,0,r->updateStream>>>
+        (3*atomCount,*leapState,leapState->v,scaling,positionCons_d);
+      holonomic_position(system);
+
+      // Update L-BFGS history
+      lbfgsUpdate(system->state->search, system->state->rho, system->state->alpha, system->state->gamma,
+                  system->state->position_residuals, system->state->gradient_residuals, (step-1) % system->state->m,
+                  system->state->atomCount, system->state->cublasHandle);
+    }
+  } else if (r->minType==esd) {
     if (system->id==0) {
       recv_energy();
       if (system->verbose>0) display_nrg(system);
