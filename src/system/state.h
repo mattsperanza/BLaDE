@@ -81,11 +81,14 @@ class State {
   int m = 5; // number of previous gradients to use (hardcoded for now)
   real *search; // [nAtoms] lbfgs search direction
   cublasHandle_t cublasHandle;
+  real *prev_position;
   real *position_residuals; // [m*nAtoms] x_{i+1} - x_{i} = s_{i} : i = 0,1,...,m-1
+  real *prev_gradient;
   real *gradient_residuals; // [m*nAtoms] grad_{i+1} - grad_{i} = y_{i} : i = 0,1,...,m-1
   real *rho; // [m] rho_{i} = (s_{i}^T * y_{i} : i = 0,1,...,m-1
   real *alpha; // [m] alpha_{i} = rho_{i} * s_{i}^T * y_{i} : i = 0,1,...,m-1
-  real *gamma; // [1] s projected onto y
+  real gamma; // s projected onto y
+  real stepSize = 1.0;
   real_e *grads2_d; // sd+sdfd, [0] is rms, [1] is max
   real_e prevEnergy; // sd
   real_v *minDirection_d; // sdfd
