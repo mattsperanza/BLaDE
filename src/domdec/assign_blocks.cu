@@ -180,7 +180,7 @@ __global__ void assign_blocks_localToGlobal_kernel(int globalCount,struct Domdec
 // Input
 // domainDiv - how many blocks a domain is divided into in the x and y directions
 // localCount - entries in localToGlobal
-// localToGlobal - list for binary search
+// localToGlobal - list for binary search_d
 // tokens - tokens that were used for making the tree structure. Contain information on which column a particle is in
 // Output
 // blockCount - pointer to a single int for the total number of blocks

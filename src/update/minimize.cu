@@ -13,40 +13,40 @@
 #include "io/io.h"
 #include "main/real3.h"
 
-void lbfgsForward(real* q, real* rho, real* alpha, real* s, real* y, int mIndex, int N, cublasHandle_t handle) {
+void lbfgsForward(double* q, double* rho, double* alpha, double* s, double* y, int mIndex, int N, cublasHandle_t handle) {
   // Launch kernels for alpha and update q
   // alpha = s . q
-  cublasSdot_v2(handle, 3*N, s+mIndex*3*N, 1, q, 1, alpha+mIndex);
+  cublasDdot_v2(handle, 3*N, s+mIndex*3*N, 1, q, 1, alpha+mIndex);
   // q = q - rho * alpha * y
   alpha[mIndex] *= -rho[mIndex]; // How do I get this onto the gpu?!
-  cublasSaxpy_v2(handle, 3*N, alpha+mIndex, y+mIndex*3*N, 1, q, 1); // writes over q
+  cublasDaxpy_v2(handle, 3*N, alpha+mIndex, y+mIndex*3*N, 1, q, 1); // writes over q
 }
 
-void lbfgsBackward(real* q, real* rho, real* alpha, real* s, real* y, int mIndex, int N, cublasHandle_t handle) {
+void lbfgsBackward(double* q, double* rho, double* alpha, double* s, double* y, int mIndex, int N, cublasHandle_t handle) {
   // Launch kernels for beta and update q
   // beta = y . q
-  real beta = 0.0;
-  cublasSdot_v2(handle, 3*N, y+mIndex*3*N, 1, q, 1, &beta);
+  double beta = 0.0;
+  cublasDdot_v2(handle, 3*N, y+mIndex*3*N, 1, q, 1, &beta);
   // q = q + (alpha - rho * beta) * s
   beta = alpha[mIndex] - rho[mIndex] * beta;
-  cublasSaxpy_v2(handle, 3*N, &beta, s+mIndex*3*N, 1, q, 1); // writes over q
+  cublasDaxpy_v2(handle, 3*N, &beta, s+mIndex*3*N, 1, q, 1); // writes over q
 }
 
-void lbfgsUpdate(LeapState* ls, real* rho, real* gamma, const real* previous_p, real* s, const real* previous_g,
-  real* y, const int mID, const int N, cublasHandle_t handle) {
-  // Launch kernels for rho, alpha, s, y calculations after line search
-  float nOne = -1.0;
+void lbfgsUpdate(LeapState* ls, double* rho, double* gamma, const double* previous_p, double* s, const double* previous_g,
+  double* y, const int mID, const int N, cublasHandle_t handle) {
+  // Launch kernels for rho, alpha, s, y calculations after line search_d
+  double nOne = -1.0;
   // s = x - prev_x
   cudaMemcpy(s + mID*N, ls->x, 3*N*sizeof(real), cudaMemcpyDeviceToDevice);
-  cublasSaxpy_v2(handle, N, &nOne, previous_p, 1, s + mID*N, 1);
+  cublasDaxpy_v2(handle, N, &nOne, previous_p, 1, s + mID*N, 1);
   // y = f - prev_f
   cudaMemcpy(y + mID*N, ls->f, 3*N*sizeof(real), cudaMemcpyDeviceToDevice);
-  cublasSaxpy_v2(handle, N, &nOne, previous_g, 1, y + mID*N, 1);
+  cublasDaxpy_v2(handle, N, &nOne, previous_g, 1, y + mID*N, 1);
   // These are computed for the next iteration
   // gamma = abs(s . y / y . y)
-  real numerator, denominator;
-  cublasSdot_v2(handle, N, s+mID*N, 1, y+mID*N, 1, &numerator);
-  cublasSdot_v2(handle, N, y+mID*N, 1, y+mID*N, 1, &denominator);
+  double numerator, denominator;
+  cublasDdot_v2(handle, N, s+mID*N, 1, y+mID*N, 1, &numerator);
+  cublasDdot_v2(handle, N, y+mID*N, 1, y+mID*N, 1, &denominator);
   *gamma = abs(numerator / denominator);
   // rho = 1 / (y . s)
   rho[mID] = 1 / numerator;
@@ -72,51 +72,51 @@ void lbfgsUpdate(LeapState* ls, real* rho, real* gamma, const real* previous_p, 
  *   rho.j = 1 / (y.j.T * s.j)
  */
 void lbfgsDirection(System* system, int step) {
-  if(step == 0) { // Just do a steepest descent step w/ a line search
-    cudaMemcpy(system->state->search, system->state->leapState->f, 3*system->state->atomCount*sizeof(real),
-               cudaMemcpyDeviceToDevice);
+  cudaMemcpy(system->state->search_d, system->state->leapState->f, 3*system->state->atomCount*sizeof(double),
+         cudaMemcpyDeviceToDevice);
+  if(step == 0) { // Just do a steepest descent step w/ a line search_d
     return;
   }
   int stepM = step + min(system->state->m, step); // as many as you have
   for(int i = step; i < stepM; i++) {
     int id = (i-1) % system->state->m; // index into length m arrays
-    lbfgsForward(system->state->search, system->state->rho, system->state->alpha,
-                 system->state->position_residuals, system->state->gradient_residuals, id,
+    lbfgsForward(system->state->search_d, system->state->rho, system->state->alpha,
+                 system->state->position_residuals_d, system->state->gradient_residuals_d, id,
                  system->state->atomCount, system->state->cublasHandle);
   }
   // Apply gamma
-  cublasSscal_v2(system->state->cublasHandle, system->state->atomCount, &system->state->gamma, system->state->search, 1);
+  cublasDscal_v2(system->state->cublasHandle, system->state->atomCount, &system->state->gamma, system->state->search_d, 1);
   for(int i = stepM; i > step; i--) {
     int id = (i-1) % system->state->m;
-    lbfgsBackward(system->state->search, system->state->rho, system->state->alpha,
-                  system->state->position_residuals, system->state->gradient_residuals, id,
+    lbfgsBackward(system->state->search_d, system->state->rho, system->state->alpha,
+                  system->state->position_residuals_d, system->state->gradient_residuals_d, id,
                   system->state->atomCount, system->state->cublasHandle);
   }
-  float nOne = -1.0;
-  cublasSscal_v2(system->state->cublasHandle, system->state->atomCount, &nOne, system->state->search, 1);
+  double nOne = -1.0;
+  cublasDscal_v2(system->state->cublasHandle, system->state->atomCount, &nOne, system->state->search_d, 1);
 }
 
 
 // phi = f(X+alpha*D), phiDot = f(X+alpha*D)/d(X+alpha*D) . d(X+alpha*D)/d(alpha)
 // d(X+alpha*D)/d(alpha) = D
-void phi(real trialStepSize, System* system, real* posGrad) { // posGrad[0] = phi(a) posGrad[1] = phi'(a)
-  // Trial move x0 = x + alpha * search
-  cublasSaxpy_v2(system->state->cublasHandle, system->state->atomCount, &trialStepSize,
-                 system->state->search, 1, system->state->prev_position, 1);
+void phi(double trialStepSize, System* system, double* posGrad) { // posGrad[0] = phi(a) posGrad[1] = phi'(a)
+  // Trial move x0 = x + alpha * search_d
+  cublasDaxpy_v2(system->state->cublasHandle, system->state->atomCount, &trialStepSize,
+                 system->state->search_d, 1, system->state->prev_position_d, 1);
   system->potential->calc_force(0, system);
   // Move back to x0
   trialStepSize = -trialStepSize;
-  cublasSaxpy_v2(system->state->cublasHandle, system->state->atomCount, &trialStepSize,
-                 system->state->search, 1, system->state->prev_position, 1);
-  posGrad[0] = *(real*) system->state->energy;
-  cublasSdot_v2(system->state->cublasHandle, system->state->atomCount,
-    system->state->leapState->f, 1, system->state->search, 1, posGrad+1); // gradient
+  cublasDaxpy_v2(system->state->cublasHandle, system->state->atomCount, &trialStepSize,
+                 system->state->search_d, 1, system->state->prev_position_d, 1);
+  posGrad[0] = *system->state->energy;
+  cublasDdot_v2(system->state->cublasHandle, system->state->atomCount,
+    system->state->prev_gradient_d, 1, system->state->search_d, 1, posGrad+1); // gradient
 }
 
 /**
  * Overwrites phiGrad at c
  */
-void update(real a, real b, real c, real* ab, real* phiGrad, const real* oldPhiGrad, System* system) {
+void update(double a, double b, double c, double* ab, double* phiGrad, const double* oldPhiGrad, System* system) {
   if(c < a && c > b) { // U0
     ab[0] = a;
     ab[1] = b;
@@ -128,7 +128,7 @@ void update(real a, real b, real c, real* ab, real* phiGrad, const real* oldPhiG
     ab[1] = c;
     return;
   }
-  real epsK = 1e-6;
+  double epsK = 1e-6;
   if(phiGrad[1] < 0 && phiGrad[0] <= oldPhiGrad[0]+epsK) { // U2
     ab[0] = c;
     ab[1] = b;
@@ -137,10 +137,10 @@ void update(real a, real b, real c, real* ab, real* phiGrad, const real* oldPhiG
   if(phiGrad[1] < 0 && phiGrad[0] > oldPhiGrad[0]+epsK) { // U3
     ab[0] = a;
     ab[1] = c;
-    real theta = .5;
+    double theta = .5;
     while(true) {
-      real d = (1 - theta) * ab[0] + theta * ab[1];
-      real phiD[2];
+      double d = (1 - theta) * ab[0] + theta * ab[1];
+      double phiD[2];
       phi(d, system, phiD);
       if(phiD[1] >= 0) { // U3a
         ab[1] = d;
@@ -161,8 +161,8 @@ void update(real a, real b, real c, real* ab, real* phiGrad, const real* oldPhiG
  * secant(a,b) = a*phi'(b) - b*phi'(a) / phi'(b) - phi'(a)
  * Two energy and gradient evals.
  */
-real secant(real a, real b, System* system) {
-  real phiA[2], phiB[2];
+double secant(real a, real b, System* system) {
+  double phiA[2], phiB[2];
   phi(a, system, phiA);
   phi(b, system, phiB);
   return (a*phiB[1] - b*phiA[1]) / (phiB[1] - phiA[1]);
@@ -171,11 +171,11 @@ real secant(real a, real b, System* system) {
 /**
  * Modifies phiGrad
  */
-void secant2(real a, real b, real* ab, real* phiGrad, const real* oldPhiGrad, System* system) {
-  real c = secant(a, b, system); // S1
-  real AB[2];
+void secant2(double a, double b, double* ab, double* phiGrad, const double* oldPhiGrad, System* system) {
+  double c = secant(a, b, system); // S1
+  double AB[2];
   update(a, b, c, AB, phiGrad, oldPhiGrad, system); // S1
-  real cbar = 0.0;
+  double cbar = 0.0;
   if(c == AB[1]) { // S2
     cbar = secant(b, AB[1], system);
   }
@@ -193,17 +193,17 @@ void secant2(real a, real b, real* ab, real* phiGrad, const real* oldPhiGrad, Sy
 /**
  * Modifies phiGrad
  */
-void bracket(real c, real* ab, real* phiGrad, const real* oldPhiGrad, System* system) {
-  real cj = c;
-  real ci = c;
+void bracket(double c, double* ab, double* phiGrad, const double* oldPhiGrad, System* system) {
+  double cj = c;
+  double ci = c;
   phi(c, system, phiGrad);
   while(true) {
-    constexpr real rho = 5;
+    constexpr double rho = 5;
     if(phiGrad[1] >= 0) { // B1
       ab[0] = ci;
       ab[1] = cj;
     }
-    constexpr real epsK = 1e-6;
+    constexpr double epsK = 1e-6;
     if(phiGrad[0] <= oldPhiGrad[0]+epsK) { // B1, i < j
       ci = cj;
     }
@@ -223,27 +223,27 @@ void bracket(real c, real* ab, real* phiGrad, const real* oldPhiGrad, System* sy
  * @param system
  */
 void wolfeLineSearch(System* system, int step) {
-  // Move current position & grad into prev_position & prev_gradient
-  cudaMemcpy(system->state->prev_position, system->state->leapState->x, 3*system->state->atomCount*sizeof(real),
+  // Move current position & grad into prev_position_d & prev_gradient_d
+  cudaMemcpy(system->state->prev_position_d, system->state->leapState->x, 3*system->state->atomCount*sizeof(double),
              cudaMemcpyDeviceToDevice);
-  cudaMemcpy(system->state->prev_gradient, system->state->leapState->f, 3*system->state->atomCount*sizeof(real),
+  cudaMemcpy(system->state->prev_gradient_d, system->state->leapState->f, 3*system->state->atomCount*sizeof(double),
              cudaMemcpyDeviceToDevice);
 
   // Search from Hager-Zhang
-  real psi2 = 2.0;
-  real c = step == 0 ? 1.0f : psi2 * system->state->stepSize; // L0
-  real phiGrad[2], oldPhiGrad[2]; // phi(c), phi'(c)
+  double psi2 = 2.0;
+  double c = step == 0 ? 1.0f : psi2 * system->state->stepSize; // L0
+  double phiGrad[2], oldPhiGrad[2]; // phi(c), phi'(c)
   phi(c, system, phiGrad);
   oldPhiGrad[0] = phiGrad[0];
   oldPhiGrad[1] = phiGrad[1];
-  real ab[2];
+  double ab[2];
   bracket(c, ab, phiGrad, oldPhiGrad, system);
-  real aj = ab[0];
-  real bj = ab[1];
+  double aj = ab[0];
+  double bj = ab[1];
   int maxIter = 25;
   for(int i = 0; i < maxIter; i++) {
     secant2(aj, bj, ab, phiGrad, oldPhiGrad, system); // L1
-    real gamma = .66;
+    double gamma = .66;
     if(ab[0] - ab[1] > gamma*(bj - aj)) { // L2
       c = (ab[0] + ab[1]) / 2;
       update(ab[0], ab[1], c, ab, phiGrad, oldPhiGrad, system);
@@ -251,8 +251,8 @@ void wolfeLineSearch(System* system, int step) {
     aj = ab[0]; // l3
     bj = ab[1];
     // Check (approximate) wolf conditions depending on i
-    real del = .1;
-    real sigma = .9; // phiGrad hasn't been changed since update
+    double del = .1;
+    double sigma = .9; // phiGrad hasn't been changed since update
     bool wolfe1 = phiGrad[0] - oldPhiGrad[0] <= del * c * oldPhiGrad[1];
     bool wolfe2 = phiGrad[1] >= sigma * oldPhiGrad[1];
     bool approxWolfe = (2*del - 1) * oldPhiGrad[1] >= phiGrad[1] && phiGrad[1] >= sigma * oldPhiGrad[1];
@@ -343,13 +343,13 @@ void State::min_init(System *system)
     system->state->cublasHandle = nullptr;
     cublasCreate_v2(&cublasHandle);
     cublasSetStream_v2(cublasHandle, system->run->updateStream);
-    cudaMalloc(&search, 3*atomCount*sizeof(real));
-    cudaMalloc(&prev_position, 3*atomCount*sizeof(real));
-    cudaMalloc(&position_residuals, 3*atomCount*m*sizeof(real)); // indexed like [m][3*atomCount]
-    cudaMalloc(&prev_gradient, 3*atomCount*sizeof(real));
-    cudaMalloc(&gradient_residuals, 3*atomCount*m*sizeof(real)); // indexed like [m][3*atomCount]
-    rho = (real*)malloc(m*sizeof(real)); // [m]
-    alpha = (real*)malloc(m*sizeof(real)); // [m]
+    cudaMalloc(&search_d, 3*atomCount*sizeof(double));
+    cudaMalloc(&prev_position_d, 3*atomCount*sizeof(double));
+    cudaMalloc(&position_residuals_d, 3*atomCount*m*sizeof(double)); // indexed like [m][3*atomCount]
+    cudaMalloc(&prev_gradient_d, 3*atomCount*sizeof(double));
+    cudaMalloc(&gradient_residuals_d, 3*atomCount*m*sizeof(double)); // indexed like [m][3*atomCount]
+    rho = (double*)malloc(m*sizeof(double)); // [m]
+    alpha = (double*)malloc(m*sizeof(double)); // [m]
   }
   if (system->run->minType==esd || system->run->minType==esdfd) {
     cudaMalloc(&grads2_d,2*sizeof(real_e));
@@ -392,11 +392,11 @@ void State::min_move(int step,int nsteps,System *system)
       wolfeLineSearch(system, step);
       // Move with step size
       // X = X + alpha * D
-      cublasSaxpy_v2(cublasHandle, 3*atomCount, &stepSize, search, 1, (float*) leapState->x, 1);
+      cublasDaxpy_v2(cublasHandle, 3*atomCount, &stepSize, search_d, 1, leapState->x, 1);
       // Update L-BFGS history
       lbfgsUpdate(system->state->leapState, system->state->rho, &system->state->gamma,
-                  system->state->prev_position, system->state->position_residuals,
-                  system->state->prev_gradient, system->state->gradient_residuals, (step-1) % system->state->m,
+                  system->state->prev_position_d, system->state->position_residuals_d,
+                  system->state->prev_gradient_d, system->state->gradient_residuals_d, (step-1) % system->state->m,
                   system->state->atomCount, system->state->cublasHandle);
     }
   } else if (r->minType==esd) {

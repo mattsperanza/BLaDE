@@ -66,7 +66,7 @@ class Domdec {
   int *blockCount, *blockCount_d;
 // For deciding what's interacting
   struct DomdecBlockVolume *blockVolume_d;
-  int *blockCandidateCount_d; // Candidates might interact and are defined each search
+  int *blockCandidateCount_d; // Candidates might interact and are defined each search_d
   struct DomdecBlockPartners *blockCandidates_d;
   int *blockPartnerCount_d; // Partners do interact and are defined each step
   struct DomdecBlockPartners *blockPartners_d;
