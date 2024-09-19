@@ -326,6 +326,15 @@ void State::recv_energy()
   energy[eetotal]=energy[eepotential]+energy[eekinetic];
 }
 
+// Helper for testing, assumes memory is already allocated
+void State::recv_lbfgs() {
+  cudaMemcpy(search, search_d, 3*atomCount*sizeof(float), cudaMemcpyDeviceToHost);
+  cudaMemcpy(prev_position, prev_position_d, 3*atomCount*sizeof(float), cudaMemcpyDeviceToHost);
+  cudaMemcpy(prev_gradient, prev_gradient_d, 3*atomCount*sizeof(float), cudaMemcpyDeviceToHost);
+  cudaMemcpy(position_residuals, position_residuals_d, 3*atomCount*sizeof(float), cudaMemcpyDeviceToHost);
+  cudaMemcpy(gradient_residuals, gradient_residuals_d, 3*atomCount*sizeof(float), cudaMemcpyDeviceToHost);
+}
+
 
 void State::backup_position()
 {

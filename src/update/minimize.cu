@@ -1,3 +1,4 @@
+#include <cassert>
 #include <cuda_runtime.h>
 #include <math.h>
 #include <cublas_v2.h>
@@ -13,40 +14,62 @@
 #include "io/io.h"
 #include "main/real3.h"
 
-void lbfgsForward(double* q, double* rho, double* alpha, double* s, double* y, int mIndex, int N, cublasHandle_t handle) {
+__global__ void copy_float_onto_double(float* in, double* out, int N) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if(i < N) {
+    out[i] = (double)in[i];
+  }
+}
+
+__global__ void copy_double_onto_float(double* in, float* out, int N) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if(i < N) {
+    out[i] = (float)in[i];
+  }
+}
+
+__global__ void update_lbfgs_position(double* x, float* search, float stepSize, int N) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if(i < N) {
+    x[i] += stepSize * search[i];
+  }
+}
+
+void lbfgsForward(float* q, float* rho, float* alpha, float* s, float* y, int mIndex, int N, cublasHandle_t handle) {
   // Launch kernels for alpha and update q
   // alpha = s . q
-  cublasDdot_v2(handle, 3*N, s+mIndex*3*N, 1, q, 1, alpha+mIndex);
+  cublasSdot_v2(handle, 3*N, s+mIndex*3*N, 1, q, 1, alpha+mIndex);
   // q = q - rho * alpha * y
-  alpha[mIndex] *= -rho[mIndex]; // How do I get this onto the gpu?!
-  cublasDaxpy_v2(handle, 3*N, alpha+mIndex, y+mIndex*3*N, 1, q, 1); // writes over q
+  alpha[mIndex] *= -rho[mIndex];
+  cublasSaxpy_v2(handle, 3*N, alpha+mIndex, y+mIndex*3*N, 1, q, 1); // writes over q
 }
 
-void lbfgsBackward(double* q, double* rho, double* alpha, double* s, double* y, int mIndex, int N, cublasHandle_t handle) {
+void lbfgsBackward(float* q, float* rho, float* alpha, float* s, float* y, int mIndex, int N, cublasHandle_t handle) {
   // Launch kernels for beta and update q
   // beta = y . q
-  double beta = 0.0;
-  cublasDdot_v2(handle, 3*N, y+mIndex*3*N, 1, q, 1, &beta);
+  float beta = 0.0;
+  cublasSdot_v2(handle, 3*N, y+mIndex*3*N, 1, q, 1, &beta);
   // q = q + (alpha - rho * beta) * s
   beta = alpha[mIndex] - rho[mIndex] * beta;
-  cublasDaxpy_v2(handle, 3*N, &beta, s+mIndex*3*N, 1, q, 1); // writes over q
+  cublasSaxpy_v2(handle, 3*N, &beta, s+mIndex*3*N, 1, q, 1); // writes over q
 }
 
-void lbfgsUpdate(LeapState* ls, double* rho, double* gamma, const double* previous_p, double* s, const double* previous_g,
-  double* y, const int mID, const int N, cublasHandle_t handle) {
+void lbfgsUpdate(LeapState* ls, float* rho, float* gamma, const float* previous_p, float* s, const float* previous_g,
+  float* y, const int mID, const int N, cublasHandle_t handle, System* system) {
   // Launch kernels for rho, alpha, s, y calculations after line search_d
-  double nOne = -1.0;
+  float nOne = -1.0;
   // s = x - prev_x
-  cudaMemcpy(s + mID*N, ls->x, 3*N*sizeof(real), cudaMemcpyDeviceToDevice);
-  cublasDaxpy_v2(handle, N, &nOne, previous_p, 1, s + mID*N, 1);
+  copy_double_onto_float<<<(N+BLUP-1)/BLUP,BLUP,BLUP*sizeof(real)/32,system->run->updateStream>>>(ls->x, s + mID*N, 3*N);
+  cublasSaxpy_v2(handle, N, &nOne, previous_p, 1, s + mID*N, 1);
   // y = f - prev_f
-  cudaMemcpy(y + mID*N, ls->f, 3*N*sizeof(real), cudaMemcpyDeviceToDevice);
-  cublasDaxpy_v2(handle, N, &nOne, previous_g, 1, y + mID*N, 1);
+  cudaMemcpy(y + mID*N, ls->f, 3*N*sizeof(float), cudaMemcpyDeviceToDevice);
+  cublasSaxpy_v2(handle, N, &nOne, previous_g, 1, y + mID*N, 1);
   // These are computed for the next iteration
   // gamma = abs(s . y / y . y)
-  double numerator, denominator;
-  cublasDdot_v2(handle, N, s+mID*N, 1, y+mID*N, 1, &numerator);
-  cublasDdot_v2(handle, N, y+mID*N, 1, y+mID*N, 1, &denominator);
+  float numerator, denominator;
+  cublasSdot_v2(handle, N, s+mID*N, 1, y+mID*N, 1, &numerator);
+  cublasSdot_v2(handle, N, y+mID*N, 1, y+mID*N, 1, &denominator);
+  system->state->recv_lbfgs();
   *gamma = abs(numerator / denominator);
   // rho = 1 / (y . s)
   rho[mID] = 1 / numerator;
@@ -72,9 +95,21 @@ void lbfgsUpdate(LeapState* ls, double* rho, double* gamma, const double* previo
  *   rho.j = 1 / (y.j.T * s.j)
  */
 void lbfgsDirection(System* system, int step) {
-  cudaMemcpy(system->state->search_d, system->state->leapState->f, 3*system->state->atomCount*sizeof(double),
+  cudaMemcpy(system->state->search_d, system->state->leapState->f, 3*system->state->atomCount*sizeof(float),
          cudaMemcpyDeviceToDevice);
+  system->state->recv_state();
+  system->state->recv_lbfgs();
   if(step == 0) { // Just do a steepest descent step w/ a line search_d
+    // Normalize search direction
+    float normal = 1.0f;
+    cublasSnrm2_v2(system->state->cublasHandle, system->state->atomCount, system->state->search_d, 1, &normal);
+    system->state->recv_lbfgs();
+    assert(normal != 0.0f);
+    normal = 1.0f / normal;
+    cublasSscal_v2(system->state->cublasHandle, system->state->atomCount, &normal, system->state->search_d, 1);
+    system->state->recv_lbfgs();
+    float nOne = -1.0;
+    cublasSscal_v2(system->state->cublasHandle, system->state->atomCount, &nOne, system->state->search_d, 1);
     return;
   }
   int stepM = step + min(system->state->m, step); // as many as you have
@@ -84,40 +119,60 @@ void lbfgsDirection(System* system, int step) {
                  system->state->position_residuals_d, system->state->gradient_residuals_d, id,
                  system->state->atomCount, system->state->cublasHandle);
   }
+  system->state->recv_lbfgs();
   // Apply gamma
-  cublasDscal_v2(system->state->cublasHandle, system->state->atomCount, &system->state->gamma, system->state->search_d, 1);
+  cublasSscal_v2(system->state->cublasHandle, system->state->atomCount, &system->state->gamma, system->state->search_d, 1);
+  system->state->recv_lbfgs();
   for(int i = stepM; i > step; i--) {
     int id = (i-1) % system->state->m;
     lbfgsBackward(system->state->search_d, system->state->rho, system->state->alpha,
                   system->state->position_residuals_d, system->state->gradient_residuals_d, id,
                   system->state->atomCount, system->state->cublasHandle);
   }
-  double nOne = -1.0;
-  cublasDscal_v2(system->state->cublasHandle, system->state->atomCount, &nOne, system->state->search_d, 1);
+  float nOne = -1.0;
+  cublasSscal_v2(system->state->cublasHandle, system->state->atomCount, &nOne, system->state->search_d, 1);
+  system->state->recv_lbfgs();
+  // Normalize search direction
+  float normal = 1.0f;
+  cublasSnrm2_v2(system->state->cublasHandle, system->state->atomCount, system->state->search_d, 1, &normal);
+  assert(normal != 0.0f);
+  normal = 1.0f / normal;
+  cublasSscal_v2(system->state->cublasHandle, system->state->atomCount, &normal, system->state->search_d, 1);
+  system->state->recv_lbfgs();
 }
 
 
 // phi = f(X+alpha*D), phiDot = f(X+alpha*D)/d(X+alpha*D) . d(X+alpha*D)/d(alpha)
-// d(X+alpha*D)/d(alpha) = D
-void phi(double trialStepSize, System* system, double* posGrad) { // posGrad[0] = phi(a) posGrad[1] = phi'(a)
-  // Trial move x0 = x + alpha * search_d
-  cublasDaxpy_v2(system->state->cublasHandle, system->state->atomCount, &trialStepSize,
+void phi(float trialStepSize, System* system, float* posGrad) { // posGrad[0] = phi(a) posGrad[1] = phi'(a)
+  // Trial move x0 = x - alpha * search_d
+  system->state->recv_lbfgs();
+  cublasSaxpy_v2(system->state->cublasHandle, system->state->atomCount, &trialStepSize,
                  system->state->search_d, 1, system->state->prev_position_d, 1);
+  // Lose double precision here, unavoidable
+  copy_float_onto_double<<<(system->state->atomCount+BLUP-1)/BLUP,BLUP,BLUP*sizeof(real)/32,system->run->updateStream>>>
+      (system->state->prev_position_d, system->state->leapState->x, 3*system->state->atomCount);
+  system->state->recv_lbfgs();
+  system->domdec->update_domdec(system,false);
   system->potential->calc_force(0, system);
+  system->state->recv_energy();
+  posGrad[0] = system->state->energy[eepotential]; // phi
   // Move back to x0
   trialStepSize = -trialStepSize;
-  cublasDaxpy_v2(system->state->cublasHandle, system->state->atomCount, &trialStepSize,
+  cublasSaxpy_v2(system->state->cublasHandle, system->state->atomCount, &trialStepSize,
                  system->state->search_d, 1, system->state->prev_position_d, 1);
-  posGrad[0] = *system->state->energy;
-  cublasDdot_v2(system->state->cublasHandle, system->state->atomCount,
-    system->state->prev_gradient_d, 1, system->state->search_d, 1, posGrad+1); // gradient
+  // phiDot
+  cublasSdot_v2(system->state->cublasHandle, system->state->atomCount,
+    system->state->leapState->f, 1, system->state->search_d, 1, posGrad+1); // gradient
+  float gnorm = 0.0;
+  cublasSnrm2_v2(system->state->cublasHandle, system->state->atomCount, system->state->leapState->f, 1, &gnorm);
+  posGrad[1] = posGrad[1] / gnorm; // f projected onto search direction - zero at a minimum
 }
 
 /**
  * Overwrites phiGrad at c
  */
-void update(double a, double b, double c, double* ab, double* phiGrad, const double* oldPhiGrad, System* system) {
-  if(c < a && c > b) { // U0
+void update(float a, float b, float c, float* ab, float* phiGrad, const float* oldPhiGrad, System* system) {
+  if(c < a || c > b) { // U0 c isn't part of (a,b)
     ab[0] = a;
     ab[1] = b;
     return;
@@ -128,7 +183,7 @@ void update(double a, double b, double c, double* ab, double* phiGrad, const dou
     ab[1] = c;
     return;
   }
-  double epsK = 1e-6;
+  float epsK = 1e-6;
   if(phiGrad[1] < 0 && phiGrad[0] <= oldPhiGrad[0]+epsK) { // U2
     ab[0] = c;
     ab[1] = b;
@@ -137,12 +192,12 @@ void update(double a, double b, double c, double* ab, double* phiGrad, const dou
   if(phiGrad[1] < 0 && phiGrad[0] > oldPhiGrad[0]+epsK) { // U3
     ab[0] = a;
     ab[1] = c;
-    double theta = .5;
-    while(true) {
-      double d = (1 - theta) * ab[0] + theta * ab[1];
-      double phiD[2];
+    float theta = .5;
+    while(true) { // Binary search between a & c
+      float d = (1 - theta) * ab[0] + theta * ab[1];
+      float phiD[2];
       phi(d, system, phiD);
-      if(phiD[1] >= 0) { // U3a
+      if(phiD[1] >= 0) { // U3a - end binary search when grad at d is first positive
         ab[1] = d;
         return;
       }
@@ -161,8 +216,8 @@ void update(double a, double b, double c, double* ab, double* phiGrad, const dou
  * secant(a,b) = a*phi'(b) - b*phi'(a) / phi'(b) - phi'(a)
  * Two energy and gradient evals.
  */
-double secant(real a, real b, System* system) {
-  double phiA[2], phiB[2];
+float secant(real a, real b, System* system) {
+  float phiA[2], phiB[2];
   phi(a, system, phiA);
   phi(b, system, phiB);
   return (a*phiB[1] - b*phiA[1]) / (phiB[1] - phiA[1]);
@@ -171,19 +226,19 @@ double secant(real a, real b, System* system) {
 /**
  * Modifies phiGrad
  */
-void secant2(double a, double b, double* ab, double* phiGrad, const double* oldPhiGrad, System* system) {
-  double c = secant(a, b, system); // S1
-  double AB[2];
+void secant2(float a, float b, float* ab, float* phiGrad, const float* oldPhiGrad, System* system) {
+  float c = secant(a, b, system); // S1
+  float AB[2];
   update(a, b, c, AB, phiGrad, oldPhiGrad, system); // S1
-  double cbar = 0.0;
+  float cbar = 0.0;
   if(c == AB[1]) { // S2
     cbar = secant(b, AB[1], system);
   }
   if(c == AB[0]) { // S3
-    cbar = secant(AB[0], a, system);
+    cbar = secant(a, AB[0], system);
   }
   if(c == AB[0] || c == AB[1]) { // S4.1
-    update(AB[0], AB[0], cbar, ab, phiGrad, oldPhiGrad, system);
+    update(AB[0], AB[1], cbar, ab, phiGrad, oldPhiGrad, system);
     return;
   }
   ab[0] = AB[0]; // S4.2
@@ -193,17 +248,18 @@ void secant2(double a, double b, double* ab, double* phiGrad, const double* oldP
 /**
  * Modifies phiGrad
  */
-void bracket(double c, double* ab, double* phiGrad, const double* oldPhiGrad, System* system) {
-  double cj = c;
-  double ci = c;
+void bracket(float c, float* ab, float* phiGrad, const float* oldPhiGrad, System* system) {
+  float ci = 1e-7; // smallest possible step size
+  float cj = c; // Initial guess
   phi(c, system, phiGrad);
   while(true) {
-    constexpr double rho = 5;
+    constexpr float rho = 5;
     if(phiGrad[1] >= 0) { // B1
       ab[0] = ci;
       ab[1] = cj;
+      return;
     }
-    constexpr double epsK = 1e-6;
+    constexpr float epsK = 1e-6;
     if(phiGrad[0] <= oldPhiGrad[0]+epsK) { // B1, i < j
       ci = cj;
     }
@@ -224,35 +280,36 @@ void bracket(double c, double* ab, double* phiGrad, const double* oldPhiGrad, Sy
  */
 void wolfeLineSearch(System* system, int step) {
   // Move current position & grad into prev_position_d & prev_gradient_d
-  cudaMemcpy(system->state->prev_position_d, system->state->leapState->x, 3*system->state->atomCount*sizeof(double),
-             cudaMemcpyDeviceToDevice);
-  cudaMemcpy(system->state->prev_gradient_d, system->state->leapState->f, 3*system->state->atomCount*sizeof(double),
+  // Position needs to be cast to float as it is copied
+  copy_double_onto_float<<<(system->state->atomCount+BLUP-1)/BLUP,BLUP,BLUP*sizeof(real)/32,system->run->updateStream>>>
+      (system->state->leapState->x, system->state->prev_position_d, 3*system->state->atomCount);
+  cudaMemcpy(system->state->prev_gradient_d, system->state->leapState->f, 3*system->state->atomCount*sizeof(float),
              cudaMemcpyDeviceToDevice);
 
   // Search from Hager-Zhang
-  double psi2 = 2.0;
-  double c = step == 0 ? 1.0f : psi2 * system->state->stepSize; // L0
-  double phiGrad[2], oldPhiGrad[2]; // phi(c), phi'(c)
-  phi(c, system, phiGrad);
+  float psi2 = 2.0;
+  float c = step == 0 ? 1 : psi2 * system->state->stepSize; // L0
+  float phiGrad[2], oldPhiGrad[2]; // phi(c), phi'(c)
+  phi(0, system, phiGrad);
   oldPhiGrad[0] = phiGrad[0];
   oldPhiGrad[1] = phiGrad[1];
-  double ab[2];
+  float ab[2];
   bracket(c, ab, phiGrad, oldPhiGrad, system);
-  double aj = ab[0];
-  double bj = ab[1];
+  float aj = ab[0];
+  float bj = ab[1];
   int maxIter = 25;
   for(int i = 0; i < maxIter; i++) {
     secant2(aj, bj, ab, phiGrad, oldPhiGrad, system); // L1
-    double gamma = .66;
-    if(ab[0] - ab[1] > gamma*(bj - aj)) { // L2
+    float gamma = .66;
+    if(ab[1] - ab[0] > gamma*(bj - aj)) { // L2
       c = (ab[0] + ab[1]) / 2;
       update(ab[0], ab[1], c, ab, phiGrad, oldPhiGrad, system);
     }
     aj = ab[0]; // l3
     bj = ab[1];
     // Check (approximate) wolf conditions depending on i
-    double del = .1;
-    double sigma = .9; // phiGrad hasn't been changed since update
+    float del = .1;
+    float sigma = .9; // phiGrad hasn't been changed since update
     bool wolfe1 = phiGrad[0] - oldPhiGrad[0] <= del * c * oldPhiGrad[1];
     bool wolfe2 = phiGrad[1] >= sigma * oldPhiGrad[1];
     bool approxWolfe = (2*del - 1) * oldPhiGrad[1] >= phiGrad[1] && phiGrad[1] >= sigma * oldPhiGrad[1];
@@ -343,13 +400,18 @@ void State::min_init(System *system)
     system->state->cublasHandle = nullptr;
     cublasCreate_v2(&cublasHandle);
     cublasSetStream_v2(cublasHandle, system->run->updateStream);
-    cudaMalloc(&search_d, 3*atomCount*sizeof(double));
-    cudaMalloc(&prev_position_d, 3*atomCount*sizeof(double));
-    cudaMalloc(&position_residuals_d, 3*atomCount*m*sizeof(double)); // indexed like [m][3*atomCount]
-    cudaMalloc(&prev_gradient_d, 3*atomCount*sizeof(double));
-    cudaMalloc(&gradient_residuals_d, 3*atomCount*m*sizeof(double)); // indexed like [m][3*atomCount]
-    rho = (double*)malloc(m*sizeof(double)); // [m]
-    alpha = (double*)malloc(m*sizeof(double)); // [m]
+    cudaMalloc(&search_d, 3*atomCount*sizeof(float));
+    search = (float*)calloc(sizeof(float), 3*atomCount);
+    cudaMalloc(&prev_position_d, 3*atomCount*sizeof(float));
+    prev_position = (float*)calloc(sizeof(float), 3*atomCount);
+    cudaMalloc(&position_residuals_d, 3*atomCount*m*sizeof(float)); // indexed like [m][3*atomCount]
+    position_residuals = (float*)calloc(m*sizeof(float), 3*atomCount);
+    cudaMalloc(&prev_gradient_d, 3*atomCount*sizeof(float));
+    prev_gradient = (float*)calloc(sizeof(float), 3*atomCount);
+    cudaMalloc(&gradient_residuals_d, 3*atomCount*m*sizeof(float)); // indexed like [m][3*atomCount]
+    gradient_residuals = (float*)calloc(m*sizeof(float), 3*atomCount);
+    rho = (float*)malloc(m*sizeof(float)); // [m]
+    alpha = (float*)malloc(m*sizeof(float)); // [m]
   }
   if (system->run->minType==esd || system->run->minType==esdfd) {
     cudaMalloc(&grads2_d,2*sizeof(real_e));
@@ -391,13 +453,21 @@ void State::min_move(int step,int nsteps,System *system)
       lbfgsDirection(system, step);
       wolfeLineSearch(system, step);
       // Move with step size
-      // X = X + alpha * D
-      cublasDaxpy_v2(cublasHandle, 3*atomCount, &stepSize, search_d, 1, leapState->x, 1);
-      // Update L-BFGS history
+      // X = X + alpha * D (search_d was multiplied by -1)
+      update_lbfgs_position<<<(atomCount+BLUP-1)/BLUP,BLUP,BLUP*sizeof(real)/32,r->updateStream>>>
+          (leapState->x, search_d, stepSize, 3*atomCount);
+      system->domdec->update_domdec(system,false); // true to always update neighbor list
+      system->potential->calc_force(0, system);
+      recv_energy();
+      currEnergy = energy[eepotential];
+      assert(currEnergy < prevEnergy);
+      //Update L-BFGS history
       lbfgsUpdate(system->state->leapState, system->state->rho, &system->state->gamma,
                   system->state->prev_position_d, system->state->position_residuals_d,
-                  system->state->prev_gradient_d, system->state->gradient_residuals_d, (step-1) % system->state->m,
-                  system->state->atomCount, system->state->cublasHandle);
+                  system->state->prev_gradient_d, system->state->gradient_residuals_d, step % system->state->m,
+                  system->state->atomCount, system->state->cublasHandle, system);
+      recv_energy();
+      currEnergy = energy[eepotential];
     }
   } else if (r->minType==esd) {
     if (system->id==0) {

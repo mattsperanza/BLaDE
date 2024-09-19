@@ -477,7 +477,7 @@ void Run::minimize(char *line,char *token,System *system)
   system->state->min_init(system);
 
   for (step=0; step<nsteps; step++) {
-    system->domdec->update_domdec(system,true); // true to always update neighbor list
+    //system->domdec->update_domdec(system,true); // true to always update neighbor list
     system->potential->calc_force(0,system); // step 0 to always calculate energy
     system->state->min_move(step,nsteps,system);
     print_dynamics_output(step,system);

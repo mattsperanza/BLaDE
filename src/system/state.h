@@ -79,16 +79,21 @@ class State {
 
   // Minimization buffers (double narrowing acceptable)
   int m = 5; // number of previous gradients to use (hardcoded for now)
-  double *search_d; // [nAtoms] lbfgs search_d direction
+  float *search_d; // [nAtoms] lbfgs search_d direction
+  float *search;
   cublasHandle_t cublasHandle;
-  double *prev_position_d;
-  double *position_residuals_d; // [m*nAtoms] x_{i+1} - x_{i} = s_{i} : i = 0,1,...,m-1
-  double *prev_gradient_d;
-  double *gradient_residuals_d; // [m*nAtoms] grad_{i+1} - grad_{i} = y_{i} : i = 0,1,...,m-1
-  double *rho; // [m] rho_{i} = (s_{i}^T * y_{i} : i = 0,1,...,m-1
-  double *alpha; // [m] alpha_{i} = rho_{i} * s_{i}^T * y_{i} : i = 0,1,...,m-1
-  double gamma; // s projected onto y
-  double stepSize = 1.0;
+  float *prev_position_d; // x is stored as double, so it needs to be cast
+  float *prev_position;
+  float *position_residuals_d; // [m*nAtoms] x_{i+1} - x_{i} = s_{i} : i = 0,1,...,m-1
+  float *position_residuals;
+  float *prev_gradient_d;
+  float *prev_gradient;
+  float *gradient_residuals_d; // [m*nAtoms] grad_{i+1} - grad_{i} = y_{i} : i = 0,1,...,m-1
+  float *gradient_residuals;
+  float *rho; // [m] rho_{i} = (s_{i}^T * y_{i} : i = 0,1,...,m-1
+  float *alpha; // [m] alpha_{i} = rho_{i} * s_{i}^T * y_{i} : i = 0,1,...,m-1
+  float gamma; // s projected onto y
+  float stepSize = 1.0;
   real_e *grads2_d; // sd+sdfd, [0] is rms, [1] is max
   real_e prevEnergy; // sd
   real_v *minDirection_d; // sdfd
@@ -171,6 +176,7 @@ class State {
   void recv_position();
   void recv_lambda();
   void recv_energy();
+  void recv_lbfgs();
 
   void backup_position();
   void restore_position();
