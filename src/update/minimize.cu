@@ -409,7 +409,6 @@ void State::min_init(System *system)
   no_mass_weight_kernel<<<(3*atomCount+lambdaCount+BLUP-1)/BLUP,BLUP,
     0,system->run->updateStream>>>
     (3*atomCount+lambdaCount,invsqrtMassBuffer_d,leapState->ism);
-  system->run->minType = elbfgs;
   if (system->run->minType==elbfgs) {
     system->state->cublasHandle = nullptr;
     cublasCreate_v2(&cublasHandle);
@@ -468,6 +467,9 @@ void State::min_move(int step,int nsteps,System *system)
       // Compute L-BFGS direction & step size
       lbfgsDirection(system, step);
       wolfeLineSearch(system, step);
+      if(stepSize <= 1e-8) {
+        return;
+      }
       // Move with step size
       // X = X + alpha * D
       update_lbfgs_position<<<(3*atomCount+lambdaCount+BLUP-1)/BLUP,BLUP,BLUP*sizeof(real)/32,r->updateStream>>>
@@ -496,10 +498,10 @@ void State::min_move(int step,int nsteps,System *system)
                   system->state->prev_position_d, system->state->position_residuals_d,
                   system->state->prev_gradient_d, system->state->gradient_residuals_d, step % system->state->m,
                   system->state->atomCount, system->state->cublasHandle, system);
-    } else if(system->state->stepSize != 0.0) {
-      fprintf(stdout, "Skipping the rest of the minimization steps after %d due to convergence!\n", step);
-      fprintf(stdout, "Final Energy: %f\n", prevEnergy);
-      system->state->stepSize = 0.0;
+    } else if(stepSize != 0.0){
+      fprintf(stdout, "Finished minimization steps after %d due to L-BFGS convergence!\n", step);
+      fprintf(stdout, "Final L-BFGS Energy: %f\n", prevEnergy);
+      stepSize = 0.0;
     }
   } else if (r->minType==esd) {
     if (system->id==0) {
