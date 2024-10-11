@@ -294,6 +294,17 @@ void print_lmd(int step,System *system)
 {
   real_x *l=system->state->lambda;
   int i;
+  // Temporary printout for OST plot
+  fprintf(stdout, "Lambda: [");
+  for (i=1; i<system->state->lambdaCount; i++) {
+    fprintf(stdout," %8.6f",(real)l[i]);
+  }
+  fprintf(stdout, " ]\n");
+  fprintf(stdout, "dU/dL: [");
+  for (i=1; i<system->state->lambdaCount; i++) {
+    fprintf(stdout," %8.6f",system->state->lambdaForce[i]);
+  }
+  fprintf(stdout, " ]\n");
 
   if (system->run->hrLMD) {
     FILE *fp=system->run->fpLMD;
@@ -348,7 +359,7 @@ void print_dynamics_output(int step,System *system)
       system->state->prettify_position(system);
       print_xtc(step,system);
     }
-    if (step % system->run->freqLMD == 0) {
+    if (step % system->run->freqLMD == 0 || step % 1000) {
       system->state->recv_lambda();
       print_lmd(step,system);
     }

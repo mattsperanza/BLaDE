@@ -2,7 +2,8 @@ cmake_minimum_required(VERSION 3.00)
 project(blade LANGUAGES CXX CUDA)
 
 file(GLOB_RECURSE sources *.cxx *.cu *.h)
-file(GLOB_RECURSE REMOVE_CMAKE "buildDebug/*")
+#file(GLOB_RECURSE REMOVE_CMAKE "buildDebug/*")
+file(GLOB_RECURSE REMOVE_CMAKE "build/*")
 list(REMOVE_ITEM sources ${REMOVE_CMAKE})
 
 find_package(CUDA 10.0)
