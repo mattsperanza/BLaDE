@@ -17,7 +17,7 @@ stream arguments.inp
 variables set fnex 5.5
 variables set temp 298.15
 
-stream variablesprod.inp
+stream variables112.inp
 
 stream prep/{sysname}.inp
 
@@ -59,4 +59,5 @@ run setvariable freqnpt 100
 run setvariable freqlmd 10
 run setvariable hrlmd no
 run setvariable shaketolerance 0.000000001
+run setvariable domdecheuristic off
 run dynamics

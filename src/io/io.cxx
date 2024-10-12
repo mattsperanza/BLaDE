@@ -315,7 +315,7 @@ void print_lmd(int step,System *system)
     fprintf(fp,"\n");
   } else {
     XDRFILE *fp=system->run->fpXLMD;
-    xdrfile_write_int(&system->state->lambdaCount-1,1,fp);
+    //xdrfile_write_int(&system->state->lambdaCount-1,1,fp);
 #if defined DOUBLE || defined DOUBLE_X
     for (i=1; i<system->state->lambdaCount; i++) {
       float lf=l[i];
@@ -359,7 +359,7 @@ void print_dynamics_output(int step,System *system)
       system->state->prettify_position(system);
       print_xtc(step,system);
     }
-    if (step % system->run->freqLMD == 0 || step % 1000) {
+    if (step % 1000 == 0) {
       system->state->recv_lambda();
       print_lmd(step,system);
     }

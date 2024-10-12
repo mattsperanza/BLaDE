@@ -411,8 +411,8 @@ xdrfile_write_float(float *ptr, int ndata, XDRFILE* xfp)
 {
 	int i=0;
 	/* read write is encoded in the XDR struct */  
-	while(i<ndata && xdr_float((XDR *)(xfp->xdr),ptr+i))
-		i++;
+	//while(i<ndata && xdr_float((XDR *)(xfp->xdr),ptr+i))
+	//	i++;
 	return i;
 }
 
