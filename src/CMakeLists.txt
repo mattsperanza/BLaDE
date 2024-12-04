@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.0)
 project(blade LANGUAGES CXX CUDA)
 
 file(GLOB_RECURSE sources *.cxx *.cu *.h)
+file(GLOB_RECURSE REMOVE_CMAKE "build/*")
+file(GLOB_RECURSE REMOVE_CMAKE_DEBUG "buildDebug/*")
+list(REMOVE_ITEM sources ${REMOVE_CMAKE})
+list(REMOVE_ITEM sources ${REMOVE_CMAKE_DEBUG})
 
 find_package(CUDA 10.0)
 set (CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -ccbin ${CMAKE_CXX_COMPILER}")
@@ -33,7 +37,8 @@ set(CUDA_NVCC_FLAGS_RELEASE ${CUDA_NVCC_FLAGS_RELEASE} "--use_fast_math")
 # MPI: set(CMAKE_EXE_LINKER_FLAGS  "${CMAKE_EXE_LINKER_FLAGS} ${MPI_CXX_LIBRARIES} ${MPI_CXX_LINK_FLAGS} -lcufft -lnvToolsExt")
 set(CMAKE_EXE_LINKER_FLAGS  "${CMAKE_EXE_LINKER_FLAGS} -lnvToolsExt")
 
-cuda_add_executable(blade ${sources})
+cuda_add_executable(blade ${sources}
+        msld/HistogramEstimator.cxx)
 # MPI: target_include_directories(blade PUBLIC ${MPI_CXX_INCLUDE_PATH} .)
 target_include_directories(blade PUBLIC .)
 

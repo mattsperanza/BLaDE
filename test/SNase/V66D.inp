@@ -1,0 +1,121 @@
+variables set dir prep
+
+variables set box 68
+
+variables set resid1 66
+variables set s1seq1 0 ! r
+variables set s1seq2 d ! How do I make protonated?
+
+! These are for termini capping
+variables set nterdel 0 ! 0 means don't do it
+variables set nterres 6
+variables set ntercap nter
+variables set nterc 2 ! 2 nter, 3 cter, 4 ace, 5 ct3
+variables set cterdel 0 ! 0 means don't do it
+variables set cterres 141
+variables set ctercap cter
+variables set cterc 3  ! 2 nter, 3 cter, 4 ace, 5 ct3
+
+parameters file {dir}/toppar/par_all36_prot.prm
+parameters file {dir}/toppar_water_ions/par_water_ions.prm
+structure file psf {dir}/1ey0_dual_top.psf
+structure shake hbond
+
+coordinates file crd {dir}/1ey0_dual_top.crd
+coordinates box cubi {box} {box} {box} 90 90 90
+coordinates velocity 300
+
+selection define site1sub2 and and segid PROA resid 66 atomnames CB_0 HB10 HB20 CG_0 OD10 OD20 HD20 
+selection define site1sub1 and and segid PROA resid 66 atomnames CB HB1 HB2 CG OD1 OD2 
+
+stream variables.inp
+
+msld nblocks 2 ! Number of substituents over all sites
+variables set nsites 1 
+variables set nsubs1 2 ! nSubstituents
+
+variables set prevblock 0
+variables set ii 1
+while <= {ii} {nsites}
+   variables set jj 1
+   while <= {jj} {nsubs{ii}}
+      variables calculate jp0 int + {jj} {prevblock}
+
+      msld call {jp0} site{ii}sub{jj}
+
+      variables calculate jj int + {jj} 1
+   endwhile
+
+   variables calculate prevblock int + {prevblock} {nsubs{ii}}
+   variables calculate ii int + {ii} 1
+endwhile
+
+!               B S   t0  tv  tm  fb   q
+msld initialize 0 0 0 0 5 0 0
+
+variables set blockassign 0
+variables set prevblock 0
+variables set ii 1
+while <= {ii} {nsites}
+   variables set jj 1
+   variables set theta0 1
+   while <= {jj} {nsubs{ii}}
+      variables calculate jp0 int + {jj} {prevblock}
+
+!               B S   t0  tv  tm  fb   q
+      msld initialize {jp0} {ii} {theta0} 0 5 {lams{ii}s{jj}} 0
+
+      variables set theta0 -1
+      variables calculate jj int + {jj} 1
+   endwhile
+   variables calculate prevblock int + {prevblock} {nsubs{ii}}
+   variables calculate ii int + {ii} 1
+endwhile
+   msld removescaling bond urey angle impr
+
+   msld softcore on
+   msld softcore14 on
+
+! Check block.doc for functional form of these biasing potentials
+variables set iblock 0
+variables set si 1
+while <= {si} {nsites}
+   variables set jblock {iblock}
+   variables set sj {si}
+   while <= {sj} {nsites}
+      variables set ii 1
+      while <= {ii} {nsubs{si}}
+         variables calculate ip0 int + {ii} {iblock}
+         variables set jj 1
+         if == {si} {sj}
+            variables calculate jj int + {ii} 1
+         endif
+         while <= {jj} {nsubs{sj}}
+            variables calculate jp0 int + {jj} {jblock}
+
+!        s1s2 t  l0   k n
+            msld bias {ip0} {jp0} 6 0.0 {cs{si}s{ii}s{sj}s{jj}} 0
+            msld bias {ip0} {jp0} 10 -5.56 {xs{si}s{ii}s{sj}s{jj}} 0
+            msld bias {ip0} {jp0} 8 0.017 {ss{si}s{ii}s{sj}s{jj}} 0
+            msld bias {jp0} {ip0} 10 -5.56 {xs{sj}s{jj}s{si}s{ii}} 0
+            msld bias {jp0} {ip0} 8 0.017 {ss{sj}s{jj}s{si}s{ii}} 0
+            variables calculate jj int + {jj} 1
+         endwhile
+         variables calculate ii int + {ii} 1
+      endwhile
+      variables calculate jblock int + {jblock} {nsubs{sj}}
+      variables calculate sj int + {sj} 1
+   endwhile
+   variables calculate iblock int + {iblock} {nsubs{si}}
+   variables calculate si int + {si} 1
+endwhile
+
+stream variables.inp
+
+! Turn on thermodynamic integration
+variables set ti 0
+run setvariable nsteps 1000000
+run setvariable dt 0.002
+run setvariable T 298.15
+run setvariable shaketolerance 0.000000001
+run dynamics

@@ -314,6 +314,15 @@ void State::recv_lambda()
   cudaMemcpy(lambda,lambda_d,lambdaCount*sizeof(real_x),cudaMemcpyDeviceToHost);
 }
 
+void State::recv_lambda_force(bool reverse) {
+  if(reverse) {
+    cudaMemcpy(lambdaForce, lambdaForce_d, lambdaCount*sizeof(real_f), cudaMemcpyHostToDevice);
+  } else {
+    cudaMemcpy(lambdaForce, lambdaForce_d, lambdaCount*sizeof(real_f), cudaMemcpyDeviceToHost);
+  }
+}
+
+
 void State::recv_energy()
 {
   int i;

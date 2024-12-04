@@ -11,6 +11,7 @@
 #include "system/selections.h"
 #include "holonomic/rectify.h"
 #include "domdec/domdec.h"
+#include "io/variables.h"
 #include "main/gpu_check.h"
 
 #ifdef REPLICAEXCHANGE

@@ -5,6 +5,7 @@
 #include <set>
 
 #include "main/defines.h"
+#include "msld/HistogramEstimator.h"
 
 // Forward declarations
 class System;
@@ -110,6 +111,7 @@ class Msld {
   void calc_lambda_from_theta(cudaStream_t stream,System *system);
   void init_lambda_from_theta(cudaStream_t stream,System *system);
   void calc_thetaForce_from_lambdaForce(cudaStream_t stream,System *system);
+  void getforce_histogram(System *system, bool calcEnergy);
   void getforce_fixedBias(System *system,bool calcEnergy);
   void getforce_variableBias(System *system,bool calcEnergy);
   void getforce_thetaBias(System *system,bool calcEnergy);

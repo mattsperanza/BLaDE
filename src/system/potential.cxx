@@ -1563,6 +1563,8 @@ void Potential::calc_force(int step,System *system)
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
+  //TODO: Calculate energy if you are going to drop a sample
+  calcEnergy = true;
 #ifdef REPLICAEXCHANGE
   if (system->run->freqREx>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqREx==0));
@@ -1576,6 +1578,15 @@ void Potential::calc_force(int step,System *system)
 
   cudaEventRecord(r->forceBegin,r->updateStream);
 
+  // TODO: Add check for hist/OST estimator here
+  // TODO: Calc only dUdL_MSLD to find position (l, dUdl)
+  // TODO: Calc 1D dG dUdL & add to force
+  // TODO: Get 2D dG components for d2UdXdL & d2UdL2
+  if (system->id == helper) {
+    system->msld->getforce_histogram();
+  }
+
+  // TODO: Add d2UdXdL & d2UdL2 to force in dihe, cmap, nb14?
   if (system->id==helper) {
     cudaStreamWaitEvent(r->bondedStream,r->forceBegin,0);
     getforce_bond(system,calcEnergy);
@@ -1589,6 +1600,7 @@ void Potential::calc_force(int step,System *system)
     cudaStreamWaitEvent(r->updateStream,r->bondedComplete,0);
   }
 
+  // TODO: Add d2UdXdL & d2UdL2 to force in recip convolution
   if (system->id==0) {
     cudaStreamWaitEvent(r->nbrecipStream,r->forceBegin,0);
     getforce_ewaldself(system,calcEnergy);
@@ -1611,6 +1623,7 @@ void Potential::calc_force(int step,System *system)
     cudaStreamWaitEvent(r->updateStream,r->biaspotComplete,0);
   }
 
+  // TODO: Add d2UdXdL & d2UdL2 to direct ewald & vdw
   if (system->domdec->id>=0) {
     cudaStreamWaitEvent(r->nbdirectStream,r->forceBegin,0);
     getforce_nbdirect(system,calcEnergy);
@@ -1626,6 +1639,8 @@ void Potential::calc_force(int step,System *system)
   }
 
   calc_virtual_force(system);
+
+  // TODO: Wait for energy to finish and drop bias at (lambda, dUdL_MSLD) weighted using energy (that includes G(l, dUdl))
 
   // cudaEventRecord(r->forceComplete,r->updateStream);
 }
