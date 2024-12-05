@@ -37,8 +37,7 @@ set(CUDA_NVCC_FLAGS_RELEASE ${CUDA_NVCC_FLAGS_RELEASE} "--use_fast_math")
 # MPI: set(CMAKE_EXE_LINKER_FLAGS  "${CMAKE_EXE_LINKER_FLAGS} ${MPI_CXX_LIBRARIES} ${MPI_CXX_LINK_FLAGS} -lcufft -lnvToolsExt")
 set(CMAKE_EXE_LINKER_FLAGS  "${CMAKE_EXE_LINKER_FLAGS} -lnvToolsExt")
 
-cuda_add_executable(blade ${sources}
-        msld/HistogramEstimator.cxx)
+cuda_add_executable(blade ${sources})
 # MPI: target_include_directories(blade PUBLIC ${MPI_CXX_INCLUDE_PATH} .)
 target_include_directories(blade PUBLIC .)
 

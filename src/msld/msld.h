@@ -56,6 +56,43 @@ class Msld {
   struct VariableBias *variableBias;
   struct VariableBias *variableBias_d;
 
+  // Histogram variables
+  real *dGdLambda;
+  real *dGdFl;
+  // Histogram details
+  bool histogram_switch = true;
+  int sampleFrequency = 10;
+  int* histIndex; // index to start of this lambda's histogram
+  int depth; // number of histograms
+  real *bin_edges; // edges of the bins 0-1
+  real *bin_edges_d;
+  real *bin_widths; // width of each bin, used for normalization & integration weighting
+  real *bin_widths_d;
+  int first_half_bins; // number of bins assigned to the first half of the lambda range
+  int second_half_bins; // number of bins assigned to the other half of the lambda range
+  int total_bins; // total number of bins
+  int accumulate_into; // which histogram index to accumulate into
+  // Longer TI & OST variables of length nLambda*nBins
+  real **histogram_counts; // number of occurrences in each bin
+  // <dU/dL> estimations
+  real **dUdL; // ensemble average dU/dL in each bin
+  real *dUdL_d; // device pointer
+  real **d2UdL2; // ensemble average d2U/dL2 in each bin
+  real *d2UdL2_d;
+  real *offsets; // stores largest value of -beta*(U(x,l)-U_bias(x,l)) to save exp numerics
+  real **log_weights; // sum of boltzmann log_weights = exp(-beta*(U(x,l)-U_bias(x,l)))
+  real *log_weights_d;
+  real **log_weighted_dUdL; // sum of boltzmann weighted dU/dL in each bin
+  real *log_weighted_dUdL_d;
+  real **log_weighted_d2UdL2; // optimize lambda profile with 2nd derivative information
+  real *log_weighted_d2UdL2_d;
+  // variance = E[X^2] - E[X]^2
+  real **dUdL2; // ensemble average (dU/dL)^2 in each bin
+  real **variance; // variance of dU/dL in each bin
+  real *variance_d;
+  real **log_weighted_dUdL2; // sum of weighted dUdL squares
+  real *log_weighted_dUdL2_d;
+
   int thetaCollBiasCount;
   real *kThetaCollBias;
   real *kThetaCollBias_d;
@@ -111,12 +148,17 @@ class Msld {
   void calc_lambda_from_theta(cudaStream_t stream,System *system);
   void init_lambda_from_theta(cudaStream_t stream,System *system);
   void calc_thetaForce_from_lambdaForce(cudaStream_t stream,System *system);
-  void getforce_histogram(System *system, bool calcEnergy);
   void getforce_fixedBias(System *system,bool calcEnergy);
   void getforce_variableBias(System *system,bool calcEnergy);
   void getforce_thetaBias(System *system,bool calcEnergy);
   void getforce_atomRestraints(System *system,bool calcEnergy);
   void getforce_chargeRestraints(System *system,bool calcEnergy);
+
+  // Histogram estimation functions
+  static inline int get_bin_index(real lambda, int total_bins, const real* bin_edges);
+  static void assign_edges(int num_lambdas, int first, int second, real *edges, real* gaps);
+  void add_sample(System *system);
+  void getforce_histogram(System *system, bool calcEnergy);
 };
 
 void parse_msld(char *line,System *system);

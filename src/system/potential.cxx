@@ -1563,8 +1563,9 @@ void Potential::calc_force(int step,System *system)
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
-  //TODO: Calculate energy if you are going to drop a sample
-  calcEnergy = true;
+  if (step % system->msld->sampleFrequency == 0) {
+    calcEnergy=true;
+  }
 #ifdef REPLICAEXCHANGE
   if (system->run->freqREx>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqREx==0));
@@ -1578,12 +1579,11 @@ void Potential::calc_force(int step,System *system)
 
   cudaEventRecord(r->forceBegin,r->updateStream);
 
-  // TODO: Add check for hist/OST estimator here
   // TODO: Calc only dUdL_MSLD to find position (l, dUdl)
-  // TODO: Calc 1D dG dUdL & add to force
   // TODO: Get 2D dG components for d2UdXdL & d2UdL2
-  if (system->id == helper) {
-    system->msld->getforce_histogram();
+  if (system->id == helper && system->msld->histogram_switch) {
+    cudaStreamWaitEvent(r->biaspotStream, r->forceBegin, 0);
+    system->msld->getforce_histogram(system, calcEnergy);
   }
 
   // TODO: Add d2UdXdL & d2UdL2 to force in dihe, cmap, nb14?
@@ -1641,7 +1641,10 @@ void Potential::calc_force(int step,System *system)
   calc_virtual_force(system);
 
   // TODO: Wait for energy to finish and drop bias at (lambda, dUdL_MSLD) weighted using energy (that includes G(l, dUdl))
-
+  // TODO: Decide to reset or shift histogram
+  if(step % system->msld->sampleFrequency == 0) {
+    system->msld->add_sample(system);
+  }
   // cudaEventRecord(r->forceComplete,r->updateStream);
 }
 
