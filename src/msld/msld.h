@@ -5,7 +5,6 @@
 #include <set>
 
 #include "main/defines.h"
-#include "msld/HistogramEstimator.h"
 
 // Forward declarations
 class System;
@@ -62,24 +61,27 @@ class Msld {
   // Histogram details
   bool histogram_switch = true;
   int sampleFrequency = 10;
-  int* histIndex; // index to start of this lambda's histogram
   int depth; // number of histograms
+  int* hist_index; // index to start of this lambda's histogram
+  int* hist_index_d;
   real *bin_edges; // edges of the bins 0-1
   real *bin_edges_d;
-  real *bin_widths; // width of each bin, used for normalization & integration weighting
-  real *bin_widths_d;
   int first_half_bins; // number of bins assigned to the first half of the lambda range
-  int second_half_bins; // number of bins assigned to the other half of the lambda range
+  int second_half_bins;
   int total_bins; // total number of bins
   int accumulate_into; // which histogram index to accumulate into
   // Longer TI & OST variables of length nLambda*nBins
   real **histogram_counts; // number of occurrences in each bin
+  real *histogram_counts_d;
   // <dU/dL> estimations
-  real **dUdL; // ensemble average dU/dL in each bin
-  real *dUdL_d; // device pointer
-  real **d2UdL2; // ensemble average d2U/dL2 in each bin
-  real *d2UdL2_d;
+  real **ensemble_dUdL; // ensemble average dU/dL in each bin
+  real *ensemble_dUdL_d; // device pointer
+  real **integral_components; // area under the curve for this bin
+  real *integral_components_d;
+  real **ensemble_d2UdL2; // ensemble average d2U/dL2 in each bin
+  real *ensemble_d2UdL2_d;
   real *offsets; // stores largest value of -beta*(U(x,l)-U_bias(x,l)) to save exp numerics
+  real *offsets_d;
   real **log_weights; // sum of boltzmann log_weights = exp(-beta*(U(x,l)-U_bias(x,l)))
   real *log_weights_d;
   real **log_weighted_dUdL; // sum of boltzmann weighted dU/dL in each bin
@@ -87,10 +89,11 @@ class Msld {
   real **log_weighted_d2UdL2; // optimize lambda profile with 2nd derivative information
   real *log_weighted_d2UdL2_d;
   // variance = E[X^2] - E[X]^2
-  real **dUdL2; // ensemble average (dU/dL)^2 in each bin
+  real **ensemble_dUdL2; // ensemble average (dU/dL)^2 in each bin
+  real *ensemble_dUdL2_d;
   real **variance; // variance of dU/dL in each bin
   real *variance_d;
-  real **log_weighted_dUdL2; // sum of weighted dUdL squares
+  real **log_weighted_dUdL2; // sum of weighted ensemble_dUdL squares
   real *log_weighted_dUdL2_d;
 
   int thetaCollBiasCount;
@@ -156,7 +159,7 @@ class Msld {
 
   // Histogram estimation functions
   static inline int get_bin_index(real lambda, int total_bins, const real* bin_edges);
-  static void assign_edges(int num_lambdas, int first, int second, real *edges, real* gaps);
+  static void assign_edges(int num_lambdas, int first, int second, real *edges);
   void add_sample(System *system);
   void getforce_histogram(System *system, bool calcEnergy);
 };

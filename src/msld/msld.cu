@@ -83,15 +83,15 @@ Msld::Msld() {
   total_bins=first_half_bins+second_half_bins;
   accumulate_into=0;
   histogram_counts=NULL;
-  dUdL=NULL;
-  dUdL_d=NULL;
-  d2UdL2=NULL;
-  d2UdL2_d=NULL;
+  ensemble_dUdL=NULL;
+  ensemble_dUdL_d=NULL;
+  ensemble_d2UdL2=NULL;
+  ensemble_d2UdL2_d=NULL;
   offsets=NULL;
   log_weights=NULL;
   log_weighted_dUdL=NULL;
   log_weighted_d2UdL2=NULL;
-  dUdL2=NULL;
+  ensemble_dUdL2=NULL;
   variance=NULL;
   variance_d=NULL;
   log_weighted_dUdL2=NULL;
@@ -735,37 +735,46 @@ void Msld::initialize(System *system) {
   accumulate_into=0;
   depth=1;
   // Depth 1 storage
-  cudaMalloc(&dUdL_d, nL*total_bins*sizeof(real));
-  cudaMalloc(&d2UdL2_d, nL*total_bins*sizeof(real));
+  integral_components=(real**) calloc(nL*total_bins, sizeof(real));
+  cudaMalloc(&integral_components_d, nL*total_bins*sizeof(real));
+  cudaMalloc(&histogram_counts_d, nL*total_bins*sizeof(real));
+  cudaMalloc(&log_weights_d, nL*total_bins*sizeof(real));
+  cudaMalloc(&log_weighted_dUdL_d, nL*total_bins*sizeof(real));
+  cudaMalloc(&ensemble_dUdL_d, nL*total_bins*sizeof(real));
+  cudaMalloc(&log_weighted_d2UdL2_d, nL*total_bins*sizeof(real));
+  cudaMalloc(&ensemble_d2UdL2_d, nL*total_bins*sizeof(real));
+  cudaMalloc(&log_weighted_dUdL2, nL*total_bins*sizeof(real));
+  cudaMalloc(&ensemble_dUdL2_d, nL*total_bins*sizeof(real));
   cudaMalloc(&variance_d, nL*total_bins*sizeof(real*));
   bin_edges=(real*) calloc(total_bins+1, sizeof(real));
-  bin_widths=(real*) calloc(total_bins, sizeof(real));
   // Lambdas required for correct uniform distribution
-  assign_edges(nL, first_half_bins, second_half_bins, bin_edges, bin_widths);
+  assign_edges(nL, first_half_bins, second_half_bins, bin_edges);
   offsets=(real*) calloc(nL*total_bins, sizeof(real));
-  histIndex = (int*) malloc(nL*sizeof(int));
+  cudaMalloc(&offsets_d, nL*total_bins*sizeof(real));
+  hist_index = (int*) malloc(nL*sizeof(int));
+  cudaMalloc(&hist_index_d, nL*sizeof(int));
   for(int i = 0; i < nL; i++) {
     // Edges indexed with this number + i*nL since they are one larger
-    histIndex[i] = i * total_bins;
+    hist_index[i] = i * total_bins;
   }
   // Depth = n storage
   histogram_counts=(real**) malloc(depth*sizeof(real*));
-  dUdL=(real**) malloc(depth*sizeof(real));
-  d2UdL2=(real**) malloc(depth*sizeof(real));
+  ensemble_dUdL=(real**) malloc(depth*sizeof(real));
+  ensemble_d2UdL2=(real**) malloc(depth*sizeof(real));
   log_weights=(real**) malloc(depth* sizeof(real*));
   log_weighted_dUdL=(real**) malloc(depth* sizeof(real*));
   log_weighted_d2UdL2=(real**) malloc(depth* sizeof(real*));
-  dUdL2=(real**) malloc(depth* sizeof(real*));
+  ensemble_dUdL2=(real**) malloc(depth* sizeof(real*));
   variance=(real**) malloc(depth* sizeof(real*));
   log_weighted_dUdL2=(real**) malloc(depth* sizeof(real*));
   for(int i = 0; i < depth; i++) { // these are really long for GPU sake, otherwise would be separated into different classes
     histogram_counts[i]=(real*) malloc(nL*total_bins*sizeof(real*));
-    dUdL[i]=(real*) malloc(nL*total_bins*sizeof(real));
-    d2UdL2[i]=(real*) malloc(nL*total_bins*sizeof(real));
+    ensemble_dUdL[i]=(real*) malloc(nL*total_bins*sizeof(real));
+    ensemble_d2UdL2[i]=(real*) malloc(nL*total_bins*sizeof(real));
     log_weights[i]=(real*) malloc(nL*total_bins*sizeof(real));
     log_weighted_dUdL[i]=(real*) malloc(nL*total_bins*sizeof(real));
     log_weighted_d2UdL2[i]=(real*) malloc(nL*total_bins*sizeof(real));
-    dUdL2[i]=(real*) malloc(nL*total_bins*sizeof(real));
+    ensemble_dUdL2[i]=(real*) malloc(nL*total_bins*sizeof(real));
     variance[i]=(real*) malloc(nL*total_bins*sizeof(real));
     log_weighted_dUdL2[i]=(real*) malloc(nL*total_bins*sizeof(real));
   }
@@ -859,19 +868,15 @@ real beta_cdf_inverse(const real y, const int b){
  *
  * The second half of the bins are assigned linearly from the first half to 1.
 */
-void Msld::assign_edges(const int num_lambdas, const int first, const int second, real *edges, real *gaps){
+void Msld::assign_edges(const int num_lambdas, const int first, const int second, real *edges){
   int total = first + second;
   for (int i = 0; i < first; i++){
     edges[i] = beta_cdf_inverse(static_cast<real>(i) / static_cast<real>(first) / 2, num_lambdas-1);
-    if (i > 0){
-      gaps[i-1] = edges[i] - edges[i-1];
-    }
   }
   real rest = 1.0 - edges[first-1];
   real gap = rest / second;
   for (int i = first; i < total; i++){
     edges[i] = (i-first+1)*gap + edges[first];
-    gaps[i] = edges[i] - edges[i-1];
   }
 }
 
@@ -889,10 +894,12 @@ inline int Msld::get_bin_index(real lambda, int total_bins, const real *bin_edge
 // There will never be simultaneous access of any element
 // This is done on the gpu just to avoid moving data back and forth
 __global__ void add_sample_kernel(
-  real temperature,
+  real kT,
   real* lambdas, real* lambdaForce, real_e* energy,
   real* histogram_counts, int* histIndices, int total_bins, real* bin_edges, real* offsets,
   real* log_weights, real* log_weighted_dUdL, real* log_weighted_d2UdL2, real* log_weighted_dUdL2,
+  real* ensemble_dUdL, real* ensemble_d2UdL2, real* ensemble_dUdL2, real* variance,
+  real* integral_components,
   int blockCount
   ) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -904,7 +911,7 @@ __global__ void add_sample_kernel(
     int bin = Msld::get_bin_index(lambda, total_bins, bin_edges);
     bin = bin + histIndices[i];
     histogram_counts[bin] += 1;
-    real beta = 1 / (kB * temperature);
+    real beta = 1 / kT;
     if (-beta*potEnergy > offsets[bin]) {
       real new_offset = -beta*potEnergy;
       // log_weight = y - off
@@ -920,20 +927,53 @@ __global__ void add_sample_kernel(
     log_weighted_dUdL[bin] = log(exp(log_weighted_dUdL[bin]) + dUdL * exp(-beta * potEnergy - offsets[bin]));
     log_weighted_d2UdL2[bin] = log(exp(log_weighted_dUdL2[bin]) + d2UdL2 * exp(-beta * potEnergy - offsets[bin]));
     log_weighted_dUdL2[bin] = log(exp(log_weighted_dUdL2[bin]) + dUdL * dUdL * exp(-beta * potEnergy - offsets[bin]));
+    // The offset we defined cancels in this calculation
+    // log(sum(ensemble_dUdL*exp(U))/sum(exp(U))) = log(ensemble_dUdL*sum(exp(U-offset)))-log(sum(exp(U-offset)))
+    ensemble_dUdL[bin] = exp(log_weighted_dUdL[bin]-log_weights[bin]);
+    ensemble_d2UdL2[bin] = exp(log_weighted_d2UdL2[bin]-log_weights[bin]);
+    ensemble_dUdL2[bin] = exp(log_weighted_dUdL2[bin]-log_weights[bin]);
+    variance[bin] = ensemble_dUdL2[bin] - ensemble_dUdL[bin]*ensemble_dUdL[bin];
+    // Integral components
+    real lower_dUdL = ensemble_dUdL[bin];
+    int id = bin >= total_bins ? bin : bin + 1;
+    real upper_dUdL = ensemble_dUdL[id];
+    real width = bin_edges[bin+1] - bin_edges[bin];
+    integral_components[bin] = (lower_dUdL + upper_dUdL)/2 * width; // TODO: This line only works for trapezoidal rule
   }
 };
 
 void Msld::add_sample(System* system){
+  cudaStream_t stream = 0;
+  Run *r = system->run;
+  State *s = system->state;
+  int shMem = 0;
+
+  if (system->run) { // need to wait for energy
+    stream=system->run->updateStream;
+  }
+
+  add_sample_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
+    system->state->leapParms1->kT,
+    s->lambda_fd, s->lambdaForce_d, s->energy_d,
+    histogram_counts_d, hist_index_d, total_bins, bin_edges_d, offsets_d,
+    log_weights_d, log_weighted_dUdL_d, log_weighted_d2UdL2_d, log_weighted_dUdL2_d,
+    ensemble_dUdL_d, ensemble_d2UdL2_d, ensemble_dUdL2_d, variance_d,
+    integral_components_d,
+    blockCount);
 }
 
-// Short calculation based on the dUdL weights
+// This is done on GPU just to avoid moving data back and forth
+// TODO: Implement cubic spline interpolation of ensemble_dUdL values defined at bin centers
 __global__ void getforce_histogram_kernel(
   real* lambdas, real* lambdaForce,
   int* histIndices, int total_bins, real* bin_edges,
-  real* log_weights, real* log_weighted_dUdL,
+  real* ensemble_dUdL, real* integral_components, real_e *energy,
   int blockCount)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
+  extern __shared__ real sEnergy[];
+  real lEnergy=0;
+
   if (i < blockCount) {
     real lambda = lambdas[i];
     // This value is in range for bins, +1 is in range for edges, but + 2 may be out of range
@@ -942,22 +982,46 @@ __global__ void getforce_histogram_kernel(
     // Lerp implementation of ABF - values are defined on the bin's lower edges to avoid edge cases
     real low_edge = bin_edges[bin];
     real high_edge = bin_edges[bin+1];
-    // The offset we defined cancels in this calculation
-    real dUdL_low = exp(log_weighted_dUdL[bin] - log_weights[bin]);
+    real dUdL_low = ensemble_dUdL[bin];
     int id = bin+1 >= total_bins ? bin : bin + 1; // last edge has same value as last bin
-    real dUdL_high = exp(log_weighted_dUdL[id] - log_weights[id]);
+    real dUdL_high = ensemble_dUdL[id];
     real interp = (lambda - low_edge) / (high_edge - low_edge);
     real dUdL = (1-interp) * dUdL_low + interp * dUdL_high;
-    lambdaForce[i] += -dUdL;
+    if (energy) { // TODO: Do this with a thread reduction, but I don't know how
+      for (int j = 0; j < bin-1; j++) { // integrate up to the bin prior to this one
+        lEnergy += integral_components[j+histIndices[i]];
+      }
+      lEnergy += (dUdL_low + dUdL) / 2 * (lambda - low_edge); // TODO: this line only works for trapezoidal rule
+    }
+    atomicAdd(&lambdaForce[i], -dUdL);
+  }
+
+  if (energy) {
+    __syncthreads();
+    real_sum_reduce(lEnergy, sEnergy, energy);
   }
 }
 
-// Integral
-__global__ void getenergy_histogram_kernel() {
-
-}
-
 void Msld::getforce_histogram(System *system, bool calcEnergy) {
+  cudaStream_t stream = 0;
+  Run *r = system->run;
+  State *s = system->state;
+  real_e *pEnergy = NULL;
+  int shMem = 0;
+
+  if (r->calcTermFlag[eelambda] == false) return;
+  if (calcEnergy) {
+    shMem = BLMS*sizeof(real)/32;
+    pEnergy=s->energy_d+eelambda;
+  }
+  if (system->run) {
+    stream=system->run->biaspotStream;
+  }
+
+  getforce_histogram_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
+    s->lambda_fd, s->lambdaForce_d,
+    hist_index_d, total_bins, bin_edges_d,
+    ensemble_dUdL_d, integral_components_d, pEnergy, blockCount);
 }
 
 

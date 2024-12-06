@@ -1580,13 +1580,13 @@ void Potential::calc_force(int step,System *system)
   cudaEventRecord(r->forceBegin,r->updateStream);
 
   // TODO: Calc only dUdL_MSLD to find position (l, dUdl)
-  // TODO: Get 2D dG components for d2UdXdL & d2UdL2
+  // TODO: Get 2D dG components for d2UdXdL & ensemble_d2UdL2
   if (system->id == helper && system->msld->histogram_switch) {
     cudaStreamWaitEvent(r->biaspotStream, r->forceBegin, 0);
     system->msld->getforce_histogram(system, calcEnergy);
   }
 
-  // TODO: Add d2UdXdL & d2UdL2 to force in dihe, cmap, nb14?
+  // TODO: Add d2UdXdL & ensemble_d2UdL2 to force in dihe, cmap, nb14?
   if (system->id==helper) {
     cudaStreamWaitEvent(r->bondedStream,r->forceBegin,0);
     getforce_bond(system,calcEnergy);
@@ -1600,7 +1600,7 @@ void Potential::calc_force(int step,System *system)
     cudaStreamWaitEvent(r->updateStream,r->bondedComplete,0);
   }
 
-  // TODO: Add d2UdXdL & d2UdL2 to force in recip convolution
+  // TODO: Add d2UdXdL & ensemble_d2UdL2 to force in recip convolution
   if (system->id==0) {
     cudaStreamWaitEvent(r->nbrecipStream,r->forceBegin,0);
     getforce_ewaldself(system,calcEnergy);
@@ -1623,7 +1623,7 @@ void Potential::calc_force(int step,System *system)
     cudaStreamWaitEvent(r->updateStream,r->biaspotComplete,0);
   }
 
-  // TODO: Add d2UdXdL & d2UdL2 to direct ewald & vdw
+  // TODO: Add d2UdXdL & ensemble_d2UdL2 to direct ewald & vdw
   if (system->domdec->id>=0) {
     cudaStreamWaitEvent(r->nbdirectStream,r->forceBegin,0);
     getforce_nbdirect(system,calcEnergy);
@@ -1640,7 +1640,7 @@ void Potential::calc_force(int step,System *system)
 
   calc_virtual_force(system);
 
-  // TODO: Wait for energy to finish and drop bias at (lambda, dUdL_MSLD) weighted using energy (that includes G(l, dUdl))
+  // TODO: weighted using energy that includes G(l, dUdl)
   // TODO: Decide to reset or shift histogram
   if(step % system->msld->sampleFrequency == 0) {
     system->msld->add_sample(system);
