@@ -64,6 +64,8 @@ class Msld {
   int depth; // number of histograms
   int* hist_index; // index to start of this lambda's histogram
   int* hist_index_d;
+  real* step_force_d; // Force added on this step for each lambda, to correct force later
+  real* step_potential_d; // same as above
   real *bin_edges; // edges of the bins 0-1
   real *bin_edges_d;
   int first_half_bins; // number of bins assigned to the first half of the lambda range
@@ -76,10 +78,12 @@ class Msld {
   // <dU/dL> estimations
   real **ensemble_dUdL; // ensemble average dU/dL in each bin
   real *ensemble_dUdL_d; // device pointer
+  real *dUdL_min_d; // stores lowest value of dUdL sampled in bin so it can shift
   real **integral_components; // area under the curve for this bin
   real *integral_components_d;
   real **ensemble_d2UdL2; // ensemble average d2U/dL2 in each bin
   real *ensemble_d2UdL2_d;
+  real *d2UdL2_min_d;
   real *offsets; // stores largest value of -beta*(U(x,l)-U_bias(x,l)) to save exp numerics
   real *offsets_d;
   real **log_weights; // sum of boltzmann log_weights = exp(-beta*(U(x,l)-U_bias(x,l)))
@@ -158,7 +162,6 @@ class Msld {
   void getforce_chargeRestraints(System *system,bool calcEnergy);
 
   // Histogram estimation functions
-  static inline int get_bin_index(real lambda, int total_bins, const real* bin_edges);
   static void assign_edges(int num_lambdas, int first, int second, real *edges);
   void add_sample(System *system);
   void getforce_histogram(System *system, bool calcEnergy);

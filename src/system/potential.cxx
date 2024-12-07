@@ -1563,7 +1563,7 @@ void Potential::calc_force(int step,System *system)
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
-  if (step % system->msld->sampleFrequency == 0) {
+  if (step % system->msld->sampleFrequency == 0 && step != 0) {
     calcEnergy=true;
   }
 #ifdef REPLICAEXCHANGE
@@ -1642,7 +1642,8 @@ void Potential::calc_force(int step,System *system)
 
   // TODO: weighted using energy that includes G(l, dUdl)
   // TODO: Decide to reset or shift histogram
-  if(step % system->msld->sampleFrequency == 0) {
+  if(step != 0 && step % system->msld->sampleFrequency == 0 && system->msld->histogram_switch) {
+    system->state->recv_energy(); // TODO: Access without recv call
     system->msld->add_sample(system);
   }
   // cudaEventRecord(r->forceComplete,r->updateStream);
