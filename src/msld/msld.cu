@@ -913,7 +913,6 @@ __global__ void add_sample_kernel(
   ) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if(i<blockCount) {
-    printf("+++Start add_sample_kernel():\n");
     // Get U_msld = a log weight in the unbiased potential
     for (int j = 0; j < blockCount-1; j++) {
       potEnergy -= step_potential[j];
@@ -929,10 +928,7 @@ __global__ void add_sample_kernel(
       log_weighted_dUdL[hist_bin] = log(shift_dUdL * exp(log_weights[hist_bin]));
       dUdL_min[hist_bin] = dUdL;
     }
-    printf("i = %d, dUdL: %f\n", i, dUdL);
     dUdL -= dUdL_min[hist_bin];
-    printf("i = %d, Lambda: %f\n", i, lambda);
-    printf("i = %d, PotE: %f\n", i, potEnergy);
     real d2UdL2 = 0;
     if (d2UdL2 < d2UdL2_min[hist_bin]) { // same as dUdL
       double shift_d2UdL2 = ensemble_d2UdL2[hist_bin] - d2UdL2;
@@ -941,10 +937,8 @@ __global__ void add_sample_kernel(
     }
     histogram_counts[hist_bin] += 1;
     real beta = 1 / kT;
-    printf("i = %d, Bin: %d\n", i, hist_bin);
     if (-beta*potEnergy > offsets[hist_bin]) {
       real new_offset = -beta*potEnergy;
-      printf("New offset: %f\n", new_offset);
       // log_weight = y - off
       // y = log(sum(exp(U))) == exp(y) = exp(offset)*sum(exp(U-offset)) == y - offset = log(sum(exp(U-offset)))
       log_weights[hist_bin] = log_weights[hist_bin]+offsets[hist_bin]-new_offset;
@@ -954,7 +948,6 @@ __global__ void add_sample_kernel(
       offsets[hist_bin] = new_offset;
     }
     // sum(exp(U-offset)) + exp(U-offset) = exp(y-offset) + exp(U-offset)
-    printf("i = %d, log_weights[histBin] = %f, -b*pot - offset = %f\n", i, log_weights[hist_bin], -beta*potEnergy-offsets[hist_bin]);
     log_weights[hist_bin] = log(exp(log_weights[hist_bin]) + exp(-beta * potEnergy - offsets[hist_bin]));
     log_weighted_dUdL[hist_bin] = log(exp(log_weighted_dUdL[hist_bin]) + dUdL * exp(-beta * potEnergy - offsets[hist_bin]));
     log_weighted_d2UdL2[hist_bin] = log(exp(log_weighted_dUdL2[hist_bin]) + d2UdL2 * exp(-beta * potEnergy - offsets[hist_bin]));
@@ -963,8 +956,7 @@ __global__ void add_sample_kernel(
     log_weighted_dUdL2[hist_bin] = log(exp(log_weighted_dUdL2[hist_bin]) + dUdL* dUdL * exp(-beta * potEnergy - offsets[hist_bin]));
     // The offset we defined cancels in this calculation
     // log(sum(ensemble_dUdL*exp(U))/sum(exp(U))) = log(ensemble_dUdL*sum(exp(U-offset)))-log(sum(exp(U-offset)))
-    ensemble_dUdL[hist_bin] = exp(log_weighted_dUdL[hist_bin]-log_weights[hist_bin]) - dUdL_min[hist_bin];
-    printf("i = %d, Enesemble_dUdL: %f\n", i, ensemble_dUdL[hist_bin]);
+    ensemble_dUdL[hist_bin] = exp(log_weighted_dUdL[hist_bin]-log_weights[hist_bin]) + dUdL_min[hist_bin];
     ensemble_d2UdL2[hist_bin] = exp(log_weighted_d2UdL2[hist_bin]-log_weights[hist_bin]);
     ensemble_dUdL2[hist_bin] = exp(log_weighted_dUdL2[hist_bin]-log_weights[hist_bin]);
     variance[hist_bin] = ensemble_dUdL2[hist_bin] - ensemble_dUdL[hist_bin]*ensemble_dUdL[hist_bin];
@@ -974,7 +966,6 @@ __global__ void add_sample_kernel(
     real upper_dUdL = ensemble_dUdL[id];
     real width = bin_edges[bin+1] - bin_edges[bin];
     integral_components[hist_bin] = (lower_dUdL + upper_dUdL)/2 * width; // TODO: This line only works for trapezoidal rule
-    printf("+++End add_sample_kernel():\n");
   }
 };
 
@@ -1013,25 +1004,17 @@ __global__ void getforce_histogram_kernel(
 
   real dUdL = 0;
   if (i < blockCount) {
-    printf("---Start getforce_histogram_kernel(): \n");
     real lambda = lambdas[i+1];
-    printf("i = %d, Lambda: %f\n", i, lambda);
     // This value is in range for bins, +1 is in range for edges, but + 2 may be out of range
     int bin = get_bin_index(lambda, total_bins, bin_edges);
     int histBin = bin + histIndices[i];
-    printf("i = %d, bin = %d\n", i, bin);
     // Lerp implementation of ABF - values are defined on the bin's lower edges to avoid edge cases
     real low_edge = bin_edges[bin];
     real high_edge = bin_edges[bin+1];
-    printf("i = %d, bin bound = (%f-%f)\n", i, low_edge, high_edge);
-
     real dUdL_low = ensemble_dUdL[histBin];
-    //printf("i = %d, dUdL_low: %f\n", i, dUdL_low);
     int id = bin+1 >= total_bins ? histBin : histBin + 1; // last edge has same value as last bin
     real dUdL_high = ensemble_dUdL[id];
-    //printf("i = %d, dUdL_high: %f\n", i, dUdL_high);
     real interp = (lambda - low_edge) / (high_edge - low_edge);
-    //printf("i = %d, interp: %f\n", i, interp);
     dUdL = (1-interp) * dUdL_low + interp * dUdL_high;
     if (energy) { // TODO: Do this with a thread reduction, but I don't know how
       for (int j = 0; j < bin-1; j++) { // integrate up to the bin prior to this one
@@ -1044,8 +1027,6 @@ __global__ void getforce_histogram_kernel(
     }
     atomicAdd(&lambdaForce[i+1], -dUdL);
     step_force[i] = -dUdL;
-    //printf("i = %d, dUdL: %f\n", i, dUdL);
-    printf("---End getforce_histogram_kernel(): \n");
   }
 
   if (energy) {
