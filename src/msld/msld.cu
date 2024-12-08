@@ -914,8 +914,9 @@ __global__ void add_sample_kernel(
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if(i<blockCount) {
     // Get U_msld = a log weight in the unbiased potential
+    potEnergy = 0;
     for (int j = 0; j < blockCount-1; j++) {
-      //potEnergy -= step_potential[j];
+      potEnergy -= step_potential[j];
     }
     real lambda = lambdas[i+1];
     int bin = get_bin_index(lambda, total_bins, bin_edges);
@@ -1000,38 +1001,48 @@ void Msld::add_sample(System* system){
   // Print out lambda values
   // Print out values as arrays
   if (system->run->step % 10000 == 0) {
+    int count = 0;
     printf("Step: %d\n", system->run->step);
-    for (int i = 0; i < blockCount-1; i++) {
-      printf("i = %d, lambda: %f \n", i, s->lambda[i+1]);
-      printf("i = %d, histogram: [ %f, ", i, histogram_counts[0][i*total_bins]);
-      for (int j = 1; j < total_bins; j++) {
-        printf("%f, ", histogram_counts[0][i*total_bins+j]);
+    for (int i = 0; i < siteCount-1; i++) {
+      real relative = 0;
+      for (int k = 0; k < blocksPerSite[i+1]; k++) {
+        printf("Site %d, Sub %d\n", i, k);
+        printf("Lambda: %f \n", s->lambda[count+1]);
+        printf("Histogram: [ %f, ", histogram_counts[0][count*total_bins]);
+        for (int j = 1; j < total_bins; j++) {
+          printf("%f, ", histogram_counts[0][count*total_bins+j]);
+        }
+        printf("]\n");
+        printf("Log_weights: [ %f, ", log_weights[0][count*total_bins]);
+        for (int j = 1; j < total_bins; j++) {
+          printf("%f, ", log_weights[0][count*total_bins+j]);
+        }
+        printf("]\n");
+        printf("dUdL1: [ %f, ", average_dUdL[i*total_bins]);
+        for (int j = 1; j < total_bins; j++) {
+          printf("%f, ", average_dUdL[count*total_bins+j]);
+        }
+        printf("]\n");
+        //printf(", dUdL2: [ %f, ", i, k, ensemble_dUdL[0][i*total_bins]);
+        //for (int j = 1; j < total_bins; j++) {
+        //  printf("%f, ", ensemble_dUdL[0][i*total_bins+j]);
+        //}
+        //printf("]\n");
+        real sum= 0;
+        printf("dG 0->i: [ %f, ", sum);
+        for (int j = 1; j < total_bins; j++) {
+          sum += integral_components[count*total_bins+j];
+          printf("%f, ", sum);
+        }
+        printf("]\n");
+        if (k == 0) {
+          relative = sum;
+        }
+        sum -= relative;
+        printf("dG 0->1: %f\n", sum);
+        printf("\n");
+        count++;
       }
-      printf("]\n");
-      printf("i = %d, log_weights: [ %f, ", i, log_weights[0][i*total_bins]);
-      for (int j = 1; j < total_bins; j++) {
-        printf("%f, ", log_weights[0][i*total_bins+j]);
-      }
-      printf("]\n");
-      printf("i = %d, Average dUdL: [ %f, ", i, average_dUdL[i*total_bins]);
-      for (int j = 1; j < total_bins; j++) {
-        printf("%f, ", average_dUdL[i*total_bins+j]);
-      }
-      printf("]\n");
-      //printf("i = %d, dUdL2: [ %f, ", i, ensemble_dUdL[0][i*total_bins]);
-      //for (int j = 1; j < total_bins; j++) {
-      //  printf("%f, ", ensemble_dUdL[0][i*total_bins+j]);
-      //}
-      //printf("]\n");
-      real sum= 0;
-      printf("i = %d, dG 0->i: [ %f, ", i, sum);
-      for (int j = 1; j < total_bins; j++) {
-        sum += integral_components[i*total_bins+j];
-        printf("%f, ", sum);
-      }
-      printf("]\n");
-      printf("dG 0->1: %f\n", sum);
-      printf("\n");
     }
     printf("\n\n");
   }
