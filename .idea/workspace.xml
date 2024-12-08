@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="BackendCodeEditorMiscSettings">
+    <option name="/Default/Housekeeping/GlobalSettingsUpgraded/IsUpgraded/@EntryValue" value="true" type="bool" />
+  </component>
+  <component name="CMakePresetLoader">{
+  &quot;useNewFormat&quot;: true
+}</component>
+  <component name="CMakeProjectFlavorService">
+    <option name="flavorId" value="CMakePlainProjectFlavor" />
+  </component>
+  <component name="CMakeReloadState">
+    <option name="reloaded" value="true" />
+  </component>
+  <component name="CMakeRunConfigurationManager">
+    <generated>
+      <config projectName="blade" targetName="blade" />
+    </generated>
+  </component>
+  <component name="CMakeSettings">
+    <configurations>
+      <configuration PROFILE_NAME="Debug" ENABLED="true" GENERATION_DIR="buildDebug" CONFIG_NAME="Debug" GENERATION_OPTIONS="-DCMAKE_INSTALL_PREFIX=&quot;src&quot;" />
+      <configuration PROFILE_NAME="Release" ENABLED="true" GENERATION_DIR="build" CONFIG_NAME="Release" GENERATION_OPTIONS="-DCMAKE_INSTALL_PREFIX=&quot;src&quot;" />
+    </configurations>
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="16b98c02-bc3c-4481-a975-a62d8df64671" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/src/msld/msld.cu" beforeDir="false" afterPath="$PROJECT_DIR$/src/msld/msld.cu" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/msld/msld.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/msld/msld.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/run/run.cu" beforeDir="false" afterPath="$PROJECT_DIR$/src/run/run.cu" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/system/potential.cxx" beforeDir="false" afterPath="$PROJECT_DIR$/src/system/potential.cxx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/test/SNase/V66D.inp" beforeDir="false" afterPath="$PROJECT_DIR$/test/SNase/V66D.inp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/test/SNase/default.lmd" beforeDir="false" afterPath="$PROJECT_DIR$/test/SNase/default.lmd" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/test/SNase/default.nrg" beforeDir="false" afterPath="$PROJECT_DIR$/test/SNase/default.nrg" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/test/SNase/default.xtc" beforeDir="false" afterPath="$PROJECT_DIR$/test/SNase/default.xtc" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="ClangdSettings">
+    <option name="formatViaClangd" value="false" />
+  </component>
+  <component name="ExecutionTargetManager" SELECTED_TARGET="CMakeBuildProfile:Debug" />
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="HighlightingSettingsPerFile">
+    <setting file="mock:///dummy.cpp" root0="SKIP_HIGHLIGHTING" />
+    <setting file="mock:///dummy.cpp" root0="SKIP_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/src/msld/msld.cu" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/src/msld/msld.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/src/system/potential.cxx" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/src/system/potential.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/src/system/state.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/src/update/minimize.cu" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file:///usr/include/stdlib.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file:///usr/local/cuda/targets/x86_64-linux/include/cublas_api.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file:///usr/local/cuda/targets/x86_64-linux/include/vector_types.h" root0="FORCE_HIGHLIGHTING" />
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;customColor&quot;: &quot;&quot;,
+  &quot;associatedIndex&quot;: 8
+}</component>
+  <component name="ProjectId" id="2pox0pYqa90v1cOFHaqOFRUSI7y" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;CMake Application.blade.executor&quot;: &quot;Debug&quot;,
+    &quot;CMake Debug.blade.executor&quot;: &quot;Debug&quot;,
+    &quot;RunOnceActivity.RadMigrateCodeStyle&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.cidr.known.project.marker&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.readMode.enableVisualFormatting&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.west.config.association.type.startup.service&quot;: &quot;true&quot;,
+    &quot;cf.first.check.clang-format&quot;: &quot;false&quot;,
+    &quot;cidr.known.project.marker&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;thermodynamicIntegration&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  }
+}</component>
+  <component name="RunManager" selected="CMake Application.blade">
+    <configuration name="blade" type="CMakeListConfigurationType" factoryName="CMakeListConfigurationFactory" temporary="true">
+      <method v="2" />
+    </configuration>
+    <configuration name="blade" type="CMakeRunConfiguration" factoryName="Application" temporary="true" PROGRAM_PARAMS="V66D.inp" REDIRECT_INPUT="false" ELEVATE="false" USE_EXTERNAL_CONSOLE="false" EMULATE_TERMINAL="false" WORKING_DIR="file://$PROJECT_DIR$/test/SNase" PASS_PARENT_ENVS_2="true" PROJECT_NAME="blade" TARGET_NAME="blade" CONFIG_NAME="Debug" RUN_TARGET_PROJECT_NAME="blade" RUN_TARGET_NAME="blade">
+      <envs>
+        <env name="OMP_NUM_THREADS" value="1" />
+      </envs>
+      <method v="2">
+        <option name="com.jetbrains.cidr.execution.CidrBuildBeforeRunTaskProvider$BuildBeforeRunTask" enabled="true" />
+      </method>
+    </configuration>
+    <list>
+      <item itemvalue="CMake Application.blade" />
+      <item itemvalue="CMake Debug.blade" />
+    </list>
+    <recent_temporary>
+      <list>
+        <item itemvalue="CMake Application.blade" />
+        <item itemvalue="CMake Debug.blade" />
+      </list>
+    </recent_temporary>
+  </component>
+  <component name="SpellCheckerSettings" RuntimeDictionaries="0" Folders="0" CustomDictionaries="0" DefaultDictionary="application-level" UseSingleDictionary="true" transferred="true" />
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="16b98c02-bc3c-4481-a975-a62d8df64671" name="Changes" comment="" />
+      <created>1722547295648</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1722547295648</updated>
+      <workItem from="1722547296669" duration="3307000" />
+      <workItem from="1722552742442" duration="3968000" />
+      <workItem from="1722630322436" duration="40000" />
+      <workItem from="1722642114436" duration="1064000" />
+      <workItem from="1722874957095" duration="316000" />
+      <workItem from="1722956227489" duration="81000" />
+      <workItem from="1722957159438" duration="2154000" />
+      <workItem from="1723649072318" duration="20000" />
+      <workItem from="1723738762529" duration="709000" />
+      <workItem from="1723740185645" duration="610000" />
+      <workItem from="1724771741758" duration="890000" />
+      <workItem from="1725617685884" duration="2981000" />
+      <workItem from="1726265477625" duration="984000" />
+      <workItem from="1726266476225" duration="165000" />
+      <workItem from="1726266649569" duration="49578000" />
+      <workItem from="1726362752032" duration="941000" />
+      <workItem from="1726363704702" duration="1000" />
+      <workItem from="1726364045349" duration="150000" />
+      <workItem from="1726364203260" duration="186000" />
+      <workItem from="1726364409557" duration="181000" />
+      <workItem from="1726364669425" duration="60000" />
+      <workItem from="1726364739095" duration="136000" />
+      <workItem from="1726364878705" duration="67000" />
+      <workItem from="1726364949186" duration="3873000" />
+      <workItem from="1726587934828" duration="29183000" />
+      <workItem from="1726722970357" duration="876000" />
+      <workItem from="1726884736767" duration="21132000" />
+      <workItem from="1728663949467" duration="1173000" />
+      <workItem from="1728703567710" duration="291000" />
+      <workItem from="1728704432183" duration="2918000" />
+      <workItem from="1733276416861" duration="2092000" />
+      <workItem from="1733278685337" duration="37064000" />
+      <workItem from="1733446013010" duration="7791000" />
+      <workItem from="1733516188942" duration="22254000" />
+      <workItem from="1733607721708" duration="8427000" />
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="VCPKGProject">
+    <isAutomaticCheckingOnLaunch value="false" />
+    <isAutomaticFoundErrors value="true" />
+    <isAutomaticReloadCMake value="true" />
+  </component>
+</project>

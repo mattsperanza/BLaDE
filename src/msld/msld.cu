@@ -77,8 +77,8 @@ Msld::Msld() {
   // Histogram details
   depth=1;
   bin_edges=NULL;
-  first_half_bins=100;
-  second_half_bins=100;
+  first_half_bins=20;
+  second_half_bins=20;
   total_bins=first_half_bins+second_half_bins;
   accumulate_into=0;
   integral_components=NULL;
@@ -733,7 +733,7 @@ void Msld::initialize(System *system) {
   accumulate_into=0;
   depth=1;
   // Depth 1 storage
-  integral_components=(real**) calloc(nL*total_bins, sizeof(real));
+  integral_components=(real*) calloc(nL*total_bins, sizeof(real));
   cudaMalloc(&integral_components_d, nL*total_bins*sizeof(real));
   cudaMalloc(&step_force_d, nL*sizeof(real));
   cudaMalloc(&step_potential_d, nL*sizeof(real));
@@ -741,6 +741,7 @@ void Msld::initialize(System *system) {
   cudaMalloc(&log_weights_d, nL*total_bins*sizeof(real));
   cudaMalloc(&log_weighted_dUdL_d, nL*total_bins*sizeof(real));
   cudaMalloc(&ensemble_dUdL_d, nL*total_bins*sizeof(real));
+  cudaMalloc(&average_dUdL_d, nL*total_bins*sizeof(real));
   cudaMalloc(&dUdL_min_d, nL*total_bins*sizeof(real));
   cudaMalloc(&d2UdL2_min_d, nL*total_bins*sizeof(real));
   cudaMalloc(&log_weighted_d2UdL2_d, nL*total_bins*sizeof(real));
@@ -768,6 +769,7 @@ void Msld::initialize(System *system) {
   // Depth = n storage
   histogram_counts=(real**) malloc(depth*sizeof(real*));
   ensemble_dUdL=(real**) malloc(depth*sizeof(real));
+  average_dUdL = (real*) malloc(nL*total_bins*sizeof(real));
   ensemble_d2UdL2=(real**) malloc(depth*sizeof(real));
   log_weights=(real**) malloc(depth* sizeof(real*));
   log_weighted_dUdL=(real**) malloc(depth* sizeof(real*));
@@ -906,7 +908,7 @@ __global__ void add_sample_kernel(
   real* lambdas, real* lambdaForce, real* step_force, real* step_potential, real potEnergy,
   real* histogram_counts, int* hist_indices, int total_bins, real* bin_edges, real* offsets,
   real* log_weights, real* log_weighted_dUdL, real* log_weighted_d2UdL2, real* log_weighted_dUdL2,
-  real* ensemble_dUdL, real* ensemble_d2UdL2, real* ensemble_dUdL2, real* variance,
+  real* ensemble_dUdL, real* average_dUdL, real* ensemble_d2UdL2, real* ensemble_dUdL2, real* variance,
   real* dUdL_min, real* d2UdL2_min,
   real* integral_components,
   int blockCount
@@ -921,6 +923,10 @@ __global__ void add_sample_kernel(
     int bin = get_bin_index(lambda, total_bins, bin_edges);
     int hist_bin = bin + hist_indices[i];
     real dUdL = lambdaForce[i+1] - step_force[i]; // Correction to get dU_msld/dL
+    printf("dUdL_msld: %f\n", dUdL);
+    printf("-<dU/dL>: %f\n", step_force[i]);
+    printf("dUdL_msld - <dU/dL>: %f\n", dUdL + step_force[i]);
+    average_dUdL[hist_bin] = (average_dUdL[hist_bin] * histogram_counts[hist_bin] + dUdL) / (histogram_counts[hist_bin] + 1);
     if (dUdL < dUdL_min[hist_bin]) {
       // Calculate <dU/dL> relative to new minimum - always positive
       double shift_dUdL = ensemble_dUdL[hist_bin] - dUdL;
@@ -957,7 +963,7 @@ __global__ void add_sample_kernel(
     // The offset we defined cancels in this calculation
     // log(sum(ensemble_dUdL*exp(U))/sum(exp(U))) = log(ensemble_dUdL*sum(exp(U-offset)))-log(sum(exp(U-offset)))
     ensemble_dUdL[hist_bin] = exp(log_weighted_dUdL[hist_bin]-log_weights[hist_bin]) + dUdL_min[hist_bin];
-    ensemble_d2UdL2[hist_bin] = exp(log_weighted_d2UdL2[hist_bin]-log_weights[hist_bin]);
+    ensemble_d2UdL2[hist_bin] = exp(log_weighted_d2UdL2[hist_bin]-log_weights[hist_bin]) + d2UdL2_min[hist_bin];
     ensemble_dUdL2[hist_bin] = exp(log_weighted_dUdL2[hist_bin]-log_weights[hist_bin]);
     variance[hist_bin] = ensemble_dUdL2[hist_bin] - ensemble_dUdL[hist_bin]*ensemble_dUdL[hist_bin];
     // Integral components
@@ -984,10 +990,52 @@ void Msld::add_sample(System* system){
     s->lambda_fd, s->lambdaForce_d, step_force_d, step_potential_d, s->energy[eepotential],
     histogram_counts_d, hist_index_d, total_bins, bin_edges_d, offsets_d,
     log_weights_d, log_weighted_dUdL_d, log_weighted_d2UdL2_d, log_weighted_dUdL2_d,
-    ensemble_dUdL_d, ensemble_d2UdL2_d, ensemble_dUdL2_d, variance_d,
+    ensemble_dUdL_d, average_dUdL_d, ensemble_d2UdL2_d, ensemble_dUdL2_d, variance_d,
     dUdL_min_d, d2UdL2_min_d,
     integral_components_d,
     blockCount-1);
+
+  // Copy to host and print out info
+  cudaMemcpy(histogram_counts[0], histogram_counts_d, (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
+  cudaMemcpy(average_dUdL, average_dUdL_d, (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
+  cudaMemcpy(ensemble_dUdL[0], ensemble_dUdL_d, (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
+  cudaMemcpy(integral_components, integral_components_d, (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
+  cudaMemcpy(log_weights[0], log_weights_d, (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
+  // Print out lambda values
+  // Print out values as arrays
+  for (int i = 0; i < blockCount-1; i++) {
+    printf("i = %d, lambda: %f \n", i, s->lambda[i+1]);
+    printf("i = %d, histogram: [ %f, ", i, histogram_counts[0][i*total_bins]);
+    for (int j = 1; j < total_bins; j++) {
+      printf("%f, ", histogram_counts[0][i*total_bins+j]);
+    }
+    printf("]\n");
+    printf("i = %d, log_weights: [ %f, ", i, log_weights[0][i*total_bins]);
+    for (int j = 1; j < total_bins; j++) {
+      printf("%f, ", log_weights[0][i*total_bins+j]);
+    }
+    printf("]\n");
+    printf("i = %d, dUdL1: [ %f, ", i, ensemble_dUdL[0][i*total_bins]);
+    for (int j = 1; j < total_bins; j++) {
+      printf("%f, ", average_dUdL[i*total_bins+j]);
+    }
+    printf("]\n");
+    printf("i = %d, dUdL2: [ %f, ", i, ensemble_dUdL[0][i*total_bins]);
+    for (int j = 1; j < total_bins; j++) {
+      printf("%f, ", ensemble_dUdL[0][i*total_bins+j]);
+    }
+    printf("]\n");
+    printf("i = %d, integral: [ %f, ", i, integral_components[i*total_bins]);
+    real sum= 0;
+    for (int j = 1; j < total_bins; j++) {
+      printf("%f, ", integral_components[i*total_bins+j]);
+      sum += integral_components[i*total_bins+j];
+    }
+    printf("]\n");
+    printf("dG: %f\n", sum);
+    printf("\n");
+  }
+  printf("\n\n");
 }
 
 // This is done on GPU just to avoid moving data back and forth

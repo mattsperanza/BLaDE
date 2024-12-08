@@ -77,9 +77,11 @@ class Msld {
   real *histogram_counts_d;
   // <dU/dL> estimations
   real **ensemble_dUdL; // ensemble average dU/dL in each bin
+  real *average_dUdL;
   real *ensemble_dUdL_d; // device pointer
+  real *average_dUdL_d;
   real *dUdL_min_d; // stores lowest value of dUdL sampled in bin so it can shift
-  real **integral_components; // area under the curve for this bin
+  real *integral_components; // area under the curve for this bin
   real *integral_components_d;
   real **ensemble_d2UdL2; // ensemble average d2U/dL2 in each bin
   real *ensemble_d2UdL2_d;
