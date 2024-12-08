@@ -958,6 +958,7 @@ __global__ void add_sample_kernel(
     // The offset we defined cancels in this calculation
     // log(sum(ensemble_dUdL*exp(U))/sum(exp(U))) = log(ensemble_dUdL*sum(exp(U-offset)))-log(sum(exp(U-offset)))
     ensemble_dUdL[hist_bin] = exp(log_weighted_dUdL[hist_bin]-log_weights[hist_bin]) + dUdL_min[hist_bin];
+    ensemble_dUdL[hist_bin] = average_dUdL[hist_bin];
     ensemble_d2UdL2[hist_bin] = exp(log_weighted_d2UdL2[hist_bin]-log_weights[hist_bin]) + d2UdL2_min[hist_bin];
     ensemble_dUdL2[hist_bin] = exp(log_weighted_dUdL2[hist_bin]-log_weights[hist_bin]);
     variance[hist_bin] = ensemble_dUdL2[hist_bin] - ensemble_dUdL[hist_bin]*ensemble_dUdL[hist_bin];
@@ -1012,16 +1013,16 @@ void Msld::add_sample(System* system){
         printf("%f, ", log_weights[0][i*total_bins+j]);
       }
       printf("]\n");
-      printf("i = %d, dUdL1: [ %f, ", i, ensemble_dUdL[0][i*total_bins]);
+      printf("i = %d, Average dUdL: [ %f, ", i, average_dUdL[0][i*total_bins]);
       for (int j = 1; j < total_bins; j++) {
         printf("%f, ", average_dUdL[i*total_bins+j]);
       }
       printf("]\n");
-      printf("i = %d, dUdL2: [ %f, ", i, ensemble_dUdL[0][i*total_bins]);
-      for (int j = 1; j < total_bins; j++) {
-        printf("%f, ", ensemble_dUdL[0][i*total_bins+j]);
-      }
-      printf("]\n");
+      //printf("i = %d, dUdL2: [ %f, ", i, ensemble_dUdL[0][i*total_bins]);
+      //for (int j = 1; j < total_bins; j++) {
+      //  printf("%f, ", ensemble_dUdL[0][i*total_bins+j]);
+      //}
+      //printf("]\n");
       real sum= 0;
       printf("i = %d, dG 0->i: [ %f, ", i, sum);
       for (int j = 1; j < total_bins; j++) {
