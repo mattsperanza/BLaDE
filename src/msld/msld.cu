@@ -1013,7 +1013,7 @@ void Msld::add_sample(System* system){
         printf("%f, ", log_weights[0][i*total_bins+j]);
       }
       printf("]\n");
-      printf("i = %d, Average dUdL: [ %f, ", i, average_dUdL[0][i*total_bins]);
+      printf("i = %d, Average dUdL: [ %f, ", i, average_dUdL[i*total_bins]);
       for (int j = 1; j < total_bins; j++) {
         printf("%f, ", average_dUdL[i*total_bins+j]);
       }
