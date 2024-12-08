@@ -727,8 +727,6 @@ void Msld::initialize(System *system) {
   dGdFl=(real*) calloc(nL, sizeof(real));
   // Histogram details
 
-  first_half_bins=100;
-  second_half_bins=100;
   total_bins=first_half_bins+second_half_bins;
   accumulate_into=0;
   depth=1;
