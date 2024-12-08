@@ -859,7 +859,7 @@ void Msld::calc_thetaForce_from_lambdaForce(cudaStream_t stream,System *system)
 
 
 real beta_cdf_inverse(const real y, const int b){
-  return 1 - static_cast<real>(pow(1 - y, 1 / b));
+  return 1 - pow(1.0 - y, 1.0 / b);
 }
 
 /*
@@ -915,15 +915,12 @@ __global__ void add_sample_kernel(
   if(i<blockCount) {
     // Get U_msld = a log weight in the unbiased potential
     for (int j = 0; j < blockCount-1; j++) {
-      potEnergy -= step_potential[j];
+      //potEnergy -= step_potential[j];
     }
     real lambda = lambdas[i+1];
     int bin = get_bin_index(lambda, total_bins, bin_edges);
     int hist_bin = bin + hist_indices[i];
     real dUdL = lambdaForce[i+1] - step_force[i]; // Correction to get dU_msld/dL
-    printf("dUdL_msld: %f\n", dUdL);
-    printf("-<dU/dL>: %f\n", step_force[i]);
-    printf("dUdL_msld - <dU/dL>: %f\n", dUdL + step_force[i]);
     average_dUdL[hist_bin] = (average_dUdL[hist_bin] * histogram_counts[hist_bin] + dUdL) / (histogram_counts[hist_bin] + 1);
     if (dUdL < dUdL_min[hist_bin]) {
       // Calculate <dU/dL> relative to new minimum - always positive
@@ -1001,39 +998,42 @@ void Msld::add_sample(System* system){
   cudaMemcpy(log_weights[0], log_weights_d, (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
   // Print out lambda values
   // Print out values as arrays
-  for (int i = 0; i < blockCount-1; i++) {
-    printf("i = %d, lambda: %f \n", i, s->lambda[i+1]);
-    printf("i = %d, histogram: [ %f, ", i, histogram_counts[0][i*total_bins]);
-    for (int j = 1; j < total_bins; j++) {
-      printf("%f, ", histogram_counts[0][i*total_bins+j]);
+  if (system->run->step % 100 == 0) {
+    printf("Step: %d\n", system->run->step);
+    for (int i = 0; i < blockCount-1; i++) {
+      printf("i = %d, lambda: %f \n", i, s->lambda[i+1]);
+      printf("i = %d, histogram: [ %f, ", i, histogram_counts[0][i*total_bins]);
+      for (int j = 1; j < total_bins; j++) {
+        printf("%f, ", histogram_counts[0][i*total_bins+j]);
+      }
+      printf("]\n");
+      printf("i = %d, log_weights: [ %f, ", i, log_weights[0][i*total_bins]);
+      for (int j = 1; j < total_bins; j++) {
+        printf("%f, ", log_weights[0][i*total_bins+j]);
+      }
+      printf("]\n");
+      printf("i = %d, dUdL1: [ %f, ", i, ensemble_dUdL[0][i*total_bins]);
+      for (int j = 1; j < total_bins; j++) {
+        printf("%f, ", average_dUdL[i*total_bins+j]);
+      }
+      printf("]\n");
+      printf("i = %d, dUdL2: [ %f, ", i, ensemble_dUdL[0][i*total_bins]);
+      for (int j = 1; j < total_bins; j++) {
+        printf("%f, ", ensemble_dUdL[0][i*total_bins+j]);
+      }
+      printf("]\n");
+      real sum= 0;
+      printf("i = %d, dG 0->i: [ %f, ", i, sum);
+      for (int j = 1; j < total_bins; j++) {
+        sum += integral_components[i*total_bins+j];
+        printf("%f, ", sum);
+      }
+      printf("]\n");
+      printf("dG 0->1: %f\n", sum);
+      printf("\n");
     }
-    printf("]\n");
-    printf("i = %d, log_weights: [ %f, ", i, log_weights[0][i*total_bins]);
-    for (int j = 1; j < total_bins; j++) {
-      printf("%f, ", log_weights[0][i*total_bins+j]);
-    }
-    printf("]\n");
-    printf("i = %d, dUdL1: [ %f, ", i, ensemble_dUdL[0][i*total_bins]);
-    for (int j = 1; j < total_bins; j++) {
-      printf("%f, ", average_dUdL[i*total_bins+j]);
-    }
-    printf("]\n");
-    printf("i = %d, dUdL2: [ %f, ", i, ensemble_dUdL[0][i*total_bins]);
-    for (int j = 1; j < total_bins; j++) {
-      printf("%f, ", ensemble_dUdL[0][i*total_bins+j]);
-    }
-    printf("]\n");
-    printf("i = %d, integral: [ %f, ", i, integral_components[i*total_bins]);
-    real sum= 0;
-    for (int j = 1; j < total_bins; j++) {
-      printf("%f, ", integral_components[i*total_bins+j]);
-      sum += integral_components[i*total_bins+j];
-    }
-    printf("]\n");
-    printf("dG: %f\n", sum);
-    printf("\n");
+    printf("\n\n");
   }
-  printf("\n\n");
 }
 
 // This is done on GPU just to avoid moving data back and forth

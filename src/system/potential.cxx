@@ -1646,7 +1646,6 @@ void Potential::calc_force(int step,System *system)
     system->state->recv_energy(); // TODO: Access without recv call
     system->state->recv_lambda();
     system->state->recv_lambda_force(false);
-    printf("Step: %d\n", step);
     system->msld->add_sample(system);
   }
   // cudaEventRecord(r->forceComplete,r->updateStream);
