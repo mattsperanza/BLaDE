@@ -999,7 +999,7 @@ void Msld::add_sample(System* system){
   cudaMemcpy(log_weights[0], log_weights_d, (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
   // Print out lambda values
   // Print out values as arrays
-  if (system->run->step % 100 == 0) {
+  if (system->run->step % 10000 == 0) {
     printf("Step: %d\n", system->run->step);
     for (int i = 0; i < blockCount-1; i++) {
       printf("i = %d, lambda: %f \n", i, s->lambda[i+1]);
