@@ -56,51 +56,48 @@ class Msld {
   struct VariableBias *variableBias_d;
 
   // Histogram variables
-  real *dGdLambda;
-  real *dGdFl;
-  // Histogram details
-  bool histogram_switch = true;
+  bool apply_histogram = true;
   int sampleFrequency = 10;
-  int depth; // number of histograms
+  int depth=2; // number of histograms to keep
+  int first_half_bins=20; // number of bins assigned to the first half of the lambda range
+  int second_half_bins=20;
+  int total_bins; // total number of bins
+  int accumulate_into=0; // which histogram index to accumulate into right now
+  int accumulate_length=-1; // how long to accumulate before combining data
+  int sample_from=0;
+  real *bin_edges; // edges of the bins 0-1, redefined for every site
+  real *bin_edges_d;
+  real lambda_std; // if dropping gaussians or some other kernel
+  real dUdL_std;
+  // Helper variables
   int* hist_index; // index to start of this lambda's histogram
   int* hist_index_d;
   real* step_force_d; // Force added on this step for each lambda, to correct force later
-  real* step_potential_d; // same as above
-  real *bin_edges; // edges of the bins 0-1
-  real *bin_edges_d;
-  int first_half_bins; // number of bins assigned to the first half of the lambda range
-  int second_half_bins;
-  int total_bins; // total number of bins
-  int accumulate_into; // which histogram index to accumulate into
-  // Longer TI & OST variables of length nLambda*nBins
+  real* step_potential_d; // same as above, only for potential
+  //// Long, flat arrays of length nLambda*nBins
   real **histogram_counts; // number of occurrences in each bin
-  real *histogram_counts_d;
-  // <dU/dL> estimations
+  real **histogram_counts_d;
+  // TI-<dU/dL> estimation stuff
+  int nFull = 30; // number of samples required in a bin to be 100% active, otherwise linear scaling
   real **ensemble_dUdL; // ensemble average dU/dL in each bin
-  real *average_dUdL;
-  real *ensemble_dUdL_d; // device pointer
-  real *average_dUdL_d;
-  real *dUdL_min_d; // stores lowest value of dUdL sampled in bin so it can shift
-  real *integral_components; // area under the curve for this bin
-  real *integral_components_d;
-  real **ensemble_d2UdL2; // ensemble average d2U/dL2 in each bin
-  real *ensemble_d2UdL2_d;
-  real *d2UdL2_min_d;
-  real *offsets; // stores largest value of -beta*(U(x,l)-U_bias(x,l)) to save exp numerics
-  real *offsets_d;
-  real **log_weights; // sum of boltzmann log_weights = exp(-beta*(U(x,l)-U_bias(x,l)))
-  real *log_weights_d;
-  real **log_weighted_dUdL; // sum of boltzmann weighted dU/dL in each bin
-  real *log_weighted_dUdL_d;
-  real **log_weighted_d2UdL2; // optimize lambda profile with 2nd derivative information
-  real *log_weighted_d2UdL2_d;
+  real **average_dUdL;
+  real **ensemble_dUdL_d; // device pointer
+  real **average_dUdL_d;
+  real **integral_components; // area under the curve for this bin
+  real **integral_components_d;
+  real **offsets; // stores largest value of bias to save exp numerics
+  real **offsets_d;
+  real **weights; // sum of boltzmann weights = exp(beta*bias)
+  real **weights_d;
+  real **weighted_dUdL; // sum of boltzmann weighted dU/dL in each bin
+  real **weighted_dUdL_d;
   // variance = E[X^2] - E[X]^2
   real **ensemble_dUdL2; // ensemble average (dU/dL)^2 in each bin
-  real *ensemble_dUdL2_d;
+  real **ensemble_dUdL2_d;
   real **variance; // variance of dU/dL in each bin
-  real *variance_d;
-  real **log_weighted_dUdL2; // sum of weighted ensemble_dUdL squares
-  real *log_weighted_dUdL2_d;
+  real **variance_d;
+  real **weighted_dUdL2; // sum of weighted ensemble_dUdL squares
+  real **weighted_dUdL2_d;
 
   int thetaCollBiasCount;
   real *kThetaCollBias;
@@ -164,7 +161,7 @@ class Msld {
   void getforce_chargeRestraints(System *system,bool calcEnergy);
 
   // Histogram estimation functions
-  static void assign_edges(int num_lambdas, int first, int second, real *edges);
+  static void assign_edges(int num_sites, const int *blocksPerSite, int first_half_bins, int second_half_bins, real *bin_edges);
   void add_sample(System *system);
   void getforce_histogram(System *system, bool calcEnergy);
 };

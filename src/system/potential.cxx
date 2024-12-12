@@ -1581,7 +1581,7 @@ void Potential::calc_force(int step,System *system)
 
   // TODO: Calc only dUdL_MSLD to find position (l, dUdl)
   // TODO: Get 2D dG components for d2UdXdL & ensemble_d2UdL2
-  if (system->id == helper && system->msld->histogram_switch) {
+  if (system->id == helper && system->msld->apply_histogram) {
     cudaStreamWaitEvent(r->biaspotStream, r->forceBegin, 0);
     system->msld->getforce_histogram(system, calcEnergy);
   }
@@ -1642,7 +1642,7 @@ void Potential::calc_force(int step,System *system)
 
   // TODO: weighted using energy that includes G(l, dUdl)
   // TODO: Decide to reset or shift histogram
-  if(step != 0 && step % system->msld->sampleFrequency == 0 && system->msld->histogram_switch) {
+  if(step != 0 && step % system->msld->sampleFrequency == 0 && system->msld->apply_histogram) {
     system->state->recv_energy(); // TODO: Access without recv call
     system->state->recv_lambda();
     system->state->recv_lambda_force(false);
