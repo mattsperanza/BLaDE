@@ -62,9 +62,9 @@ class Msld {
   int first_half_bins=20; // number of bins assigned to the first half of the lambda range
   int second_half_bins=20;
   int total_bins; // total number of bins
-  int accumulate_into=0; // which histogram index to accumulate into right now
-  int accumulate_length=-1; // how long to accumulate before combining data
   int sample_from=0;
+  int accumulate_into=1; // which histogram index to accumulate into right now
+  int accumulate_length=5000; // how long to accumulate before combining data
   real *bin_edges; // edges of the bins 0-1, redefined for every site
   real *bin_edges_d;
   real lambda_std; // if dropping gaussians or some other kernel
