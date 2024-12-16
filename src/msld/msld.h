@@ -62,9 +62,10 @@ class Msld {
   int first_half_bins=20; // number of bins assigned to the first half of the lambda range
   int second_half_bins=20;
   int total_bins; // total number of bins
+  //TODO: set up system for swapping
   int sample_from=0;
-  int accumulate_into=1; // which histogram index to accumulate into right now
-  int accumulate_length=5000; // how long to accumulate before combining data
+  int accumulate_into=0; // which histogram index to accumulate into right now
+  int accumulate_length=5000000; // how long to accumulate before combining data
   real *bin_edges; // edges of the bins 0-1, redefined for every site
   real *bin_edges_d;
   real lambda_std; // if dropping gaussians or some other kernel
@@ -74,11 +75,14 @@ class Msld {
   int* hist_index_d;
   real* step_force_d; // Force added on this step for each lambda, to correct force later
   real* step_potential_d; // same as above, only for potential
+  real** partition_function; // sum of all weights for a given histogram = <exp(bias)>
+  real** partition_function_d;
+  real** partition_offset_d;
   //// Long, flat arrays of length nLambda*nBins
   real **histogram_counts; // number of occurrences in each bin
   real **histogram_counts_d;
   // TI-<dU/dL> estimation stuff
-  int nFull = 30; // number of samples required in a bin to be 100% active, otherwise linear scaling
+  int nFull = 0; // number of samples required in a bin to be 100% active, otherwise linear scaling
   real **ensemble_dUdL; // ensemble average dU/dL in each bin
   real **average_dUdL;
   real **ensemble_dUdL_d; // device pointer
@@ -89,8 +93,14 @@ class Msld {
   real **offsets_d;
   real **weights; // sum of boltzmann weights = exp(beta*bias)
   real **weights_d;
+  real **probability_distribution; // P(lambda) = <delta(lambda - lambda_i)exp(bias)> / <exp(bias)>
+  real **probability_distribution_d;
   real **weighted_dUdL; // sum of boltzmann weighted dU/dL in each bin
   real **weighted_dUdL_d;
+  real **dPdL;
+  real **dPdL_d; // dP/dL
+  real **weighted_dUbias_dL_d; // sum of boltzmann weighted dU_bias/dL in each bin
+  real **weighted_partition_function_d; // sum of weighted dU_bias/dL in a histogram
   // variance = E[X^2] - E[X]^2
   real **ensemble_dUdL2; // ensemble average (dU/dL)^2 in each bin
   real **ensemble_dUdL2_d;
@@ -98,6 +108,14 @@ class Msld {
   real **variance_d;
   real **weighted_dUdL2; // sum of weighted ensemble_dUdL squares
   real **weighted_dUdL2_d;
+  // OPES
+  real **opes_potential; // V(lambda) = (1-1/gamma)/beta * log(P(lambda) + eps)
+  real **opes_potential_d;
+  real **opes_force;
+  real **opes_force_d;
+  real opes_barrier; // barrier for opes to overcome - defines gamma and esp parameters
+  real opes_gamma;
+  real opes_eps;
 
   int thetaCollBiasCount;
   real *kThetaCollBias;

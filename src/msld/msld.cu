@@ -733,6 +733,9 @@ void Msld::initialize(System *system) {
   cudaMemcpy(hist_index_d, hist_index, nL*sizeof(int), cudaMemcpyHostToDevice);
   cudaMalloc(&step_force_d, nL*sizeof(real));
   cudaMalloc(&step_potential_d, nL*sizeof(real));
+  opes_barrier = 30;
+  opes_gamma = 1.0/(kB*298.15) * opes_barrier;
+  opes_eps = exp(-opes_barrier/(kB*298.15*(1-1/opes_gamma)));
 
   // Depth = n storage
   offsets = (real**) malloc(depth*sizeof(real*));
@@ -755,6 +758,19 @@ void Msld::initialize(System *system) {
   variance_d = (real**) malloc(depth*sizeof(real*));
   weighted_dUdL2= (real**) malloc(depth*sizeof(real*));
   weighted_dUdL2_d = (real**) malloc(depth*sizeof(real*));
+  partition_function = (real**) malloc(depth*sizeof(real*));
+  partition_function_d = (real**) malloc(depth*sizeof(real*));
+  partition_offset_d = (real**) malloc(depth*sizeof(real*));
+  probability_distribution = (real**) malloc(depth*sizeof(real*));
+  probability_distribution_d = (real**) malloc(depth*sizeof(real*));
+  dPdL = (real**) malloc(depth*sizeof(real*));
+  dPdL_d = (real**) malloc(depth*sizeof(real*));
+  opes_potential = (real**) malloc(depth*sizeof(real));
+  opes_potential_d = (real**) malloc(depth*sizeof(real));
+  opes_force = (real**) malloc(depth*sizeof(real));
+  opes_force_d = (real**) malloc(depth*sizeof(real*));
+  weighted_dUbias_dL_d = (real**) malloc(depth*sizeof(real*));
+  weighted_partition_function_d = (real**) malloc(depth*sizeof(real*));
   for(int i = 0; i < depth; i++) { // these are really long for GPU sake, otherwise would be separated into different classes
     offsets[i] = (real*) malloc(nL*total_bins*sizeof(real));
     cudaMalloc(&offsets_d[i], nL*total_bins*sizeof(real));
@@ -776,6 +792,19 @@ void Msld::initialize(System *system) {
     cudaMalloc(&ensemble_dUdL2_d[i], nL*total_bins*sizeof(real));
     variance[i]=(real*) malloc(nL*total_bins*sizeof(real));
     cudaMalloc(&variance_d[i], nL*total_bins*sizeof(real));
+    partition_function[i] = (real*) malloc(nL*sizeof(real));
+    cudaMalloc(&partition_function_d[i], nL*sizeof(real));
+    probability_distribution[i] = (real*) malloc(nL*total_bins*sizeof(real));
+    cudaMalloc(&probability_distribution_d[i], nL*total_bins*sizeof(real));
+    cudaMalloc(&partition_offset_d[i], nL*sizeof(real));
+    dPdL[i] = (real*) malloc(nL*total_bins*sizeof(real));
+    cudaMalloc(&dPdL_d[i], nL*total_bins*sizeof(real));
+    opes_potential[i] = (real*) malloc(nL*total_bins*sizeof(real));
+    cudaMalloc(&opes_potential_d[i], nL*total_bins*sizeof(real));
+    opes_force[i] = (real*) malloc(nL*total_bins*sizeof(real));
+    cudaMalloc(&opes_force_d[i], nL*total_bins*sizeof(real));
+    cudaMalloc(&weighted_dUbias_dL_d[i], nL*total_bins*sizeof(real));
+    cudaMalloc(&weighted_partition_function_d[i], nL*sizeof(real));
   }
 }
 
@@ -907,7 +936,9 @@ __global__ void add_sample_kernel(
   real kT, int nFull, int* lambdaSites,
   real* lambdas, real* lambdaForce, real* step_force, real* step_potential, real potEnergy,
   real* histogram_counts, int* hist_indices, int total_bins, real* bin_edges, real* offsets,
-  real* weights, real* weighted_dU_dL, real* weighted_dUdL2,
+  real* weights, real* weighted_dU_dL, real* weighted_dUbias_dL, real* weighted_dUdL2,
+  real* partition_function, real* weighted_partition, real* partition_offset,
+  real* probability, real* dPdL, real *opes_potential, real *opes_force, real opes_gamma, real opes_eps,
   real* ensemble_dUdL, real* average_dUdL, real* ensemble_dUdL2, real* variance,
   real* integral_components,
   int blockCount
@@ -932,10 +963,12 @@ __global__ void add_sample_kernel(
       offsets[hist_bin] = bias;
       weights[hist_bin] *= correction;
       weighted_dU_dL[hist_bin] *= correction;
+      weighted_dUbias_dL[hist_bin] *= correction;
       weighted_dUdL2[hist_bin] *= correction;
     }
     weights[hist_bin] += exp(bias - offsets[hist_bin]);
     weighted_dU_dL[hist_bin] += dUdL * exp(bias - offsets[hist_bin]);
+    weighted_dUbias_dL[hist_bin] += step_force[i] * exp(bias - offsets[hist_bin]);
     weighted_dUdL2[hist_bin] += dUdL*dUdL * exp(bias - offsets[hist_bin]);
     // The offset we defined cancels in this calculation - (exp(offset)*exp(U-offset))/(exp(offset)*sum(exp(U-offset)))
     ensemble_dUdL[hist_bin] = weighted_dU_dL[hist_bin] / weights[hist_bin];
@@ -950,8 +983,27 @@ __global__ void add_sample_kernel(
     real upper_dUdL = ensemble_dUdL[id];
     real width = bin_edges[bin+1] - bin_edges[bin];
     integral_components[hist_bin] = (lower_dUdL + upper_dUdL)/2 * width;
+    // Partition function
+    if (bias > partition_offset[i]) {
+      real correction = exp(partition_offset[i] - bias);
+      partition_function[i] *= correction;
+      weighted_partition[i] *= correction;
+      partition_offset[i] = bias;
+    }
+    partition_function[i] += exp(bias - partition_offset[i]);
+    // Probability distribution & opes
+    weighted_partition[i] += step_force[i] * exp(bias - partition_offset[i]);
+    // TODO: Finish this part so that dPdL gives correct value
+    for (int j = i*total_bins; j < i*total_bins+total_bins; j++) {
+      probability[j] = exp(offsets[j]-partition_offset[i]) * weights[j] / partition_function[i];
+      opes_potential[j] = (1-1/opes_gamma)/kT * log(probability[j] + opes_eps);
+      dPdL[j] = (weighted_dUbias_dL[j] * partition_function[i] -
+        weights[j] * weighted_partition[i]) / pow(partition_function[i], 2);
+      // OPES potential and force
+      opes_force[j] = -(opes_potential[j] - opes_potential[j+1]) / width;
+    }
   }
-};
+}
 
 __global__ void combine_histogram_kernel(
   int accumulate_into, int sample_from,
@@ -961,6 +1013,9 @@ __global__ void combine_histogram_kernel(
   real* average_dUdL, real* average_dUdL_into,
   real* offsets, real* offsets_into,
   real* weights, real* weights_into,
+  real* partition_function, real* partition_function_into,
+  real* partition_offset, real* partition_offset_into,
+  real* probability_distribution, real* probability_distribution_into,
   real* weighted_dUdL, real* weighted_dUdL_into,
   real* weighted_dUdL2, real* weighted_dUdL2_into,
   real* ensemble_dUdL, real* ensemble_dUdL_into,
@@ -969,6 +1024,8 @@ __global__ void combine_histogram_kernel(
   real* integral_components, real* integral_components_into
   ) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
+  int nL = every_bin / bin_per_histogram;
+  // Combine histograms (only if has been sampled)
   if (i<every_bin && histogram_counts_into[i] + histogram_counts[i] > 0) {
     // Averages
     average_dUdL[i] = average_dUdL[i] * histogram_counts[i] + average_dUdL_into[i] * histogram_counts_into[i];
@@ -1001,7 +1058,26 @@ __global__ void combine_histogram_kernel(
     // Recalculate variance
     variance[i] = ensemble_dUdL2[i] - pow(ensemble_dUdL[i], 2);
     variance_into[i] = 0;
-    __syncthreads(); // wait for all threads to finish
+  }
+  // Correct partition functions (every histogram)
+  if (i < nL && partition_offset_into[i] > partition_offset[i]) {
+    real correction = expf(partition_offset[i] - partition_offset_into[i]);
+    partition_function[i] = correction * partition_function[i] + partition_function_into[i];
+    partition_offset[i] = partition_offset_into[i];
+    partition_function_into[i] = 0;
+    partition_offset_into[i] = 0;
+  } else if (i < nL) {
+    real correction = expf(partition_offset_into[i] - partition_offset[i]);
+    partition_function[i] += correction * partition_function_into[i];
+    partition_function_into[i] = 0;
+    partition_offset_into[i] = 0;
+  }
+  __syncthreads(); // wait for all threads to finish
+  if (i<every_bin) {
+    // Recalculate probability distribution
+    int lambdaSite = i / bin_per_histogram;
+    probability_distribution[i] = exp(offsets[i]-partition_offset[lambdaSite]) * weights[i] / partition_function[lambdaSite];
+    probability_distribution_into[i] = 0;
     // Recalculate integral components
     real lower_dUdL = ensemble_dUdL[i];
     int id = i >= bin_per_histogram ? i : i + 1;
@@ -1012,6 +1088,7 @@ __global__ void combine_histogram_kernel(
   }
 }
 
+//TODO: test everything with multiple sites - sofar only tested with T4L
 void Msld::add_sample(System* system){
   cudaStream_t stream = 0;
   Run *r = system->run;
@@ -1027,7 +1104,10 @@ void Msld::add_sample(System* system){
     system->state->leapParms1->kT, system->msld->nFull, lambdaSite_d,
     s->lambda_fd, s->lambdaForce_d, step_force_d, step_potential_d, s->energy[eepotential],
     histogram_counts_d[id], hist_index_d, total_bins, bin_edges_d, offsets_d[id],
-    weights_d[id], weighted_dUdL_d[id], weighted_dUdL2_d[id],
+    weights_d[id], weighted_dUdL_d[id], weighted_dUbias_dL_d[id], weighted_dUdL2_d[id],
+    partition_function_d[id], weighted_partition_function_d[id], partition_offset_d[id],
+    probability_distribution_d[id], dPdL_d[id],
+    opes_potential_d[id], opes_force_d[id], opes_gamma, opes_eps,
     ensemble_dUdL_d[id], average_dUdL_d[id], ensemble_dUdL2_d[id], variance_d[id],
     integral_components_d[id],
     blockCount-1);
@@ -1046,6 +1126,9 @@ void Msld::add_sample(System* system){
       average_dUdL_d[from], average_dUdL_d[into],
       offsets_d[from], offsets_d[into],
       weights_d[from], weights_d[into],
+      partition_function_d[from], partition_function_d[into],
+      partition_offset_d[from], partition_offset_d[into],
+      probability_distribution_d[from], probability_distribution_d[into],
       weighted_dUdL_d[from], weighted_dUdL_d[into],
       weighted_dUdL2_d[from], weighted_dUdL2_d[into],
       ensemble_dUdL_d[from], ensemble_dUdL_d[into],
@@ -1057,24 +1140,17 @@ void Msld::add_sample(System* system){
 
   // Copy to host and print out info
   cudaMemcpy(histogram_counts[0], histogram_counts_d[0], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(histogram_counts[1], histogram_counts_d[1], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(average_dUdL[0], average_dUdL_d[0], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(average_dUdL[1], average_dUdL_d[1], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
   cudaMemcpy(ensemble_dUdL[0], ensemble_dUdL_d[0], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(ensemble_dUdL[1], ensemble_dUdL_d[1], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
   cudaMemcpy(integral_components[0], integral_components_d[0], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(integral_components[1], integral_components_d[1], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
   cudaMemcpy(weights[0], weights_d[0], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(weights[1], weights_d[1], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(weighted_dUdL[0], weighted_dUdL_d[0], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(weighted_dUdL[1], weighted_dUdL_d[1], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(weighted_dUdL2[0], weighted_dUdL2_d[0], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(weighted_dUdL2[1], weighted_dUdL2_d[1], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(variance[0], variance_d[0], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(variance[1], variance_d[1], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
+  cudaMemcpy(partition_function[0], partition_function_d[0], (blockCount-1)*sizeof(real), cudaMemcpyDeviceToHost);
+  cudaMemcpy(probability_distribution[0], probability_distribution_d[0], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
+  cudaMemcpy(dPdL[0], dPdL_d[0], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
+  cudaMemcpy(opes_potential[0], opes_potential_d[0], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
+  cudaMemcpy(opes_force[0], opes_force_d[0], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
   // Print out lambda values
   // Print out values as arrays
-  if (system->run->step % 1000 == 0){
+  if (system->run->step % 10000 == 0){
     int count = 0;
     printf("Step: %ld\n", system->run->step);
     for (int i = 0; i < siteCount-1; i++) {
@@ -1083,14 +1159,37 @@ void Msld::add_sample(System* system){
         printf("Site %d, Sub %d\n", i, k);
         printf("Lambda: %f \n", s->lambda[count+1]);
         printf("Felt dUdL: %f\n", s->lambdaForce[count+1]);
+        printf("PDF: [ %f ", probability_distribution[0][count*total_bins]);
+        real cdf = probability_distribution[0][count*total_bins];
+        for (int j = 1; j < total_bins; j++) {
+          printf("%f, ", probability_distribution[0][count*total_bins+j]);
+          cdf += probability_distribution[0][count*total_bins+j];
+          //printf("%f, ", cdf);
+        }
+        printf("]\n");
+        if (abs(cdf - 1.0) > 1e-4 && abs(cdf) > 1e-4){
+          printf("Prob Sum: %f\n", cdf);
+          printf("exiting...");
+          exit(1);
+        }
+        printf("dP/dL: [ %f, ", dPdL[0][count*total_bins]);
+        for (int j = 1; j < total_bins; j++) {
+          printf("%f, ", dPdL[0][count*total_bins+j]);
+        }
+        printf("]\n");
+        printf("OPES: [ %f, ", opes_potential[0][count*total_bins]);
+        for (int j = 1; j < total_bins; j++) {
+          printf("%f, ", opes_potential[0][count*total_bins+j]);
+        }
+        printf("]\n");
+        printf("OPES Force: [ %f, ", opes_force[0][count*total_bins]);
+        for (int j = 1; j < total_bins; j++) {
+          printf("%f, ", opes_force[0][count*total_bins+j]);
+        }
+        printf("]\n");
         printf("Histogram: [ %f, ", histogram_counts[0][count*total_bins]);
         for (int j = 1; j < total_bins; j++) {
           printf("%f, ", histogram_counts[0][count*total_bins+j]);
-        }
-        printf("]\n");
-        printf("Histogram: [ %f, ", histogram_counts[1][count*total_bins]);
-        for (int j = 1; j < total_bins; j++) {
-          printf("%f, ", histogram_counts[1][count*total_bins+j]);
         }
         printf("]\n");
         printf("Weights: [ %f, ", weights[0][count*total_bins]);
@@ -1098,61 +1197,11 @@ void Msld::add_sample(System* system){
           printf("%f, ", weights[0][count*total_bins+j]);
         }
         printf("]\n");
-        printf("Weights: [ %f, ", weights[1][count*total_bins]);
-        for (int j = 1; j < total_bins; j++) {
-          printf("%f, ", weights[1][count*total_bins+j]);
-        }
-        printf("]\n");
-        printf("Weighted dUdL: [ %f, ", weighted_dUdL[0][count*total_bins]);
-        for (int j = 1; j < total_bins; j++) {
-          printf("%f, ", weighted_dUdL[0][count*total_bins+j]);
-        }
-        printf("]\n");
-        printf("Weighted dUdL: [ %f, ", weighted_dUdL[1][count*total_bins]);
-        for (int j = 1; j < total_bins; j++) {
-          printf("%f, ", weighted_dUdL[1][count*total_bins+j]);
-        }
-        printf("]\n");
-        printf("Weighted dUdL^2: [ %f, ", weighted_dUdL2[0][count*total_bins]);
-        for (int j = 1; j < total_bins; j++) {
-          printf("%f, ", weighted_dUdL2[0][count*total_bins+j]);
-        }
-        printf("]\n");
-        printf("Weighted dUdL^2: [ %f, ", weighted_dUdL2[1][count*total_bins]);
-        for (int j = 1; j < total_bins; j++) {
-          printf("%f, ", weighted_dUdL2[1][count*total_bins+j]);
-        }
-        printf("]\n");
-        printf("dUdL1: [ %f, ", average_dUdL[0][count*total_bins]);
-        for (int j = 1; j < total_bins; j++) {
-          printf("%f, ", average_dUdL[0][count*total_bins+j]);
-        }
-        printf("]\n");
-        printf("dUdL1: [ %f, ", average_dUdL[1][count*total_bins]);
-        for (int j = 1; j < total_bins; j++) {
-          printf("%f, ", average_dUdL[1][count*total_bins+j]);
-        }
-        printf("]\n");
-        printf("dUdL2: [ %f, ", ensemble_dUdL[0][count*total_bins]);
+        printf("<dU/dL>: [ %f, ", ensemble_dUdL[0][count*total_bins]);
         for (int j = 1; j < total_bins; j++) {
           printf("%f, ", ensemble_dUdL[0][count*total_bins+j]);
         }
         printf("]\n");
-        printf("dUdL2: [ %f, ", ensemble_dUdL[1][count*total_bins]);
-        for (int j = 1; j < total_bins; j++) {
-          printf("%f, ", ensemble_dUdL[1][count*total_bins+j]);
-        }
-        printf("]\n");
-        printf("std: [ %f, ", variance[0][count*total_bins]);
-        for (int j = 1; j < total_bins; j++) {
-          printf("%f, ", sqrt(variance[0][count*total_bins+j]));
-        }
-        printf(" ]\n");
-        printf("std: [ %f, ", variance[1][count*total_bins]);
-        for (int j = 1; j < total_bins; j++) {
-          printf("%f, ", variance[1][count*total_bins+j]);
-        }
-        printf(" ]\n");
         real sum= 0;
         printf("dG 0->i: [ %f, ", sum); // This is our FES
         for (int j = 1; j < total_bins; j++) {
@@ -1164,14 +1213,6 @@ void Msld::add_sample(System* system){
           relative = sum;
         }
         sum -= relative;
-        printf("dG 0->1: %f\n", sum);
-        sum = 0;
-        printf("dG 0->i: [ %f, ", sum); // This is our FES
-        for (int j = 1; j < total_bins; j++) {
-          sum += integral_components[1][count*total_bins+j];
-          printf("%f, ", sum);
-        }
-        printf("]\n");
         printf("dG 0->1: %f\n\n", sum);
         count++;
       }
@@ -1184,7 +1225,9 @@ void Msld::add_sample(System* system){
 __global__ void getforce_histogram_kernel(
   real* lambdas, int* lambdaSites, real* lambdaForce, real* step_force, real* step_potential,
   int* histIndices, int total_bins, real* bin_edges,
-  real* ensemble_dUdL, real* integral_components, real_e *energy,
+  real* ensemble_dUdL, real* integral_components,
+  real* opes_potential, real* opes_force,
+  real_e *energy,
   int blockCount)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -1192,7 +1235,7 @@ __global__ void getforce_histogram_kernel(
   real lEnergy=0;
 
   real dUdL_abf = 0;
-  real dUdL_meta = 0;
+  real dUdL_opes = 0;
   if (i < blockCount) {
     real lambda = lambdas[i+1];
     // This value is in range for bins, +1 is in range for edges, but + 2 may be out of range
@@ -1206,21 +1249,25 @@ __global__ void getforce_histogram_kernel(
     real dUdL_high = ensemble_dUdL[id];
     real interp = (lambda - low_edge) / (high_edge - low_edge);
     dUdL_abf = (1-interp) * dUdL_low + interp * dUdL_high;
-    if (energy) { // TODO: Do this with a thread reduction, but I don't know how
+    dUdL_abf = -dUdL_abf;
+    // OPES/Meta
+    //dUdL_opes = opes_force[histBin];
+    real dUdL = dUdL_abf + dUdL_opes;
+    atomicAdd(&lambdaForce[i+1], dUdL);
+    step_force[i] = dUdL;
+    if (energy) {
+      // TODO: Move this into sample kernel
       for (int j = 0; j < bin-1; j++) { // integrate up to the bin prior to this one
         lEnergy += integral_components[j+histIndices[i]];
       }
-      lEnergy += (dUdL_low + dUdL_abf) / 2 * (lambda - low_edge); // TODO: this line only works for trapezoidal rule
-      // We add -<dU/dL> to the force
-      lEnergy = -lEnergy;
+      lEnergy += (dUdL_low + dUdL_abf) / 2 * (lambda - low_edge);
+      lEnergy = -lEnergy; // We add -<dU/dL> to the force
+      //lEnergy += opes_potential[histBin];
       step_potential[i] = lEnergy;
     }
-    real dUdL = dUdL_abf + dUdL_meta;
-    atomicAdd(&lambdaForce[i+1], -dUdL);
-    step_force[i] = -dUdL;
   }
 
-  if (energy) {
+  if (energy) { // not sure this is nessisary
     __syncthreads();
     real_sum_reduce(lEnergy, sEnergy, energy);
   }
@@ -1246,7 +1293,9 @@ void Msld::getforce_histogram(System *system, bool calcEnergy) {
   getforce_histogram_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->lambda_fd, lambdaSite_d, s->lambdaForce_d, step_force_d, step_potential_d,
     hist_index_d, total_bins, bin_edges_d,
-    ensemble_dUdL_d[id], integral_components_d[id], pEnergy, blockCount-1);
+    ensemble_dUdL_d[id], integral_components_d[id],
+    opes_potential_d[id], opes_force_d[id],
+    pEnergy, blockCount-1);
 }
 
 
