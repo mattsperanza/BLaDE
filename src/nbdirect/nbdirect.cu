@@ -231,24 +231,46 @@ __global__ void getforce_nbdirect_kernel(
 
             if (r<cutoffs.rCut) {
               // Scaling
-              if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) {
-                if (bi==bjtmp) {
+              if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) { // check for same site
+                if (bi==bjtmp) { // intra-site/inta-block
                   lixljtmp=li;
                 } else {
                   lixljtmp=0;
                 }
-              } else {
+              } else { // inter-site
                 lixljtmp=li*ljtmp;
               }
 
               rEff=r;
+              // Softcore OST
+              // rSoft derivatives
+              real drlam_dlami=0;
+              real drlam_dlamj=0;
+              // Softcore primary first derivatives
+              real drijp_drij=1;
+              real drijp_dlami=0;
+              real drijp_dlamj=0;
+              // First derivative intermediates
+              real drijp_drlam=0;
+              // Primary second derivatives
+              real d2rijp_drij2=0;
+              real d2rijp_dlami2=0;
+              real d2rijp_dlamj2=0;
+              // Primary cross derivatives
+              real d2rijp_drij_dlamj=0;
+              real d2rijp_drij_dlami=0;
+              real d2rijp_dlami_dlamj=0;
+              // Second derivative intermediates
+              real d2rijp_drlam_drij=0;
+              real d2rijp_drlam2=0;
               if (useSoftCore) {
                 dredr=1; // d(rEff) / d(r)
                 dredll=0; // d(rEff) / d(lixljtmp)
-                if (bi || bjtmp) {
+                if (bi || bjtmp) { // if either is a site
                   // real rSoft=(2.0*ANGSTROM*sqrt(4.0))*(1.0-lixljtmp);
                   real rSoft=SOFTCORERADIUS*(1-lixljtmp);
                   if (r<rSoft) {
+                    // Original soft
                     real rdivrs=r/rSoft;
                     rEff=1-((real)0.5)*rdivrs;
                     rEff=rEff*rdivrs*rdivrs*rdivrs+((real)0.5);
@@ -258,6 +280,27 @@ __global__ void getforce_nbdirect_kernel(
                     // dredll*=-(2.0*ANGSTROM*sqrt(4.0));
                     dredll*=-SOFTCORERADIUS;
                     rEff*=rSoft;
+                    // Mine
+                    real rijp = rSoft*(-.5*pow(r/rSoft,4)+pow(r/rSoft,3) + .5); // Correct
+                    // Intermediates
+                    drlam_dlami = bi ? -SOFTCORERADIUS*ljtmp : 0; // Correct, I think
+                    drlam_dlamj = bjtmp ? -SOFTCORERADIUS*li : 0; // Correct, I think
+                    drijp_drlam = -.5*pow(r/rSoft, 4) + pow(r/rSoft,3) +
+                      rSoft*(2*pow(r,4)/pow(rSoft,5) - 3*pow(r,3)/pow(rSoft,4))+.5; // Correct
+                    d2rijp_drlam_drij = r*r*(6*r/rSoft-6)/pow(rSoft,3);
+                    d2rijp_drlam2 = r*r*r*(-6*r/rSoft+6)/pow(rSoft, 3);
+                    // First partials
+                    drijp_drij = rSoft*(-2.0*pow(r,3)/pow(rSoft,4)+3*pow(r,2)/pow(rSoft,3)); // Correct
+                    drijp_dlami = drijp_drlam*drlam_dlami;
+                    drijp_dlamj = drijp_drlam*drlam_dlamj;
+                    // Second partials
+                    d2rijp_drij2 = -r*(5*r/rSoft-6)/pow(rSoft,2);
+                    d2rijp_dlami2 = d2rijp_drlam2 * pow(drlam_dlami, 2);
+                    d2rijp_dlamj2 = d2rijp_drlam2 * pow(drlam_dlamj, 2);
+                    // Second mixed partials
+                    d2rijp_drij_dlami = d2rijp_drlam_drij * drlam_dlami;
+                    d2rijp_drij_dlamj = d2rijp_drlam_drij * drlam_dlamj;
+                    d2rijp_dlami_dlamj = d2rijp_drlam2 * drlam_dlami * drlam_dlamj;
                   }
                 }
               }
@@ -280,7 +323,8 @@ __global__ void getforce_nbdirect_kernel(
                 if (bi || bjtmp || energy) {
                   eij=kELECTRIC*inp.q*jtmpnp_q*erfcrinv;
                 }
-              } else {
+              }
+              else {
                 real roff2=cutoffs.rCut*cutoffs.rCut;
                 real ron2=cutoffs.rSwitch*cutoffs.rSwitch;
                 real ginv=1/((roff2-ron2)*(roff2-ron2)*(roff2-ron2));
@@ -309,17 +353,20 @@ __global__ void getforce_nbdirect_kernel(
                 eij+=(vdwp.c12*rinv6-vdwp.c6)*rinv6;
               }*/
               // See charmm/source/domdec/enbxfast.F90, functions calc_vdw_constants, vdw_attraction, vdw_repulsion
+              real rCut = cutoffs.rCut;
+              real rSwitch = cutoffs.rSwitch;
               real rCut3=cutoffs.rCut*cutoffs.rCut*cutoffs.rCut;
               real rSwitch3=cutoffs.rSwitch*cutoffs.rSwitch*cutoffs.rSwitch;
 
-              if (rEff<cutoffs.rSwitch) {
+              if (rEff<cutoffs.rSwitch && false) {
                 fij+=(6*vdwp.c6-12*vdwp.c12*rinv6)*rinv6*rinv;
                 if (bi || bjtmp || energy) {
                   real dv6=(usevdWSwitch?0:1/(rCut3*rSwitch3));
                   eij+=vdwp.c12*(rinv6*rinv6-dv6*dv6)-vdwp.c6*(rinv6-dv6);
                 }
-              } else {
-                if ( !usevdWSwitch ) {
+              }
+              else {
+                if ( !usevdWSwitch && false) {
                   real k6=rCut3/(rCut3-rSwitch3);
                   real k12=rCut3*rCut3/(rCut3*rCut3-rSwitch3*rSwitch3);
                   real rCutinv3=1/rCut3;
@@ -327,7 +374,8 @@ __global__ void getforce_nbdirect_kernel(
                   if (bi || bjtmp || energy) {
                     eij+=vdwp.c12*k12*(rinv6-rCutinv3*rCutinv3)*(rinv6-rCutinv3*rCutinv3)-vdwp.c6*k6*(rinv3-rCutinv3)*(rinv3-rCutinv3);
                   }
-                } else {
+                }
+                else {
                   real c2ofnb=cutoffs.rCut*cutoffs.rCut;
                   real c2onnb=cutoffs.rSwitch*cutoffs.rSwitch;
                   real rul3=(c2ofnb-c2onnb)*(c2ofnb-c2onnb)*(c2ofnb-c2onnb);
@@ -341,6 +389,41 @@ __global__ void getforce_nbdirect_kernel(
                   if (bi || bjtmp || energy) {
                     eij+=fsw*(vdwp.c12*rinv6-vdwp.c6)*rinv6;
                   }
+                  real fij_tmp = fsw*(6*vdwp.c6-12*vdwp.c12*rinv6)*rinv6*rinv\
+                   +dfsw*(vdwp.c12*rinv6-vdwp.c6)*rinv6;
+                  real eij_tmp = fsw*(vdwp.c12*rinv6-vdwp.c6)*rinv6;
+                  // Mine
+                  printf("This working\n");
+                  // Intermediates
+                  real v_taper = pow(rCut*rCut-rEff*rEff, 2)*
+                    (rCut*rCut-3*rSwitch*rSwitch+2*rEff*rEff)/pow(rCut*rCut-rSwitch*rSwitch, 3); // Correct
+                  real dv_taper_drijp = 12*rEff*(rCut*rCut - rEff*rEff)*(rSwitch*rSwitch - rEff*rEff)
+                  / pow(rCut*rCut - rSwitch*rSwitch, 3); // Correct - extra rEff term compared to dfsw
+                  real d2v_taper_drijp2 = 4 * (8*(rEff*rEff)*(rEff*rEff-rCut*rCut)
+                    + pow(rEff*rEff - rCut*rCut, 2)
+                    + (3*rEff*rEff - rCut*rCut)*(2*rEff*rEff + rCut*rCut - 3*rSwitch*rSwitch));
+                  real v_12_6 = rinv6(vdwp.c12*rinv6 - vdwp.c6); // A = c12, B = c6
+                  real dv_12_6_drijp = 6*(-2*vdwp.c12 + vdwp.c6/rinv6)*rinv6*rinv6*rinv;
+                  real d2v_12_6_drijp2 = 6*(26*vdwp.c12 - 7*vdwp.c6/rinv6)*rinv6*rinv6*rinv;
+                  real dU_vdw_drijp = dv_taper_drijp*v_12_6 + v_taper*dv_12_6_drijp;
+                  real d2U_vdw_drij2p = li * ljtmp * (d2v_12_6_drijp2 * v_taper + 2 * dv_12_6_drijp * dv_taper_drijp + v_12_6 * d2v_taper_drijp2);
+                  real d2U_vdw_drijp_dlami = ljtmp * (dv_12_6_drijp * v_taper + v_12_6 * dv_taper_drijp);
+                  real d2U_vdw_drijp_dlamj = li * (dv_12_6_drijp * v_taper + v_12_6 * dv_taper_drijp);
+                  // vdw functions
+                  real U_vdw = li * ljtmp * v_12_6 * v_taper;
+                  // First derivatives - Regular forces
+                  real dU_vdw_drij = dU_vdw_drijp * drijp_drij;
+                  real dU_vdw_dlami = ljtmp * v_12_6 * v_taper + dU_vdw_drijp * drijp_dlami;
+                  real dU_vdw_dlamj = li * v_12_6 * v_taper + dU_vdw_drijp * drijp_dlamj;
+                  // Second derivatives - OST forces
+                  real d2U_vdw_drij_dlami = d2U_vdw_drijp_dlami * drijp_drij + dU_vdw_drijp * d2rijp_drij_dlami +
+                    drijp_dlami * (d2U_vdw_drij2p * drijp_drij + dU_vdw_drijp * d2rijp_drij2);
+                  real d2U_vdw_drij_dlamj = d2U_vdw_drijp_dlamj * drijp_drij + dU_vdw_drijp * d2rijp_drij_dlamj +
+                    drijp_dlamj * (d2U_vdw_drij2p * drijp_drij + dU_vdw_drijp * d2rijp_drij2);
+                  real d2U_vdw_dlami_dlamj = v_12_6 * v_taper + d2U_vdw_drijp_dlamj * drijp_dlami +
+                    dU_vdw_drijp*d2rijp_dlami_dlamj
+                  + drijp_dlami * (ljtmp*dv_12_6_drijp*v_taper + ljtmp*v_12_6*dv_taper_drijp +
+                    d2U_vdw_drij2p * drijp_dlami);
                 }
               }
               fij*=lixljtmp;

@@ -1150,11 +1150,12 @@ void Msld::add_sample(System* system){
   cudaMemcpy(opes_force[0], opes_force_d[0], (blockCount-1)*total_bins*sizeof(real), cudaMemcpyDeviceToHost);
   // Print out lambda values
   // Print out values as arrays
-  if (system->run->step % 10000 == 0){
+  if (system->run->step % 100000 == 0){
     int count = 0;
     printf("Step: %ld\n", system->run->step);
     for (int i = 0; i < siteCount-1; i++) {
       real relative = 0;
+      real Z0 = 0;
       for (int k = 0; k < blocksPerSite[i+1]; k++) {
         printf("Site %d, Sub %d\n", i, k);
         printf("Lambda: %f \n", s->lambda[count+1]);
@@ -1172,21 +1173,6 @@ void Msld::add_sample(System* system){
           printf("exiting...");
           exit(1);
         }
-        printf("dP/dL: [ %f, ", dPdL[0][count*total_bins]);
-        for (int j = 1; j < total_bins; j++) {
-          printf("%f, ", dPdL[0][count*total_bins+j]);
-        }
-        printf("]\n");
-        printf("OPES: [ %f, ", opes_potential[0][count*total_bins]);
-        for (int j = 1; j < total_bins; j++) {
-          printf("%f, ", opes_potential[0][count*total_bins+j]);
-        }
-        printf("]\n");
-        printf("OPES Force: [ %f, ", opes_force[0][count*total_bins]);
-        for (int j = 1; j < total_bins; j++) {
-          printf("%f, ", opes_force[0][count*total_bins+j]);
-        }
-        printf("]\n");
         printf("Histogram: [ %f, ", histogram_counts[0][count*total_bins]);
         for (int j = 1; j < total_bins; j++) {
           printf("%f, ", histogram_counts[0][count*total_bins+j]);
@@ -1203,16 +1189,22 @@ void Msld::add_sample(System* system){
         }
         printf("]\n");
         real sum= 0;
+        real Z = 0;
         printf("dG 0->i: [ %f, ", sum); // This is our FES
         for (int j = 1; j < total_bins; j++) {
           sum += integral_components[0][count*total_bins+j];
           printf("%f, ", sum);
+          Z += exp(-1/(kB*298.15)*sum);
         }
         printf("]\n");
         if (k == 0) {
+          Z0 = Z; // c0 = 0
+        }
+        int c = -kB*298.15*log(Z0/Z);
+        if (k == 0){
           relative = sum;
         }
-        sum -= relative;
+        sum -= relative - c;
         printf("dG 0->1: %f\n\n", sum);
         count++;
       }
@@ -1267,7 +1259,7 @@ __global__ void getforce_histogram_kernel(
     }
   }
 
-  if (energy) { // not sure this is nessisary
+  if (energy) { // not sure this is necessary
     __syncthreads();
     real_sum_reduce(lEnergy, sEnergy, energy);
   }
