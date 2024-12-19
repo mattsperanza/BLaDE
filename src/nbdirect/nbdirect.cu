@@ -122,16 +122,18 @@ __global__ void getforce_nbdirect_kernel(
   NbondPotential inp,jnp;
   real jtmpnp_q;
   int jtmpnp_typeIdx;
-  real fij,eij;
+  real fij,eij,ost_test_fij,ost_test_eij; // These should be the same
   real lEnergy=0;
   // extern __shared__ real sEnergy[];
   real3 xi,xj,xjtmp;
   real3 fi,fj,fjtmp;
-  real fli,flj,fljtmp;
+  real fli,flj,fljtmp, ost_test_fli, ost_test_fljtmp;
   int bi,bj,bjtmp;
   real li,lj,ljtmp,lixljtmp;
   real rEff,dredr,dredll; // Soft core stuff
   int exclAddress, exclMask;
+  bool OST_flag = true;
+  real fij_ost, eij_ost;
 
   if (iBlock<endBlock && threadIdx.x==0) iBlockVolume=blockVolume[iBlock];
   if (iBlock<endBlock && threadIdx.x==0) jnext=0;
@@ -153,6 +155,7 @@ __global__ void getforce_nbdirect_kernel(
 
     fi=real3_reset<real3>();
     fli=0;
+    ost_test_fli = 0;
 
     // used i/32 instead of iBlock to shift to beginning of array
     jmax=blockPartnerCount[iWarp>>WARPSPERBLOCK];
@@ -217,6 +220,7 @@ __global__ void getforce_nbdirect_kernel(
 
           fjtmp=real3_reset<real3>();
           fljtmp=0;
+          ost_test_fljtmp = 0;
           if (iThread<iCount && ((1<<jtmp)&exclMask)) {
 #ifdef USE_TEXTURE
             struct VdwPotential vdwp;
@@ -231,13 +235,13 @@ __global__ void getforce_nbdirect_kernel(
 
             if (r<cutoffs.rCut) {
               // Scaling
-              if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) { // check for same site
-                if (bi==bjtmp) { // intra-site/inta-block
+              if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) { // same site
+                if (bi==bjtmp) { // intra-site/inta-block - only scales by one lambda
                   lixljtmp=li;
                 } else {
-                  lixljtmp=0;
+                  lixljtmp=0; // cancels intra-site/inter-block
                 }
-              } else { // inter-site
+              } else { // inter-site/alchemical-environment/environment-environment
                 lixljtmp=li*ljtmp;
               }
 
@@ -268,46 +272,47 @@ __global__ void getforce_nbdirect_kernel(
                 dredll=0; // d(rEff) / d(lixljtmp)
                 if (bi || bjtmp) { // if either is a site
                   // real rSoft=(2.0*ANGSTROM*sqrt(4.0))*(1.0-lixljtmp);
-                  real rSoft=SOFTCORERADIUS*(1-lixljtmp);
+                  real rSoft=SOFTCORERADIUS*(1-lixljtmp); // rL
                   if (r<rSoft) {
                     // Original soft
                     real rdivrs=r/rSoft;
                     rEff=1-((real)0.5)*rdivrs;
-                    rEff=rEff*rdivrs*rdivrs*rdivrs+((real)0.5);
+                    rEff=rEff*rdivrs*rdivrs*rdivrs+((real)0.5); // Soft-core: rEff = rL * (.5 + (r/rL)^3 - .5*(r/rL)^4)
                     dredr=3-2*rdivrs;
                     dredr*=rdivrs*rdivrs;
                     dredll=rEff-dredr*rdivrs;
                     // dredll*=-(2.0*ANGSTROM*sqrt(4.0));
-                    dredll*=-SOFTCORERADIUS;
+                    dredll*=-SOFTCORERADIUS; // missing lambda factor corrected later
                     rEff*=rSoft;
-                    // Mine
-                    real rijp = rSoft*(-.5*pow(r/rSoft,4)+pow(r/rSoft,3) + .5); // Correct
-                    // Intermediates
-                    drlam_dlami = bi ? -SOFTCORERADIUS*ljtmp : 0; // Correct, I think
-                    drlam_dlamj = bjtmp ? -SOFTCORERADIUS*li : 0; // Correct, I think
-                    drijp_drlam = -.5*pow(r/rSoft, 4) + pow(r/rSoft,3) +
-                      rSoft*(2*pow(r,4)/pow(rSoft,5) - 3*pow(r,3)/pow(rSoft,4))+.5; // Correct
-                    d2rijp_drlam_drij = r*r*(6*r/rSoft-6)/pow(rSoft,3);
-                    d2rijp_drlam2 = r*r*r*(-6*r/rSoft+6)/pow(rSoft, 3);
-                    // First partials
-                    drijp_drij = rSoft*(-2.0*pow(r,3)/pow(rSoft,4)+3*pow(r,2)/pow(rSoft,3)); // Correct
-                    drijp_dlami = drijp_drlam*drlam_dlami;
-                    drijp_dlamj = drijp_drlam*drlam_dlamj;
-                    // Second partials
-                    d2rijp_drij2 = -r*(5*r/rSoft-6)/pow(rSoft,2);
-                    d2rijp_dlami2 = d2rijp_drlam2 * pow(drlam_dlami, 2);
-                    d2rijp_dlamj2 = d2rijp_drlam2 * pow(drlam_dlamj, 2);
-                    // Second mixed partials
-                    d2rijp_drij_dlami = d2rijp_drlam_drij * drlam_dlami;
-                    d2rijp_drij_dlamj = d2rijp_drlam_drij * drlam_dlamj;
-                    d2rijp_dlami_dlamj = d2rijp_drlam2 * drlam_dlami * drlam_dlamj;
+                    if (OST_flag) {
+                      // Intermediates
+                      // Terms with li or lj in it need to be conditioned
+                      drlam_dlami = bi ? -SOFTCORERADIUS*lixljtmp/li : 0; // Correct
+                      drlam_dlamj = bjtmp ? -SOFTCORERADIUS*lixljtmp/ljtmp : 0; // Correct
+                      drijp_drlam = -.5*pow(r/rSoft, 4) + pow(r/rSoft,3) +
+                        rSoft*(2*pow(r,4)/pow(rSoft,5) - 3*pow(r,3)/pow(rSoft,4))+.5; // Correct
+                      d2rijp_drlam_drij = r*r*(6*r/rSoft-6)/pow(rSoft,3);
+                      d2rijp_drlam2 = r*r*r*(-6*r/rSoft+6)/pow(rSoft, 3);
+                      // First partials
+                      drijp_drij = rSoft*(-2.0*pow(r,3)/pow(rSoft,4)+3*pow(r,2)/pow(rSoft,3)); // Correct
+                      drijp_dlami = drijp_drlam*drlam_dlami;
+                      drijp_dlamj = drijp_drlam*drlam_dlamj;
+                      // Second partials
+                      d2rijp_drij2 = -r*(5*r/rSoft-6)/pow(rSoft,2);
+                      d2rijp_dlami2 = d2rijp_drlam2 * pow(drlam_dlami, 2);
+                      d2rijp_dlamj2 = d2rijp_drlam2 * pow(drlam_dlamj, 2);
+                      // Second mixed partials
+                      d2rijp_drij_dlami = d2rijp_drlam_drij * drlam_dlami;
+                      d2rijp_drij_dlamj = d2rijp_drlam_drij * drlam_dlamj;
+                      d2rijp_dlami_dlamj = d2rijp_drlam2 * drlam_dlami * drlam_dlamj; // symmetric
+                    }
                   }
                 }
               }
               rinv=1/rEff;
 
               // interaction
-                // Electrostatics
+              // Electrostatics
               /*fij=-kELECTRIC*inp.q*jtmpnp_q*rinv*rinv;
               if (bi || bjtmp || energy) {
                 eij=kELECTRIC*inp.q*jtmpnp_q*rinv;
@@ -319,7 +324,7 @@ __global__ void getforce_nbdirect_kernel(
                 // fij=-kELECTRIC*inp.q*jtmpnp_q*(erfcrinv+(2/sqrt(M_PI))*cutoffs.betaEwald*expf(-br*br))*rinv;
                 // fij=-kELECTRIC*inp.q*jtmpnp_q*(erfcrinv+1.128379167095513f*cutoffs.betaEwald*expf(-br*br))*rinv;
                 // fij=-kELECTRIC*inp.q*jtmpnp_q*(erfcrinv+((real)(2/sqrt(M_PI)))*cutoffs.betaEwald*expf(-br*br))*rinv;
-                fij=-kELECTRIC*inp.q*jtmpnp_q*(erfcrinv+((real)1.128379167095513)*cutoffs.betaEwald*expf(-br*br))*rinv;
+                fij=-kELECTRIC*inp.q*jtmpnp_q*(erfcrinv+((real)1.128379167095513)*cutoffs.betaEwald*exp(-br*br))*rinv;
                 if (bi || bjtmp || energy) {
                   eij=kELECTRIC*inp.q*jtmpnp_q*erfcrinv;
                 }
@@ -345,7 +350,50 @@ __global__ void getforce_nbdirect_kernel(
                     kELECTRIC*inp.q*jtmpnp_q*(Aconst*(rinv-1/cutoffs.rCut)+Bconst*(cutoffs.rCut-rEff)+Cconst*(roff2*cutoffs.rCut-r3)+Dconst*(roff2*roff2*cutoffs.rCut-r5));
                 }
               }
-                // Van der Waals
+              if (OST_flag) {
+                // Intermediates
+                real eBeta = cutoffs.betaEwald;
+                real v_ewald = kELECTRIC*inp.q*jtmpnp_q*fasterfc(eBeta*rEff)*rinv;
+                real derf = -2*eBeta*exp(-eBeta*eBeta*rEff*rEff)/sqrt(M_PI)-rinv*fasterfc(eBeta*rEff);
+                real dv_ewald_drijp = kELECTRIC*inp.q*jtmpnp_q*rinv*derf;
+                real d2v_ewald_drijp2 = kELECTRIC*inp.q*jtmpnp_q*
+                  (exp(-eBeta*eBeta*rEff*rEff)*(-4*eBeta*eBeta*eBeta/sqrt(M_PI) - 4*eBeta*rinv*rinv/sqrt(M_PI))
+                  + rinv*rinv*rinv*2*fasterfc(eBeta*rEff));
+                real U_ewaldp = lixljtmp*v_ewald;
+                real dU_ewald_drijp = lixljtmp*dv_ewald_drijp;
+                // Dividing here handles the intra-sub scaling
+                real dU_ewaldp_dlami = bi ? lixljtmp/li*v_ewald : 0; // derivative at constant rijp
+                real dU_ewaldp_dlamj = bjtmp ? lixljtmp/ljtmp*v_ewald : 0; // derivative at constant rijp
+                real d2U_ewald_drijp2 = lixljtmp*d2v_ewald_drijp2;
+                real d2U_ewald_drijp_dlami = bi ? lixljtmp/li*dv_ewald_drijp + d2U_ewald_drijp2*drijp_drij*drijp_dlami : 0;
+                real d2U_ewald_drijp_dlamj = bjtmp ? lixljtmp/li*dv_ewald_drijp + d2U_ewald_drijp2*drijp_drij*drijp_dlamj : 0;
+                real d2U_ewaldp_dlamj_dlami = bi && bjtmp && bi != bjtmp ? v_ewald : 0; // symmetric, intra-sub only scaled by lambda 1 time
+
+                // True Potential
+                ost_test_eij = U_ewaldp;
+                // Forces
+                real dU_ewald_drij = dU_ewald_drijp*drijp_drij;
+                ost_test_fij = dU_ewald_drij;
+                real dU_ewald_dlami =  dU_ewaldp_dlami +  dU_ewald_drijp*drijp_dlami;
+                ost_test_fli += dU_ewald_dlami;
+                real dU_ewald_dlamj = dU_ewaldp_dlamj + dU_ewald_drijp*drijp_dlamj;
+                ost_test_fljtmp += bi == bjtmp ? 0.0 : dU_ewald_dlamj;
+                // OST forces
+                real d2U_ewald_drij_dlami = d2U_ewald_drijp_dlami*drijp_drij + d2U_ewald_drijp2*drijp_drij*drijp_dlami +
+                  dU_ewald_drijp*d2rijp_drij_dlami;
+                real d2U_ewald_drij_dlamj = d2U_ewald_drijp_dlamj*drijp_drij + d2U_ewald_drijp2*drijp_drij*drijp_dlamj +
+                  dU_ewald_drijp*d2rijp_drij_dlamj;
+                // These two should be equal - always zero for 1 site lambda dynamics unless self-interaction?
+                real d2U_ewald_dlami_dlamj = d2U_ewaldp_dlamj_dlami + d2U_ewald_drijp_dlamj*drijp_dlami + dU_ewald_drijp*d2rijp_dlami_dlamj
+                + d2U_ewald_drijp_dlami*drijp_dlamj;
+                real d2U_ewald_dlamj_dlami = d2U_ewaldp_dlamj_dlami + d2U_ewald_drijp_dlami*drijp_dlamj + dU_ewald_drijp*d2rijp_dlami_dlamj
+                + d2U_ewald_drijp_dlamj*drijp_dlami;
+                if (abs(d2U_ewald_dlami_dlamj - d2U_ewald_dlamj_dlami) > 1e-10) {
+                  printf("bi = %d, bj = %d, Ewald lambda hessian: ij = %f    ji = %f\n", bi, bjtmp, d2U_ewald_dlami_dlamj, d2U_ewald_dlamj_dlami);
+                }
+              }
+
+              // Van der Waals
               real rinv3=rinv*rinv*rinv;
               real rinv6=rinv3*rinv3;
               /*fij+=-(12*(vdwp.c12*rinv6)-6*(vdwp.c6))*rinv6*rinv;
@@ -358,106 +406,147 @@ __global__ void getforce_nbdirect_kernel(
               real rCut3=cutoffs.rCut*cutoffs.rCut*cutoffs.rCut;
               real rSwitch3=cutoffs.rSwitch*cutoffs.rSwitch*cutoffs.rSwitch;
 
-              if (rEff<cutoffs.rSwitch && false) {
+              if (rEff<cutoffs.rSwitch) { // Normal soft-core vdw interaction
                 fij+=(6*vdwp.c6-12*vdwp.c12*rinv6)*rinv6*rinv;
                 if (bi || bjtmp || energy) {
-                  real dv6=(usevdWSwitch?0:1/(rCut3*rSwitch3));
+                  real dv6=usevdWSwitch?0:1/(rCut3*rSwitch3); // force switch causes potential shift
+                  dv6 = 0.0;
                   eij+=vdwp.c12*(rinv6*rinv6-dv6*dv6)-vdwp.c6*(rinv6-dv6);
                 }
               }
-              else {
-                if ( !usevdWSwitch && false) {
+              else { // Tapered
+                if ( !usevdWSwitch && false) { // Potential switch
                   real k6=rCut3/(rCut3-rSwitch3);
                   real k12=rCut3*rCut3/(rCut3*rCut3-rSwitch3*rSwitch3);
                   real rCutinv3=1/rCut3;
                   fij+=(6*vdwp.c6*k6*(rinv3-rCutinv3)*rinv3-12*vdwp.c12*k12*(rinv6-rCutinv3*rCutinv3)*rinv6)*rinv;
                   if (bi || bjtmp || energy) {
+                    // e=A*rCut^6*(rCut^6/(rCut^3-rSwitch^3))*(1/rEff^6-1/rCut^6)^2-
+                    //   B*(rCut^3/(rCut^3-rSwitch^3))*(1/rEff^3-1/rCut^3)^2
                     eij+=vdwp.c12*k12*(rinv6-rCutinv3*rCutinv3)*(rinv6-rCutinv3*rCutinv3)-vdwp.c6*k6*(rinv3-rCutinv3)*(rinv3-rCutinv3);
                   }
                 }
-                else {
+                else { // Force Switch
                   real c2ofnb=cutoffs.rCut*cutoffs.rCut;
                   real c2onnb=cutoffs.rSwitch*cutoffs.rSwitch;
                   real rul3=(c2ofnb-c2onnb)*(c2ofnb-c2onnb)*(c2ofnb-c2onnb);
                   real rul12 = 12/rul3;
                   real rijl = c2onnb - rEff * rEff;
                   real riju = c2ofnb - rEff * rEff;
+                  // v_taper = (rCut^2 - rEff^2)^2*(rCut^2-rEff^2-3*(rSwitch^2-rEff^2)/(rCut^2-rSwitch^2)^3
                   real fsw = riju*riju*(riju-3*rijl)/rul3;
+                  // dv_taper_drij' = 12*(rSwitch^2-rEff^2)*(rCut^2-rEff^2)/(rCut^2-rSwitch^2)^3
                   real dfsw = rijl*riju*rul12;
                   fij+=fsw*(6*vdwp.c6-12*vdwp.c12*rinv6)*rinv6*rinv\
                     +dfsw*(vdwp.c12*rinv6-vdwp.c6)*rinv6;
                   if (bi || bjtmp || energy) {
                     eij+=fsw*(vdwp.c12*rinv6-vdwp.c6)*rinv6;
                   }
-                  real fij_tmp = fsw*(6*vdwp.c6-12*vdwp.c12*rinv6)*rinv6*rinv\
-                   +dfsw*(vdwp.c12*rinv6-vdwp.c6)*rinv6;
-                  real eij_tmp = fsw*(vdwp.c12*rinv6-vdwp.c6)*rinv6;
-                  // Mine
-                  printf("This working\n");
-                  // Intermediates
-                  real v_taper = pow(rCut*rCut-rEff*rEff, 2)*
-                    (rCut*rCut-3*rSwitch*rSwitch+2*rEff*rEff)/pow(rCut*rCut-rSwitch*rSwitch, 3); // Correct
-                  real dv_taper_drijp = 12*rEff*(rCut*rCut - rEff*rEff)*(rSwitch*rSwitch - rEff*rEff)
-                  / pow(rCut*rCut - rSwitch*rSwitch, 3); // Correct - extra rEff term compared to dfsw
-                  real d2v_taper_drijp2 = 4 * (8*(rEff*rEff)*(rEff*rEff-rCut*rCut)
-                    + pow(rEff*rEff - rCut*rCut, 2)
-                    + (3*rEff*rEff - rCut*rCut)*(2*rEff*rEff + rCut*rCut - 3*rSwitch*rSwitch));
-                  real v_12_6 = rinv6(vdwp.c12*rinv6 - vdwp.c6); // A = c12, B = c6
-                  real dv_12_6_drijp = 6*(-2*vdwp.c12 + vdwp.c6/rinv6)*rinv6*rinv6*rinv;
-                  real d2v_12_6_drijp2 = 6*(26*vdwp.c12 - 7*vdwp.c6/rinv6)*rinv6*rinv6*rinv;
-                  real dU_vdw_drijp = dv_taper_drijp*v_12_6 + v_taper*dv_12_6_drijp;
-                  real d2U_vdw_drij2p = li * ljtmp * (d2v_12_6_drijp2 * v_taper + 2 * dv_12_6_drijp * dv_taper_drijp + v_12_6 * d2v_taper_drijp2);
-                  real d2U_vdw_drijp_dlami = ljtmp * (dv_12_6_drijp * v_taper + v_12_6 * dv_taper_drijp);
-                  real d2U_vdw_drijp_dlamj = li * (dv_12_6_drijp * v_taper + v_12_6 * dv_taper_drijp);
-                  // vdw functions
-                  real U_vdw = li * ljtmp * v_12_6 * v_taper;
-                  // First derivatives - Regular forces
-                  real dU_vdw_drij = dU_vdw_drijp * drijp_drij;
-                  real dU_vdw_dlami = ljtmp * v_12_6 * v_taper + dU_vdw_drijp * drijp_dlami;
-                  real dU_vdw_dlamj = li * v_12_6 * v_taper + dU_vdw_drijp * drijp_dlamj;
-                  // Second derivatives - OST forces
-                  real d2U_vdw_drij_dlami = d2U_vdw_drijp_dlami * drijp_drij + dU_vdw_drijp * d2rijp_drij_dlami +
-                    drijp_dlami * (d2U_vdw_drij2p * drijp_drij + dU_vdw_drijp * d2rijp_drij2);
-                  real d2U_vdw_drij_dlamj = d2U_vdw_drijp_dlamj * drijp_drij + dU_vdw_drijp * d2rijp_drij_dlamj +
-                    drijp_dlamj * (d2U_vdw_drij2p * drijp_drij + dU_vdw_drijp * d2rijp_drij2);
-                  real d2U_vdw_dlami_dlamj = v_12_6 * v_taper + d2U_vdw_drijp_dlamj * drijp_dlami +
-                    dU_vdw_drijp*d2rijp_dlami_dlamj
-                  + drijp_dlami * (ljtmp*dv_12_6_drijp*v_taper + ljtmp*v_12_6*dv_taper_drijp +
-                    d2U_vdw_drij2p * drijp_dlami);
                 }
               }
               fij*=lixljtmp;
 
-              // Lambda force
-              if (bi || bjtmp) {
-                if (useSoftCore) {
-                  fljtmp=eij+fij*dredll;
-                } else {
-                  fljtmp=eij;
-                }
-                if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) {
-                  if (bi==bjtmp) {
-                    fli+=fljtmp;
-                  }
-                  fljtmp=0;
-                } else {
-                  fli+=ljtmp*fljtmp;
-                  fljtmp*=li;
+              // Mine
+              if (OST_flag){
+                // Intermediates
+                // Taper
+                bool taper = rEff<cutoffs.rSwitch;
+                real v_taper = taper ? 1.0 :
+                  pow(rCut*rCut - rEff*rEff, 2)
+                  *(rCut*rCut + 2*rEff*rEff - 3*rSwitch*rSwitch)/pow(rCut*rCut - rSwitch*rSwitch, 3); // Correct
+                real dv_taper_drijp = taper ? 0.0 :
+                  12*(rCut*rCut - rEff*rEff) * (rSwitch*rSwitch - rEff*rEff)
+                / pow(rCut*rCut - rSwitch*rSwitch, 3); // Correct - needed to take out extra factor of rEff?
+                real d2v_taper_drijp2 = taper ? 0.0 :
+                  4 * (8*(rEff*rEff)*(rEff*rEff - rCut*rCut)
+                  + pow(rEff*rEff - rCut*rCut, 2)
+                  + (3*rEff*rEff - rCut*rCut)*(2*rEff*rEff + rCut*rCut - 3*rSwitch*rSwitch));
+                // VdW 12-6
+                real v_12_6 = rinv6*(vdwp.c12*rinv6 - vdwp.c6); // A = c12, B = c6
+                real dv_12_6_drijp = 6*(-2*vdwp.c12*rinv6 + vdwp.c6)*rinv6*rinv;
+                real d2v_12_6_drijp2 = 6*(26*vdwp.c12*rinv6 - 7*vdwp.c6)*rinv6*rinv*rinv;
+                // VdW potential
+                real U_vdw = lixljtmp*v_12_6*v_taper;
+                real dU_vdw_drijp = lixljtmp*(dv_taper_drijp*v_12_6 + v_taper*dv_12_6_drijp);
+                real dU_vdwp_dlami = bi ? lixljtmp/li*v_12_6*v_taper : 0;
+                real dU_vdwp_dlamj = bjtmp ? lixljtmp/ljtmp*v_12_6*v_taper : 0;
+                real d2U_vdw_drij2p = lixljtmp*(d2v_12_6_drijp2*v_taper + 2*dv_12_6_drijp*dv_taper_drijp + v_12_6*d2v_taper_drijp2);
+                real d2U_vdw_drijp_dlami = bi ? lixljtmp/li*(dv_12_6_drijp*v_taper + v_12_6*dv_taper_drijp) : 0;
+                real d2U_vdw_drijp_dlamj = bjtmp ? lixljtmp/ljtmp*(dv_12_6_drijp*v_taper + v_12_6*dv_taper_drijp) : 0;
+                real d2U_vdwp_dlami_dlamj = bi && bjtmp && bi!=bjtmp? v_12_6*v_taper : 0; // symmetric
+
+                // True Potential
+                ost_test_eij += U_vdw;
+                // First derivatives - Regular forces - includes all interaction components
+                real dU_vdw_drij = dU_vdw_drijp*drijp_drij;
+                ost_test_fij += dU_vdw_drij;
+                real dU_vdw_dlami = dU_vdwp_dlami + dU_vdw_drijp*drijp_dlami;
+                ost_test_fli += dU_vdw_dlami;
+                real dU_vdw_dlamj = dU_vdwp_dlamj + dU_vdw_drijp*drijp_dlamj;
+                ost_test_fljtmp += bi == bjtmp ? 0.0 : dU_vdw_dlamj;
+                // Second derivatives - OST forces
+                real d2U_vdw_drij_dlami = d2U_vdw_drijp_dlami*drijp_drij + dU_vdw_drijp*d2rijp_drij_dlami +
+                  drijp_dlami*(d2U_vdw_drij2p*drijp_drij + dU_vdw_drijp*d2rijp_drij2);
+                real d2U_vdw_drij_dlamj = d2U_vdw_drijp_dlamj*drijp_drij + dU_vdw_drijp*d2rijp_drij_dlamj +
+                  drijp_dlamj*(d2U_vdw_drij2p*drijp_drij + dU_vdw_drijp*d2rijp_drij2);
+                real d2U_vdw_dlami_dlamj = d2U_vdwp_dlami_dlamj + d2U_vdw_drijp_dlamj*drijp_dlami +
+                  dU_vdw_drijp*d2rijp_dlami_dlamj
+                + drijp_dlamj * (d2U_vdw_drijp_dlami + d2U_vdw_drij2p*drijp_dlami);
+                real d2U_vdw_dlamj_dlami = d2U_vdwp_dlami_dlamj + d2U_vdw_drijp_dlami*drijp_dlamj +
+                  dU_vdw_drijp*d2rijp_dlami_dlamj
+                + drijp_dlami * (d2U_vdw_drijp_dlamj + d2U_vdw_drij2p*drijp_dlamj);
+                if ((bi != 0 || bj != 0) && abs(d2U_vdw_dlami_dlamj - d2U_vdw_dlamj_dlami) < 1e-10) {
+                  printf("bi = %d, bj = %d, VdW lambda hessian: ij = %f    ji = %f\n", bi, bjtmp, d2U_vdw_dlami_dlamj, d2U_vdw_dlamj_dlami);
                 }
               }
 
+              // Lambda force
+              if (bi || bjtmp) { // Alchemical interaction
+                if (useSoftCore) {
+                  fljtmp= eij + fij*dredll; // dU/dL + dU/drij' * drij'/dl (neither has lambda scaling)
+                } else {
+                  fljtmp=eij; // dU/dL (no lambda scaling)
+                }
+                // Scaling
+                if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) { // Same site
+                  if (bi==bjtmp) { // Same sub
+                    fli+=fljtmp; // This interaction is only scaled by a single lambda
+                  }
+                  fljtmp=0; // No intra-site interactions
+                } else { // Different site
+                  fli+=ljtmp*fljtmp; // force on lam.i drops lam.i factor
+                  fljtmp*=li; // dU/dLj drops lam.j factor
+                }
+              }
+
+              // TODO: add spatial/lambda OST forces to fij here
               // Spatial force
               if (useSoftCore) {
-                rinv=1/r;
-                fij*=dredr;
+                rinv=1/r; // chain rule projection onto x,y,z-axis is based on rij not rEff
+                fij*=dredr; // previous terms have ignored chain rule term
               }
-              real3_scaleinc(&fi, fij*rinv,dr);
-              fjtmp=real3_scale<real3>(-fij*rinv,dr);
+              real3_scaleinc(&fi, fij*rinv,dr); // drij/dx = sqrt(x^2+y^2+z^2)^-1/2 * dx
+              fjtmp=real3_scale<real3>(-fij*rinv,dr); // Newton's laws, equal opposite
+
+              // Check if energy and forces are correct
+              if (bi != 0 && abs(ost_test_fli - fli) > 1e-10) {
+                printf("li = %f, lj = %f, lixlj = %f, bi %d, bj %d, taper? %d, LiForce: mine = %f, theirs = %f\n", li, ljtmp, lixljtmp, bi, bjtmp, rEff < cutoffs.rSwitch, ost_test_fli, fli);
+              }
+              if (bjtmp != 0 && abs(ost_test_fljtmp - fljtmp) > 1e-10) {
+                printf("li = %f, lj = %f, lixlj = %f, bi %d, bj %d, taper? %d, LjForce: mine = %f, theirs = %f\n", li, ljtmp, lixljtmp, bi, bjtmp, rEff < cutoffs.rSwitch, ost_test_fljtmp, fljtmp);
+              }
+              if (abs(ost_test_eij - lixljtmp*eij) > 1e-10) {
+                printf("li = %f, lj = %f, lixlj = %f, bi %d, bj %d, taper? %d, Energy: mine = %f, theirs = %f\n", li, ljtmp, lixljtmp, bi, bjtmp, rEff < cutoffs.rSwitch, ost_test_eij, eij);
+              }
+              if (abs(ost_test_fij - fij) > 1e-10) {
+                printf("li = %f, lj = %f, lixlj = %f, bi %d, bj %d, taper? %d, Force: mine = %f, theirs = %f\n", li, ljtmp, lixljtmp, bi, bjtmp, rEff < cutoffs.rSwitch, ost_test_fij, fij);
+              }
 
               // Energy, if requested
               if (energy) {
                 // if (!(lixljtmp*eij>-5000000)) printf("lixljtmp*eij=%f lixljtmp=%f eij=%f\n",lixljtmp*eij,lixljtmp,eij);
                 lEnergy+=lixljtmp*eij;
+                // TODO: add spatial/lambda OST energy to lEnergy here (and to separate OST array for use in histogram)
               }
             }
           }
@@ -585,6 +674,7 @@ void getforce_nbdirectT(System *system,box_type box,bool calcEnergy)
 
 void getforce_nbdirect(System *system,bool calcEnergy)
 {
+  calcEnergy = true;
   if (system->state->typeBox) {
     getforce_nbdirectT<true>(system,system->state->tricBox_f,calcEnergy);
   } else {
