@@ -716,6 +716,8 @@ void Msld::initialize(System *system) {
   // TODO: Check if TI is requested and add inp options
   // Histogram variables
   int nL = blockCount-1;
+  cudaMalloc(&dGdF_d, blockCount*sizeof(real));
+  cudaMemset(dGdF_d, 1, blockCount*sizeof(real));
   // Histogram details
   total_bins=first_half_bins+second_half_bins;
   bin_edges=(real*) calloc((siteCount-1)*(total_bins+1), sizeof(real));

@@ -56,6 +56,7 @@ class Msld {
   struct VariableBias *variableBias_d;
 
   // Histogram variables
+  real* dGdF_d; // derivative of histogram with respect to force on lambda (needs to be indexed same as lambda array)
   bool apply_histogram = true;
   int sampleFrequency = 10;
   int depth=2; // number of histograms to keep

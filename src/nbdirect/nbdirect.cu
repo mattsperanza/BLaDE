@@ -102,7 +102,9 @@ __global__ void getforce_nbdirect_kernel(
   box_type box,
   const real* __restrict__ lambda,
   real_f* __restrict__ lambdaForce,
-  real_e* __restrict__ energy)
+  real_e* __restrict__ energy,
+  real_f* __restrict__ dGdF
+  )
 {
 // NYI - maybe energy should be a double
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -133,7 +135,8 @@ __global__ void getforce_nbdirect_kernel(
   real rEff,dredr,dredll; // Soft core stuff
   int exclAddress, exclMask;
   bool OST_flag = true;
-  real fij_ost, eij_ost;
+  real fij_ost, fli_ost, fljtmp_ost, eij_ost;
+  real dGdFi, dGdFj, dGdFjtmp;
 
   if (iBlock<endBlock && threadIdx.x==0) iBlockVolume=blockVolume[iBlock];
   if (iBlock<endBlock && threadIdx.x==0) jnext=0;
@@ -149,12 +152,16 @@ __global__ void getforce_nbdirect_kernel(
       xi=position[32*iBlock+iThread];
       bi=inp.siteBlock;
       li=1;
-      if (bi) li=lambda[0xFFFF & bi];
+      if (bi) {
+        li=lambda[0xFFFF & bi];
+        dGdFi=dGdF[0xFFFF & bi];
+      }
     }
     // iBlockVolume=blockVolume[iBlock];
 
     fi=real3_reset<real3>();
     fli=0;
+    fli_ost=0;
     ost_test_fli = 0;
 
     // used i/32 instead of iBlock to shift to beginning of array
@@ -201,7 +208,10 @@ __global__ void getforce_nbdirect_kernel(
         }
         bj=jnp.siteBlock;
         lj=1;
-        if (bj) lj=lambda[0xFFFF & bj];
+        if (bj) {
+          lj=lambda[0xFFFF & bj];
+          dGdFj=dGdF[0xFFFF & bj];
+        }
       }
       bool jFlag=check_proximity(iBlockVolume,xj,cutoffs.rCut*cutoffs.rCut);
 
@@ -217,9 +227,11 @@ __global__ void getforce_nbdirect_kernel(
           xjtmp.z=__shfl_sync(0xFFFFFFFF,xj.z,jtmp);
           bjtmp=__shfl_sync(0xFFFFFFFF,bj,jtmp);
           ljtmp=__shfl_sync(0xFFFFFFFF,lj,jtmp);
+          dGdFjtmp=__shfl_sync(0xFFFFFFFF,dGdFj,jtmp);
 
           fjtmp=real3_reset<real3>();
           fljtmp=0;
+          fljtmp_ost=0;
           ost_test_fljtmp = 0;
           if (iThread<iCount && ((1<<jtmp)&exclMask)) {
 #ifdef USE_TEXTURE
@@ -258,8 +270,6 @@ __global__ void getforce_nbdirect_kernel(
               real drijp_drlam=0;
               // Primary second derivatives
               real d2rijp_drij2=0;
-              real d2rijp_dlami2=0;
-              real d2rijp_dlamj2=0;
               // Primary cross derivatives
               real d2rijp_drij_dlamj=0;
               real d2rijp_drij_dlami=0;
@@ -299,8 +309,6 @@ __global__ void getforce_nbdirect_kernel(
                       drijp_dlamj = drijp_drlam*drlam_dlamj;
                       // Second partials
                       d2rijp_drij2 = -r*(5*r/rSoft-6)/pow(rSoft,2);
-                      d2rijp_dlami2 = d2rijp_drlam2 * pow(drlam_dlami, 2);
-                      d2rijp_dlamj2 = d2rijp_drlam2 * pow(drlam_dlamj, 2);
                       // Second mixed partials
                       d2rijp_drij_dlami = d2rijp_drlam_drij * drlam_dlami;
                       d2rijp_drij_dlamj = d2rijp_drlam_drij * drlam_dlamj;
@@ -350,6 +358,8 @@ __global__ void getforce_nbdirect_kernel(
                     kELECTRIC*inp.q*jtmpnp_q*(Aconst*(rinv-1/cutoffs.rCut)+Bconst*(cutoffs.rCut-rEff)+Cconst*(roff2*cutoffs.rCut-r3)+Dconst*(roff2*roff2*cutoffs.rCut-r5));
                 }
               }
+
+              // OST direct ewald forces
               if (OST_flag) {
                 // Intermediates
                 real eBeta = cutoffs.betaEwald;
@@ -378,16 +388,19 @@ __global__ void getforce_nbdirect_kernel(
                 ost_test_fli += dU_ewald_dlami;
                 real dU_ewald_dlamj = dU_ewaldp_dlamj + dU_ewald_drijp*drijp_dlamj;
                 ost_test_fljtmp += bi == bjtmp ? 0.0 : dU_ewald_dlamj;
-                // OST forces
+                // OST forces - every atom feels both of these scaled by lami and lamj's histogram force
                 real d2U_ewald_drij_dlami = d2U_ewald_drijp_dlami*drijp_drij + d2U_ewald_drijp2*drijp_drij*drijp_dlami +
                   dU_ewald_drijp*d2rijp_drij_dlami;
                 real d2U_ewald_drij_dlamj = d2U_ewald_drijp_dlamj*drijp_drij + d2U_ewald_drijp2*drijp_drij*drijp_dlamj +
                   dU_ewald_drijp*d2rijp_drij_dlamj;
-                // These two should be equal - always zero for 1 site lambda dynamics unless self-interaction?
                 real d2U_ewald_dlami_dlamj = d2U_ewaldp_dlamj_dlami + d2U_ewald_drijp_dlamj*drijp_dlami + dU_ewald_drijp*d2rijp_dlami_dlamj
                 + d2U_ewald_drijp_dlami*drijp_dlamj;
                 real d2U_ewald_dlamj_dlami = d2U_ewaldp_dlamj_dlami + d2U_ewald_drijp_dlami*drijp_dlamj + dU_ewald_drijp*d2rijp_dlami_dlamj
                 + d2U_ewald_drijp_dlamj*drijp_dlami;
+                // Add forces
+                fij_ost = dGdFi * d2U_ewald_drij_dlami + dGdFjtmp * d2U_ewald_drij_dlamj;
+                fli_ost += dGdFi * d2U_ewald_dlami_dlamj;
+                fljtmp_ost += dGdFjtmp * d2U_ewald_dlami_dlamj;
                 if (abs(d2U_ewald_dlami_dlamj - d2U_ewald_dlamj_dlami) > 1e-10) {
                   printf("bi = %d, bj = %d, Ewald lambda hessian: ij = %f    ji = %f\n", bi, bjtmp, d2U_ewald_dlami_dlamj, d2U_ewald_dlamj_dlami);
                 }
@@ -446,7 +459,7 @@ __global__ void getforce_nbdirect_kernel(
               }
               fij*=lixljtmp;
 
-              // Mine
+              // OST vdw forces
               if (OST_flag){
                 // Intermediates
                 // Taper
@@ -495,7 +508,11 @@ __global__ void getforce_nbdirect_kernel(
                 real d2U_vdw_dlamj_dlami = d2U_vdwp_dlami_dlamj + d2U_vdw_drijp_dlami*drijp_dlamj +
                   dU_vdw_drijp*d2rijp_dlami_dlamj
                 + drijp_dlami * (d2U_vdw_drijp_dlamj + d2U_vdw_drij2p*drijp_dlamj);
-                if ((bi != 0 || bj != 0) && abs(d2U_vdw_dlami_dlamj - d2U_vdw_dlamj_dlami) < 1e-10) {
+                // Add forces
+                fij_ost += dGdFi * d2U_vdw_drij_dlami + dGdFjtmp * d2U_vdw_drij_dlamj;
+                fli_ost += dGdFi * d2U_vdw_dlami_dlamj;
+                fljtmp_ost += dGdFjtmp * d2U_vdw_dlami_dlamj;
+                if (abs(d2U_vdw_dlami_dlamj - d2U_vdw_dlamj_dlami) > 1e-10) {
                   printf("bi = %d, bj = %d, VdW lambda hessian: ij = %f    ji = %f\n", bi, bjtmp, d2U_vdw_dlami_dlamj, d2U_vdw_dlamj_dlami);
                 }
               }
@@ -517,14 +534,17 @@ __global__ void getforce_nbdirect_kernel(
                   fli+=ljtmp*fljtmp; // force on lam.i drops lam.i factor
                   fljtmp*=li; // dU/dLj drops lam.j factor
                 }
+                // OST forces after scaling since they already include it
+                fli += fli_ost;
+                fljtmp += fljtmp_ost;
               }
 
-              // TODO: add spatial/lambda OST forces to fij here
               // Spatial force
               if (useSoftCore) {
                 rinv=1/r; // chain rule projection onto x,y,z-axis is based on rij not rEff
                 fij*=dredr; // previous terms have ignored chain rule term
               }
+              fij += fij_ost; // after all scaling since ost forces has all chain rule terms up to rij
               real3_scaleinc(&fi, fij*rinv,dr); // drij/dx = sqrt(x^2+y^2+z^2)^-1/2 * dx
               fjtmp=real3_scale<real3>(-fij*rinv,dr); // Newton's laws, equal opposite
 
@@ -546,7 +566,6 @@ __global__ void getforce_nbdirect_kernel(
               if (energy) {
                 // if (!(lixljtmp*eij>-5000000)) printf("lixljtmp*eij=%f lixljtmp=%f eij=%f\n",lixljtmp*eij,lixljtmp,eij);
                 lEnergy+=lixljtmp*eij;
-                // TODO: add spatial/lambda OST energy to lEnergy here (and to separate OST array for use in histogram)
               }
             }
           }
@@ -623,6 +642,7 @@ void getforce_nbdirectTTTT(System *system,box_type box,bool calcEnergy)
   int N=endBlock-startBlock;
   int shMem=0;
   real_e *pEnergy=NULL;
+  real_f *dGdF = system->msld->dGdF_d;
 
   if (r->calcTermFlag[eenbdirect]==false) return;
 
@@ -637,7 +657,7 @@ void getforce_nbdirectTTTT(System *system,box_type box,bool calcEnergy)
 #else
     p->vdwParameters_d,
 #endif
-    system->domdec->blockExcls_d,system->run->cutoffs,d->localPosition_d,d->localForce_d,box,s->lambda_fd,s->lambdaForce_d,pEnergy);
+    system->domdec->blockExcls_d,system->run->cutoffs,d->localPosition_d,d->localForce_d,box,s->lambda_fd,s->lambdaForce_d,pEnergy, dGdF);
 
   system->domdec->unpack_forces(system);
 }
