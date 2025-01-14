@@ -15,7 +15,7 @@
 
 
 // getforce_ewaldself_kernel<<<(N+BLNB-1)/BLNB,BLNB,shMem,p->bondedStream>>>(N,p->charge_d,prefactor,m->atomBlock_d,m->lambda_d,m->lambdaForce_d,pEnergy);
-__global__ void getforce_ewaldself_kernel(int atomCount,real *charge,real prefactor,int *atomBlock,real *lambda,real_f *lambdaForce,real_e *energy)
+__global__ void getforce_ewaldself_kernel(int atomCount,real *charge,real prefactor,int *atomBlock,real *lambda,real_f *lambdaForce,real_e *energy, real* dGdL)
 {
 // NYI - maybe energy should be a double
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -24,6 +24,7 @@ __global__ void getforce_ewaldself_kernel(int atomCount,real *charge,real prefac
   extern __shared__ real sEnergy[];
   int b;
   real l=1;
+  real dGdF = 0;
   
   if (i<atomCount) {
     q=charge[i];
@@ -32,6 +33,7 @@ __global__ void getforce_ewaldself_kernel(int atomCount,real *charge,real prefac
     b=atomBlock[i];
     if (b) {
       l=lambda[b];
+      dGdF=dGdL[b];
     }
 
     // interaction
@@ -41,7 +43,7 @@ __global__ void getforce_ewaldself_kernel(int atomCount,real *charge,real prefac
 
     // Lambda force
     if (b) {
-      atomicAdd(&lambdaForce[b],2*l*lEnergy);
+      atomicAdd(&lambdaForce[b],2*l*lEnergy + dGdF*2*lEnergy); // +dGdF*d2U/dL2
     }
   }
 
@@ -62,6 +64,7 @@ void getforce_ewaldself(System *system,bool calcEnergy)
   int shMem=0;
   real_e *pEnergy=NULL;
   real prefactor=-system->run->betaEwald*(kELECTRIC/sqrt(M_PI));
+  real *dGdF = system->msld->dGdF_d;
 
   if (r->usePME==false) return;
   if (r->calcTermFlag[eenbrecipself]==false) return;
@@ -71,19 +74,20 @@ void getforce_ewaldself(System *system,bool calcEnergy)
     pEnergy=s->energy_d+eenbrecipself;
   }
 
-  getforce_ewaldself_kernel<<<(N+BLNB-1)/BLNB,BLNB,shMem,r->nbrecipStream>>>(N,p->charge_d,prefactor,m->atomBlock_d,s->lambda_fd,s->lambdaForce_d,pEnergy);
+  getforce_ewaldself_kernel<<<(N+BLNB-1)/BLNB,BLNB,shMem,r->nbrecipStream>>>(N,p->charge_d,prefactor,m->atomBlock_d,s->lambda_fd,s->lambdaForce_d,pEnergy, dGdF);
 }
 
 
 
 // getforce_ewald_spread_kernel<<<>>>(N,p->charge_d,m->atomBlock_d,(real3*)s->position_d,s->orthBox,m->lambda_d,((int3*)p->gridDimPME)[0],p->chargeGridPME_d);
 template <bool flagBox,int order,typename box_type>
-__global__ void getforce_ewald_spread_kernel(int atomCount,real *charge,int *atomBlock,real3* position,box_type kbox,real *lambda,int3 gridDimPME,real *chargeGridPME)
+__global__ void getforce_ewald_spread_kernel(int atomCount,real *charge,int *atomBlock,real3* position,box_type kbox,real *lambda,int3 gridDimPME,real *chargeGridPME, real* dGdF, real* ostGrid)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   real q;
   int b;
   real l=1;
+  real dGdFi = 0;
   real3 xi; // position
   real u; // fractional coordinate remainder
   int3 u0; // index of grid point
@@ -106,6 +110,7 @@ __global__ void getforce_ewald_spread_kernel(int atomCount,real *charge,int *ato
     b=atomBlock[iAtom];
     if (b) {
       l=lambda[b];
+      dGdFi=dGdF[b];
     }
     q*=l;
 
@@ -208,6 +213,7 @@ __global__ void getforce_ewald_spread_kernel(int atomCount,real *charge,int *ato
         index.z=index.y*gridDimPME.z+over_modulus(u0.z+2*jz+jzs,gridDimPME.z);
         if (iAtom<atomCount) {
           atomicAdd(&chargeGridPME[index.z],q*dIndex.x*dIndex.y*dIndex.z);
+          atomicAdd(&ostGrid[index.z],dGdFi*q*dIndex.x*dIndex.y*dIndex.z);
         }
       }
     }
@@ -216,7 +222,7 @@ __global__ void getforce_ewald_spread_kernel(int atomCount,real *charge,int *ato
 
 // getforce_ewald_convolution_kernel<<<blockCount,blockSize,0,p->nbrecipStream>>>(((int3*)gridDimPME)[0],p->fourierGridPME_d,p->bGridPME_d,system->run->betaEwald,s->orthoBox)
 template <bool flagBox,typename box_type>
-__global__ void getforce_ewald_convolution_kernel(int3 gridDimPME,myCufftComplex *fourierGridPME,real *bGridPME,real betaEwald,box_type kbox)
+__global__ void getforce_ewald_convolution_kernel(int3 gridDimPME,myCufftComplex *fourierGridPME, myCufftComplex* ostFourierGridPME, real *bGridPME,real betaEwald,box_type kbox)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   int j=blockIdx.y*blockDim.y+threadIdx.y;
@@ -252,7 +258,9 @@ __global__ void getforce_ewald_convolution_kernel(int3 gridDimPME,myCufftComplex
     factor/=k2;
     factor=(ijk==0?0:factor);
     fourierGridPME[ijk].x*=factor;
+    ostFourierGridPME[ijk].x*=factor;
     fourierGridPME[ijk].y*=factor;
+    ostFourierGridPME[ijk].y*=factor;
   }
 }
 
@@ -268,6 +276,8 @@ __global__ void getforce_ewald_gather_kernel(
 #else
   real *potentialGridPME,
 #endif
+  real *ostPotentialGridPME,
+  real *dGdF,
   real3 *position,
   real3_f *force,
   box_type kbox,
@@ -277,10 +287,11 @@ __global__ void getforce_ewald_gather_kernel(
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   real q=0; // Avoid unitialized values for iAtom>=atomCount
+  real dGdFi = 0;
   int b;
   real l=1;
   real3 xi; // position
-  real3 fi;
+  real3 fi, fgi;
   real u; // fractional coordinate remainder
   int3 u0; // index of grid point
   real Meven,Modd; // even and odd order B splines
@@ -293,6 +304,7 @@ __global__ void getforce_ewald_gather_kernel(
   int iAtom=i/8;
   int threadOfAtom=rectify_modulus(i,8); // iThread%order;
   real lEnergy=0;
+  real gEnergy=0;
   extern __shared__ real sEnergy[];
 
   u0=make_int3(0,0,0);
@@ -304,6 +316,7 @@ __global__ void getforce_ewald_gather_kernel(
     b=atomBlock[iAtom];
     if (b) {
       l=lambda[b];
+      dGdFi=dGdF[b];
     }
     // q*=l; // do this scaling later in the kernel
 
@@ -399,6 +412,9 @@ __global__ void getforce_ewald_gather_kernel(
   fi.x=0;
   fi.y=0;
   fi.z=0;
+  fgi.x=0;
+  fgi.y=0;
+  fgi.z=0;
   for (jx=0; jx<order/2; jx++) {
     dIndex.x=__shfl_sync(0xFFFFFFFF,density.x,2*jx+jxs,8);
     dDIndex.x=__shfl_sync(0xFFFFFFFF,dDensity.x,2*jx+jxs,8);
@@ -420,8 +436,13 @@ __global__ void getforce_ewald_gather_kernel(
           fi.x+=P*dDIndex.x*dIndex.y*dIndex.z;
           fi.y+=P*dIndex.x*dDIndex.y*dIndex.z;
           fi.z+=P*dIndex.x*dIndex.y*dDIndex.z;
+          real G=potentialGridPME[index.z];
+          fgi.x+=G*dDIndex.x*dIndex.y*dIndex.z;
+          fgi.y+=G*dIndex.x*dDIndex.y*dIndex.z;
+          fgi.z+=G*dIndex.x*dIndex.y*dDIndex.z;
           if (b || energy) {
             lEnergy+=P*dIndex.x*dIndex.y*dIndex.z;
+            gEnergy+=G*dIndex.x*dIndex.y*dIndex.z;
           }
         }
       }
@@ -429,30 +450,55 @@ __global__ void getforce_ewald_gather_kernel(
   }
 
   // Reductions
+  /*
   fi.x+=__shfl_down_sync(0xFFFFFFFF,fi.x,1);
+  fgi.x+=__shfl_down_sync(0xFFFFFFFF,fgi.x,1);
   fi.y+=__shfl_down_sync(0xFFFFFFFF,fi.y,1);
+  fgi.y+=__shfl_down_sync(0xFFFFFFFF,fgi.y,1);
   fi.z+=__shfl_down_sync(0xFFFFFFFF,fi.z,1);
+  fgi.z+=__shfl_down_sync(0xFFFFFFFF,fgi.z,1);
   lEnergy+=__shfl_down_sync(0xFFFFFFFF,lEnergy,1);
+  gEnergy+=__shfl_down_sync(0xFFFFFFFF,gEnergy,1);
   fi.x+=__shfl_down_sync(0xFFFFFFFF,fi.x,2);
+  fgi.x+=__shfl_down_sync(0xFFFFFFFF,fgi.x,2);
   fi.y+=__shfl_down_sync(0xFFFFFFFF,fi.y,2);
+  fgi.y+=__shfl_down_sync(0xFFFFFFFF,fgi.y,2);
   fi.z+=__shfl_down_sync(0xFFFFFFFF,fi.z,2);
+  fgi.z+=__shfl_down_sync(0xFFFFFFFF,fgi.z,2);
   lEnergy+=__shfl_down_sync(0xFFFFFFFF,lEnergy,2);
+  gEnergy+=__shfl_down_sync(0xFFFFFFFF,gEnergy,2);
   fi.x+=__shfl_down_sync(0xFFFFFFFF,fi.x,4);
+  fgi.x+=__shfl_down_sync(0xFFFFFFFF,fgi.x,4);
   fi.y+=__shfl_down_sync(0xFFFFFFFF,fi.y,4);
+  fgi.y+=__shfl_down_sync(0xFFFFFFFF,fgi.y,4);
   fi.z+=__shfl_down_sync(0xFFFFFFFF,fi.z,4);
+  fgi.z+=__shfl_down_sync(0xFFFFFFFF,fgi.z,4);
   lEnergy+=__shfl_down_sync(0xFFFFFFFF,lEnergy,4);
+  gEnergy+=__shfl_down_sync(0xFFFFFFFF,gEnergy,4);
+  */
   // Reduction only correct for threadOfAtom==0
 
   // Lambda force
   if (iAtom<atomCount) {
     if (b && threadOfAtom==0) {
-      atomicAdd(&lambdaForce[b],2*q*lEnergy);
+      atomicAdd(&lambdaForce[b],2*q*lEnergy + q*dGdFi*gEnergy);
     }
   }
 
   // Spatial force
   if (iAtom<atomCount) {
     if (flagBox) {
+      // OST Recip
+      fgi.z*=2*l*q*gridDimPME.z; // dQ/dr * (T*G) -> every atom feels
+      fgi.z+=2*dGdFi*q*gridDimPME.z*fi.z; // dG/dr * (T*Q) -> alchemical atoms feel
+      fgi.y*=2*l*q*gridDimPME.y;
+      fgi.y+=2*dGdFi*q*gridDimPME.y*fi.y;
+      fgi.x*=2*l*q*gridDimPME.x;
+      fgi.x+=2*dGdFi*q*gridDimPME.x*fi.x;
+      fgi.z=fgi.x*boxxz(kbox)+fgi.y*boxyz(kbox)+fgi.z*boxzz(kbox);
+      fgi.y=fgi.x*boxxy(kbox)+fgi.y*boxyy(kbox);
+      fgi.x=fgi.x*boxxx(kbox);
+      // MSLD Recip
       fi.z*=2*l*q*gridDimPME.z;
       fi.y*=2*l*q*gridDimPME.y;
       fi.x*=2*l*q*gridDimPME.x;
@@ -460,12 +506,24 @@ __global__ void getforce_ewald_gather_kernel(
       fi.y=fi.x*boxxy(kbox)+fi.y*boxyy(kbox);
       fi.x=fi.x*boxxx(kbox);
     } else {
+      // OST Recip
+      fgi.x*=2*l*q*gridDimPME.x;
+      fgi.x+=2*dGdFi*q*gridDimPME.x*fi.x;
+      fgi.x*=boxxx(kbox);
+      fgi.y*=2*l*q*gridDimPME.y;
+      fgi.y+=2*dGdFi*q*gridDimPME.y*fi.y;
+      fgi.y*=boxyy(kbox);
+      fgi.z*=2*l*q*gridDimPME.z;
+      fgi.z+=2*dGdFi*q*gridDimPME.z*fi.z;
+      fgi.z*=boxzz(kbox);
+      // MSLD Recip
       fi.x*=2*l*q*gridDimPME.x*boxxx(kbox);
       fi.y*=2*l*q*gridDimPME.y*boxyy(kbox);
       fi.z*=2*l*q*gridDimPME.z*boxzz(kbox);
     }
     if (threadOfAtom==0) {
       at_real3_inc(&force[iAtom], fi);
+      at_real3_inc(&force[iAtom], fgi);
     }
   }
 
@@ -495,6 +553,7 @@ void getforce_ewaldTT(System *system,box_type kbox,bool calcEnergy)
   int N=p->atomCount;
   int shMem=0;
   real_e *pEnergy=NULL;
+  real *dGdF = system->msld->dGdF_d;
 
   if (r->usePME==false) return;
   if (r->calcTermFlag[eenbrecip]==false) return;
@@ -505,21 +564,28 @@ void getforce_ewaldTT(System *system,box_type kbox,bool calcEnergy)
   }
 
   cudaMemsetAsync(p->chargeGridPME_d,0,p->gridDimPME[0]*p->gridDimPME[1]*p->gridDimPME[2]*sizeof(myCufftReal),r->nbrecipStream);
+  cudaMemsetAsync(p->ostGridPME_d,0,p->gridDimPME[0]*p->gridDimPME[1]*p->gridDimPME[2]*sizeof(myCufftReal),r->nbrecipStream);
 
   // Setup for spread and gather
   int spreadGatherBlocks=(N + BLNB/8 - 1)/(BLNB/8);
 
   // Spread kernel
-  getforce_ewald_spread_kernel<flagBox,order><<<spreadGatherBlocks,BLNB,0,r->nbrecipStream>>>(N,p->charge_d,m->atomBlock_d,(real3*)s->position_fd,kbox,s->lambda_fd,((int3*)p->gridDimPME)[0],p->chargeGridPME_d);
+  getforce_ewald_spread_kernel<flagBox,order><<<spreadGatherBlocks,BLNB,0,r->nbrecipStream>>>(
+    N,p->charge_d,m->atomBlock_d,(real3*)s->position_fd,kbox,
+    s->lambda_fd,((int3*)p->gridDimPME)[0],p->chargeGridPME_d,
+    dGdF, p->ostGridPME_d);
 
   myCufftExecR2C(p->planFFTPME,p->chargeGridPME_d,p->fourierGridPME_d);
+  myCufftExecR2C(p->planFFTPME, p->ostGridPME_d, p->ostFourierGridPME_d);
 
   // Convolution kernel
   dim3 blockCount((p->gridDimPME[0]+8-1)/8,(p->gridDimPME[1]+8-1)/8,(p->gridDimPME[2]/2+1+8-1)/8);
   dim3 blockSize(8,8,8);
-  getforce_ewald_convolution_kernel<flagBox><<<blockCount,blockSize,0,r->nbrecipStream>>>(((int3*)p->gridDimPME)[0],p->fourierGridPME_d,p->bGridPME_d,system->run->betaEwald,kbox);
+  getforce_ewald_convolution_kernel<flagBox><<<blockCount,blockSize,0,r->nbrecipStream>>>(((int3*)p->gridDimPME)[0],
+    p->fourierGridPME_d,p->ostFourierGridPME_d, p->bGridPME_d,system->run->betaEwald,kbox);
 
   myCufftExecC2R(p->planIFFTPME,p->fourierGridPME_d,p->potentialGridPME_d);
+  myCufftExecC2R(p->planIFFTPME, p->ostFourierGridPME_d, p->ostPotentialGridPME_d);
 
   // Gather kernel
   getforce_ewald_gather_kernel<flagBox,order><<<spreadGatherBlocks,BLNB,shMem,r->nbrecipStream>>>(N,p->charge_d,m->atomBlock_d,((int3*)p->gridDimPME)[0],
@@ -528,6 +594,8 @@ void getforce_ewaldTT(System *system,box_type kbox,bool calcEnergy)
 #else
     p->potentialGridPME_d,
 #endif
+    p->ostPotentialGridPME_d,
+    dGdF,
     (real3*)s->position_fd,(real3_f*)s->force_d,kbox,s->lambda_fd,s->lambdaForce_d,pEnergy);
 }
 

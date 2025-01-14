@@ -717,6 +717,7 @@ void Msld::initialize(System *system) {
   // Histogram variables
   int nL = blockCount-1;
   cudaMalloc(&dGdF_d, blockCount*sizeof(real));
+  // TODO: Set dGdF_d[0] to 0
   cudaMemset(dGdF_d, 1, blockCount*sizeof(real));
   // Histogram details
   total_bins=first_half_bins+second_half_bins;

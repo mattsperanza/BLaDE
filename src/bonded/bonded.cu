@@ -39,8 +39,9 @@ void upload_bonded_d(
 // NYI - Try inlining the fdihe, fimp, fnb14, fnbex potentials...
 
 // getforce_bond_kernel<<<(N+BLBO-1)/BLBO,BLBO,0,p->bondedStream>>>(N,p->bonds,s->position_d,s->force_d,s->box,m->lambda_d,m->lambdaForce_d,NULL);
+//TODO: Calculate d2U/dL2 & d2U/dLdX
 template <bool flagBox,bool soft,typename box_type>
-__global__ void getforce_bond_kernel(int bond12Count,int bondCount,struct BondPotential *bonds,real3 *position,real3_f *force,box_type box,real *lambda,real_f *lambdaForce,real softAlpha,real softExp,real_e *energy)
+__global__ void getforce_bond_kernel(int bond12Count,int bondCount,struct BondPotential *bonds,real3 *position,real3_f *force,box_type box,real *lambda,real_f *lambdaForce,real softAlpha,real softExp,real_e *energy, real *dGdL)
 {
 // NYI - maybe energy should be a double
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -54,6 +55,7 @@ __global__ void getforce_bond_kernel(int bond12Count,int bondCount,struct BondPo
   real3 xi,xj;
   int b[2];
   real l[2]={1,1};
+  real dGdL1, dGdL2;
   
   if (i<bondCount) {
     // Geometry
@@ -72,13 +74,14 @@ __global__ void getforce_bond_kernel(int bond12Count,int bondCount,struct BondPo
     b[1]=0xFFFF & bp.siteBlock[1];
     if (b[0]) {
       l[0]=lambda[b[0]];
+      dGdL1=dGdL[b[0]];
       if (b[1]) {
         l[1]=lambda[b[1]];
+        dGdL2=dGdL[b[1]];
       }
     }
 
     if (soft) {
-      // interaction
       fbond=bp.kb*(r-bp.b0);
       real lambdaExpM1=pow(l[0]*l[1],softExp-1);
       real lambdaExp=lambdaExpM1*l[0]*l[1];
@@ -105,7 +108,6 @@ __global__ void getforce_bond_kernel(int bond12Count,int bondCount,struct BondPo
       at_real3_scaleinc(&force[ii], fbond/r,dr);
       at_real3_scaleinc(&force[jj],-fbond/r,dr);
     } else {
-      // interaction
       fbond=bp.kb*(r-bp.b0);
       if (b[0] || energy) {
         lEnergy=((real)0.5)*bp.kb*(r-bp.b0)*(r-bp.b0);
@@ -183,6 +185,7 @@ void getforce_bond(System *system,bool calcEnergy)
 
 
 // getforce_angle_kernel<<<(N+BLBO-1)/BLBO,BLBO,shMem,p->bondedStream>>>(N,p->angles_d,(real3*)s->position_d,(real3*)s->force_d,s->orthBox,m->lambda_d,m->lambdaForce_d,pEnergy);
+//TODO: Calculate d2U/dL2 & d2U/dLdX
 template <bool flagBox,bool soft,typename box_type>
 __global__ void getforce_angle_kernel(int angleCount,struct AnglePotential *angles,real3 *position,real3_f *force,box_type box,real *lambda,real_f *lambdaForce,real softExp,real_e *energy)
 {
@@ -341,6 +344,7 @@ __device__ void function_torsion(ImprPotential ip,real phi,real *fphi,real *lE,b
 
 
 // getforce_dihe_kernel<<<(N+BLBO-1)/BLBO,BLBO,shMem,p->bondedStream>>>(N,p->dihes_d,(real3*)s->position_d,(real3*)s->force_d,s->orthBox,m->lambda_d,m->lambdaForce_d,pEnergy);
+// TODO: Calculate d2U/dL2 & d2U/dLdX
 template <bool flagBox,class TorsionPotential,bool soft,typename box_type>
 __global__ void getforce_torsion_kernel(int torsionCount,TorsionPotential *torsions,real3 *position,real3_f *force,box_type box,real *lambda,real_f *lambdaForce,real softExp,real_e *energy)
 {
@@ -520,6 +524,7 @@ void getforce_impr(System *system,bool calcEnergy)
 
 
 // getforce_cmap_kernel<<<(2*N+BLBO-1)/BLBO,BLBO,shMem,p->bondedStream>>>(N,p->cmaps_d,(real3*)s->position_d,(real3*)s->force_d,s->orthBox,m->lambda_d,m->lambdaForce_d,pEnergy);
+//TODO: Calculate d2U/dL2 & d2U/dLdX
 template <bool flagBox,bool soft,typename box_type>
 __global__ void getforce_cmap_kernel(int cmapCount,struct CmapPotential *cmaps,real3 *position,real3_f *force,box_type box,real *lambda,real_f *lambdaForce,real softExp,real_e *energy)
 {
@@ -696,17 +701,17 @@ __global__ void getforce_cmap_kernel(int cmapCount,struct CmapPotential *cmaps,r
 
     // Spatial force
 // NOTE #warning "Division and sqrt in kernel"
-    minv2=1/(real3_mag2<real>(mvec));
-    ninv2=1/(real3_mag2<real>(nvec));
-    rjk=sqrt(real3_mag2<real>(drjk));
-    rjkinv2=1/(rjk*rjk);
-    fi=real3_scale<real3>(-fcmap*rjk*minv2,mvec);
+    minv2=1/(real3_mag2<real>(mvec)); // mvec = drij x drjk = angle plane normal between atoms i, j, k = 1/(mag of normal vector)
+    ninv2=1/(real3_mag2<real>(nvec)); // nvec = drjk x drkl = angle plane normal between atoms j, k, l = 1/(mag of normal vector)
+    rjk=sqrt(real3_mag2<real>(drjk)); // distance between atoms j and k
+    rjkinv2=1/(rjk*rjk); // 1/(distance between atoms j and k)^2
+    fi=real3_scale<real3>(-fcmap*rjk*minv2,mvec); // force i = -fcmap*rjk/(mag of i,j,k plane normal) * normal vector
     at_real3_inc(&force[ii], fi);
 
     fk=real3_scale<real3>(-fcmap*rjk*ninv2,nvec);
-    p=real3_dot<real>(drij,drjk)*rjkinv2;
-    q=real3_dot<real>(drkl,drjk)*rjkinv2;
-    fj=real3_scale<real3>(-p,fi);
+    p=real3_dot<real>(drij,drjk)*rjkinv2; // drij projected onto drjk
+    q=real3_dot<real>(drkl,drjk)*rjkinv2; // drkl projected onto drjk
+    fj=real3_scale<real3>(-p,fi); // force j = -drij projcted onto drjk * force i (which is in direction of normal of i,j,k plane)
     real3_scaleinc(&fj,-q,fk);
     fl=real3_scale<real3>(-1,fk);
     at_real3_inc(&force[ll], fl);

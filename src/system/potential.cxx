@@ -91,7 +91,9 @@ Potential::Potential() {
   excls_d=NULL;
 
   chargeGridPME_d=NULL;
+  ostGridPME_d=NULL;
   fourierGridPME_d=NULL;
+  ostFourierGridPME_d=NULL;
   potentialGridPME_d=NULL;
 #ifdef USE_TEXTURE
   potentialGridPME_tex=0;
@@ -183,7 +185,9 @@ Potential::~Potential()
   if (excls_d) cudaFree(excls_d);
 
   if (chargeGridPME_d) cudaFree(chargeGridPME_d);
+  if (ostGridPME_d) cudaFree(ostGridPME_d);
   if (fourierGridPME_d) cudaFree(fourierGridPME_d);
+  if (ostFourierGridPME_d) cudaFree(ostFourierGridPME_d);
   if (potentialGridPME_d) cudaFree(potentialGridPME_d);
 #ifdef USE_TEXTURE
   if (potentialGridPME_tex) cudaDestroyTextureObject(potentialGridPME_tex);
@@ -1070,8 +1074,11 @@ void Potential::initialize(System *system)
   }
 
   cudaMalloc(&chargeGridPME_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
+  cudaMalloc(&ostGridPME_d, gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
+  cudaMalloc(&fourierGridPME_d,gridDimPME[0]*gridDimPME[1]*(gridDimPME[2]/2+1)*sizeof(myCufftComplex));
   cudaMalloc(&fourierGridPME_d,gridDimPME[0]*gridDimPME[1]*(gridDimPME[2]/2+1)*sizeof(myCufftComplex));
   cudaMalloc(&potentialGridPME_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
+  cudaMalloc(&ostPotentialGridPME_d, gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
 #ifdef USE_TEXTURE
   {
     cudaResourceDesc resDesc;
@@ -1579,14 +1586,17 @@ void Potential::calc_force(int step,System *system)
 
   cudaEventRecord(r->forceBegin,r->updateStream);
 
-  // TODO: Calc only dUdL_MSLD to find position (l, dUdl)
-  // TODO: Get 2D dG components for d2UdXdL & ensemble_d2UdL2
+  // TODO: Create OST stream and make it wait for updateStream and make forceBegin wait on it
+  // TODO: Calc dU/dL (MSLD) to find position (l, dUdl), all on new stream where forceBegin waits for this to be over
+  // TODO: Calc dGdF components
+  // TODO: call reset_force(system,calcEnergy);
+
   if (system->id == helper && system->msld->apply_histogram) {
     cudaStreamWaitEvent(r->biaspotStream, r->forceBegin, 0);
     system->msld->getforce_histogram(system, calcEnergy);
   }
 
-  // TODO: Add d2UdXdL & ensemble_d2UdL2 to force in dihe, cmap, nb14?
+  // TODO: OST bonded forces & ewald corrections
   if (system->id==helper) {
     cudaStreamWaitEvent(r->bondedStream,r->forceBegin,0);
     getforce_bond(system,calcEnergy);
@@ -1594,13 +1604,12 @@ void Potential::calc_force(int step,System *system)
     getforce_dihe(system,calcEnergy);
     getforce_impr(system,calcEnergy);
     getforce_cmap(system,calcEnergy);
-    getforce_nb14(system,calcEnergy);
-    getforce_nbex(system,calcEnergy);
+    getforce_nb14(system,calcEnergy); // subtract (1-scale)*coulomb from ewald energy/forces
+    getforce_nbex(system,calcEnergy); // subtract coulomb from ewald energy/forces
     cudaEventRecord(r->bondedComplete,r->bondedStream);
     cudaStreamWaitEvent(r->updateStream,r->bondedComplete,0);
   }
 
-  // TODO: Add d2UdXdL & ensemble_d2UdL2 to force in recip convolution
   if (system->id==0) {
     cudaStreamWaitEvent(r->nbrecipStream,r->forceBegin,0);
     getforce_ewaldself(system,calcEnergy);
@@ -1623,7 +1632,6 @@ void Potential::calc_force(int step,System *system)
     cudaStreamWaitEvent(r->updateStream,r->biaspotComplete,0);
   }
 
-  // TODO: Add d2UdXdL & ensemble_d2UdL2 to direct ewald & vdw
   if (system->domdec->id>=0) {
     cudaStreamWaitEvent(r->nbdirectStream,r->forceBegin,0);
     getforce_nbdirect(system,calcEnergy);
@@ -1641,7 +1649,6 @@ void Potential::calc_force(int step,System *system)
   calc_virtual_force(system);
 
   // TODO: weighted using energy that includes G(l, dUdl)
-  // TODO: Decide to reset or shift histogram
   if(step != 0 && step % system->msld->sampleFrequency == 0 && system->msld->apply_histogram) {
     system->state->recv_energy(); // TODO: Access without recv call
     system->state->recv_lambda();

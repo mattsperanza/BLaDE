@@ -134,7 +134,7 @@ __global__ void getforce_nbdirect_kernel(
   real li,lj,ljtmp,lixljtmp;
   real rEff,dredr,dredll; // Soft core stuff
   int exclAddress, exclMask;
-  bool OST_flag = true;
+  bool OST_flag = false;
   real fij_ost, fli_ost, fljtmp_ost, eij_ost;
   real dGdFi, dGdFj, dGdFjtmp;
 
@@ -428,7 +428,7 @@ __global__ void getforce_nbdirect_kernel(
                 }
               }
               else { // Tapered
-                if ( !usevdWSwitch && false) { // Potential switch
+                if ( !usevdWSwitch && false) { // Force switch
                   real k6=rCut3/(rCut3-rSwitch3);
                   real k12=rCut3*rCut3/(rCut3*rCut3-rSwitch3*rSwitch3);
                   real rCutinv3=1/rCut3;
@@ -439,7 +439,7 @@ __global__ void getforce_nbdirect_kernel(
                     eij+=vdwp.c12*k12*(rinv6-rCutinv3*rCutinv3)*(rinv6-rCutinv3*rCutinv3)-vdwp.c6*k6*(rinv3-rCutinv3)*(rinv3-rCutinv3);
                   }
                 }
-                else { // Force Switch
+                else { // Potential Switch
                   real c2ofnb=cutoffs.rCut*cutoffs.rCut;
                   real c2onnb=cutoffs.rSwitch*cutoffs.rSwitch;
                   real rul3=(c2ofnb-c2onnb)*(c2ofnb-c2onnb)*(c2ofnb-c2onnb);
