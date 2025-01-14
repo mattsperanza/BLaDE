@@ -70,7 +70,7 @@ __global__ void getforce_bond_kernel(int bond12Count,int bondCount,struct BondPo
     r=real3_mag<real>(dr);
     
     // Scaling
-    b[0]=0xFFFF & bp.siteBlock[0];
+    b[0]=0xFFFF & bp.siteBlock[0]; // bp allow for turning on and off scaling arbitrarily
     b[1]=0xFFFF & bp.siteBlock[1];
     if (b[0]) {
       l[0]=lambda[b[0]];
@@ -114,7 +114,7 @@ __global__ void getforce_bond_kernel(int bond12Count,int bondCount,struct BondPo
       }
       fbond*=l[0]*l[1];
 
-      // Lambda force
+      // Lambda force - included as an option, but not recommended
       if (b[0]) {
         atomicAdd(&lambdaForce[b[0]],l[1]*lEnergy);
         if (b[1]) {
@@ -219,10 +219,10 @@ __global__ void getforce_angle_kernel(int angleCount,struct AnglePotential *angl
     dotp=real3_dot<real>(drij,drkj);
     crop=real3_cross(drij,drkj); // c = a x b
     mcrop=real3_mag<real>(crop);
-    t=atan2f(mcrop,dotp);
+    t=atan2f(mcrop,dotp); // t = atan(|rij x rkj| / rij . rkj)
 
     // Scaling
-    b[0]=0xFFFF & ap.siteBlock[0];
+    b[0]=0xFFFF & ap.siteBlock[0]; // arbitrary scaling of angle terms
     b[1]=0xFFFF & ap.siteBlock[1];
     if (b[0]) {
       l[0]=lambda[b[0]];
@@ -257,6 +257,7 @@ __global__ void getforce_angle_kernel(int angleCount,struct AnglePotential *angl
     }
 
     // Spatial force
+    // fi = -fangle * (rij x (rij x rkj)) / (|rij| |rij x rkj|)
     fi=real3_cross(drij,crop);
 // NOTE #warning "division on kernel, was using realRecip before."
     real3_scaleself(&fi, fangle/(mcrop*real3_mag2<real>(drij)));
@@ -382,18 +383,21 @@ __global__ void getforce_torsion_kernel(int torsionCount,TorsionPotential *torsi
     drij=real3_subpbc<flagBox>(xi,xj,box);
     drjk=real3_subpbc<flagBox>(xj,xk,box);
     drkl=real3_subpbc<flagBox>(xk,xl,box);
+    // Normal of plane of ijk
     mvec=real3_cross(drij,drjk);
+    // Normal of plane jkl
     nvec=real3_cross(drjk,drkl);
     dsinp=real3_cross(mvec,nvec);
     sinp=real3_mag<real>(dsinp);
     cosp=real3_dot<real>(mvec,nvec);
+    // phi = atan ( |m x n| / (m . n) ) -> magnitudes cancel out
     phi=atan2f(sinp,cosp);
     ipr=real3_dot<real>(drij,nvec);
     sign=(ipr > 0.0) ? -1.0 : 1.0; // Opposite of gromacs because m and n are opposite
     phi=sign*phi;
 
     // Scaling
-    b[0]=0xFFFF & tp.siteBlock[0];
+    b[0]=0xFFFF & tp.siteBlock[0]; // scale torsions option (this is usually on)
     b[1]=0xFFFF & tp.siteBlock[1];
     if (b[0]) {
       l[0]=lambda[b[0]];
@@ -431,6 +435,7 @@ __global__ void getforce_torsion_kernel(int torsionCount,TorsionPotential *torsi
     rjk=sqrt(real3_mag2<real>(drjk));
     rjkinv2=1/(rjk*rjk);
     fi=real3_scale<real3>(-ftorsion*rjk*minv2,mvec);
+    // fi = - m (dU/dphi)*|rjk|/|m|^2
     at_real3_inc(&force[ii], fi);
 
     fk=real3_scale<real3>(-ftorsion*rjk*ninv2,nvec);
@@ -438,13 +443,16 @@ __global__ void getforce_torsion_kernel(int torsionCount,TorsionPotential *torsi
     q=real3_dot<real>(drkl,drjk)*rjkinv2;
     fj=real3_scale<real3>(-p,fi);
     real3_scaleinc(&fj,-q,fk);
+    // fl = - n (dU/dphi)*|rjk|/|n|^2
     fl=real3_scale<real3>(-1,fk);
     at_real3_inc(&force[ll], fl);
 
     real3_dec(&fk,fj);
+    // fk = fl + p*fi + q*fl
     at_real3_inc(&force[kk], fk);
 
     real3_dec(&fj,fi);
+    // fj = - p*fi - q*fl - fi
     at_real3_inc(&force[jj], fj);
   }
 
@@ -701,17 +709,18 @@ __global__ void getforce_cmap_kernel(int cmapCount,struct CmapPotential *cmaps,r
 
     // Spatial force
 // NOTE #warning "Division and sqrt in kernel"
-    minv2=1/(real3_mag2<real>(mvec)); // mvec = drij x drjk = angle plane normal between atoms i, j, k = 1/(mag of normal vector)
-    ninv2=1/(real3_mag2<real>(nvec)); // nvec = drjk x drkl = angle plane normal between atoms j, k, l = 1/(mag of normal vector)
-    rjk=sqrt(real3_mag2<real>(drjk)); // distance between atoms j and k
-    rjkinv2=1/(rjk*rjk); // 1/(distance between atoms j and k)^2
-    fi=real3_scale<real3>(-fcmap*rjk*minv2,mvec); // force i = -fcmap*rjk/(mag of i,j,k plane normal) * normal vector
+    // These are the same as described above in torsion code
+    minv2=1/(real3_mag2<real>(mvec));
+    ninv2=1/(real3_mag2<real>(nvec));
+    rjk=sqrt(real3_mag2<real>(drjk));
+    rjkinv2=1/(rjk*rjk);
+    fi=real3_scale<real3>(-fcmap*rjk*minv2,mvec);
     at_real3_inc(&force[ii], fi);
 
     fk=real3_scale<real3>(-fcmap*rjk*ninv2,nvec);
-    p=real3_dot<real>(drij,drjk)*rjkinv2; // drij projected onto drjk
-    q=real3_dot<real>(drkl,drjk)*rjkinv2; // drkl projected onto drjk
-    fj=real3_scale<real3>(-p,fi); // force j = -drij projcted onto drjk * force i (which is in direction of normal of i,j,k plane)
+    p=real3_dot<real>(drij,drjk)*rjkinv2;
+    q=real3_dot<real>(drkl,drjk)*rjkinv2;
+    fj=real3_scale<real3>(-p,fi);
     real3_scaleinc(&fj,-q,fk);
     fl=real3_scale<real3>(-1,fk);
     at_real3_inc(&force[ll], fl);
