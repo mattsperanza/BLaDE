@@ -134,7 +134,7 @@ __global__ void getforce_nbdirect_kernel(
   real li,lj,ljtmp,lixljtmp;
   real rEff,dredr,dredll; // Soft core stuff
   int exclAddress, exclMask;
-  bool OST_flag = false;
+  bool OST_flag = true;
   real fij_ost, fli_ost, fljtmp_ost, eij_ost;
   real dGdFi, dGdFj, dGdFjtmp;
 
@@ -428,7 +428,7 @@ __global__ void getforce_nbdirect_kernel(
                 }
               }
               else { // Tapered
-                if ( !usevdWSwitch && false) { // Force switch
+                if ( !usevdWSwitch ) { // Force switch
                   real k6=rCut3/(rCut3-rSwitch3);
                   real k12=rCut3*rCut3/(rCut3*rCut3-rSwitch3*rSwitch3);
                   real rCutinv3=1/rCut3;
@@ -464,16 +464,19 @@ __global__ void getforce_nbdirect_kernel(
                 // Intermediates
                 // Taper
                 bool taper = rEff<cutoffs.rSwitch;
-                real v_taper = taper ? 1.0 :
-                  pow(rCut*rCut - rEff*rEff, 2)
-                  *(rCut*rCut + 2*rEff*rEff - 3*rSwitch*rSwitch)/pow(rCut*rCut - rSwitch*rSwitch, 3); // Correct
-                real dv_taper_drijp = taper ? 0.0 :
-                  12*(rCut*rCut - rEff*rEff) * (rSwitch*rSwitch - rEff*rEff)
-                / pow(rCut*rCut - rSwitch*rSwitch, 3); // Correct - needed to take out extra factor of rEff?
-                real d2v_taper_drijp2 = taper ? 0.0 :
-                  4 * (8*(rEff*rEff)*(rEff*rEff - rCut*rCut)
-                  + pow(rEff*rEff - rCut*rCut, 2)
-                  + (3*rEff*rEff - rCut*rCut)*(2*rEff*rEff + rCut*rCut - 3*rSwitch*rSwitch));
+                real v_taper, dv_taper_drijp, d2v_taper_drijp2;
+                if (usevdWSwitch) { // Potential Switch
+                  v_taper = taper ? 1.0 :
+                    pow(rCut*rCut - rEff*rEff, 2)
+                    *(rCut*rCut + 2*rEff*rEff - 3*rSwitch*rSwitch)/pow(rCut*rCut - rSwitch*rSwitch, 3); // Correct
+                  dv_taper_drijp = taper ? 0.0 :
+                    12*(rCut*rCut - rEff*rEff) * (rSwitch*rSwitch - rEff*rEff)
+                  / pow(rCut*rCut - rSwitch*rSwitch, 3); // Correct - needed to take out extra factor of rEff?
+                  d2v_taper_drijp2 = taper ? 0.0 :
+                    4 * (8*(rEff*rEff)*(rEff*rEff - rCut*rCut)
+                    + pow(rEff*rEff - rCut*rCut, 2)
+                    + (3*rEff*rEff - rCut*rCut)*(2*rEff*rEff + rCut*rCut - 3*rSwitch*rSwitch));
+                }
                 // VdW 12-6
                 real v_12_6 = rinv6*(vdwp.c12*rinv6 - vdwp.c6); // A = c12, B = c6
                 real dv_12_6_drijp = 6*(-2*vdwp.c12*rinv6 + vdwp.c6)*rinv6*rinv;
