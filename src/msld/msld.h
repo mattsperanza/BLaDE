@@ -55,6 +55,10 @@ class Msld {
   struct VariableBias *variableBias;
   struct VariableBias *variableBias_d;
 
+  // Orthogonal Space Sampling Variables
+  real* dGdF_d;
+  real* dGdL_d;
+
   int thetaCollBiasCount;
   real *kThetaCollBias;
   real *kThetaCollBias_d;

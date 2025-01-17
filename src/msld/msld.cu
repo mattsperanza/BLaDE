@@ -671,6 +671,15 @@ void Msld::initialize(System *system)
   cudaMemcpy(siteBound_d,siteBound,(siteCount+1)*sizeof(int),cudaMemcpyHostToDevice);
   cudaMemcpy(lambdaSite_d,lambdaSite,blockCount*sizeof(int),cudaMemcpyHostToDevice);
 
+
+  // Thermodynamic Integration/Metadynamics/OST variables
+  // TODO: Reset these to be zero
+  cudaMalloc(&dGdF_d, blockCount*sizeof(real)); // use blockCount so that it is indexed same as lambda array
+  cudaMemset(&dGdF_d, 1, blockCount*sizeof(real));
+  cudaMalloc(&dGdL_d, blockCount*sizeof(real));
+  cudaMemset(&dGdL_d, 1, blockCount*sizeof(real));
+  int nL = blockCount-1; // 0th lambda is environment
+
   // Atom restraints
   atomRestraintCount=atomRestraints.size();
   if (atomRestraintCount>0) {

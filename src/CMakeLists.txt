@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.0)
 project(blade LANGUAGES CXX CUDA)
 
 file(GLOB_RECURSE sources *.cxx *.cu *.h)
+file(GLOB_RECURSE REMOVE_CMAKE "build/*")
+file(GLOB_RECURSE REMOVE_CMAKE_DEBUG "buildDebug/*")
+list(REMOVE_ITEM sources ${REMOVE_CMAKE})
+list(REMOVE_ITEM sources ${REMOVE_CMAKE_DEBUG})
 
 find_package(CUDA 10.0)
 set (CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -ccbin ${CMAKE_CXX_COMPILER}")
@@ -21,6 +25,7 @@ set(PRECISION "FLOAT" CACHE STRING "FLOAT OR DOUBLE")
 if (PRECISION STREQUAL "DOUBLE")
   add_definitions(-DDOUBLE)
 endif()
+add_definitions(-DDOUBLE)
 
 ## Add compiler definition flags here
 # add_definitions(-DPROFILESERIAL)
