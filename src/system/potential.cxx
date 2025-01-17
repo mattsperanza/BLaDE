@@ -1563,6 +1563,9 @@ void Potential::calc_force(int step,System *system)
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
+  if (system->msld->oss && system->msld->update_histogram) { // Need energy to add sample for <dU/dL> weighting
+    calcEnergy = step % system->msld->sample_freq == 0;
+  }
 #ifdef REPLICAEXCHANGE
   if (system->run->freqREx>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqREx==0));
@@ -1628,5 +1631,52 @@ void Potential::calc_force(int step,System *system)
   calc_virtual_force(system);
 
   // cudaEventRecord(r->forceComplete,r->updateStream);
+  if (system->msld->oss) {
+    // Wait on lambda force calc being complete
+    cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
+    cudaStreamWaitEvent(r->ossBias, r->nbrecipComplete, 0);
+    cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
+    cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
+    // Calculate dGdF from histogram/ABF & conditionally add sample
+    // system->msld->getforce_hist(system,calcEnergy);
+
+    // Wait on calculation of dGdF
+    cudaEventRecord(r->ossForceBegin, r->ossBias);
+    // TODO: Calculate bonded forces & corrections
+    if (system->id == helper) {
+      cudaStreamWaitEvent(r->ossBonded, r->ossForceBegin, 0);
+      getforce_bond_oss(system);
+      getforce_angle_oss(system);
+      getforce_dihe_oss(system);
+      getforce_impr_oss(system);
+      getforce_cmap_oss(system);
+      getforce_nbdirect_oss(system);
+      getforce_nb14_oss(system);
+      cudaEventRecord(r->ossBondedComplete, r->ossBonded);
+      cudaStreamWaitEvent(r->updateStream, r->ossBondedComplete, 0);
+    }
+    // Calculate direct space forces
+    if (system->id>=0) {
+      cudaStreamWaitEvent(r->nbdirectStream, r->ossForceBegin, 0);
+      getforce_nbdirect_oss(system);
+      cudaEventRecord(r->ossDirectComplete, r->ossDirect);
+      cudaStreamWaitEvent(r->updateStream, r->ossDirectComplete, 0);
+    }
+    // TODO: Calculate reciprocal space and self forces
+    if (system->id==0) {
+      cudaStreamWaitEvent(r->nbrecipStream, r->ossForceBegin, 0);
+      //getforce_ewald_oss(system);
+      //getforce_ewaldself_oss();
+      cudaEventRecord(r->ossRecipComplete, r->ossRecip);
+      cudaStreamWaitEvent(r->updateStream, r->ossRecipComplete, 0);
+    }
+    // Call gather_force & nbdirect_oss_force
+    if (system->id>1) {
+      // system->state->gather_force(system); // Do I need to call this?
+      if (system->id==0) {
+        getforce_nbdirect_oss_reduce(system);
+      }
+    }
+  }
 }
 

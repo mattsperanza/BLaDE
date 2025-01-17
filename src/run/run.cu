@@ -115,6 +115,12 @@ Run::Run(System *system)
   cudaStreamCreate(&biaspotStream);
   cudaStreamCreate(&nbdirectStream);
   cudaStreamCreate(&nbrecipStream);
+  // Orthogonal Bias streams
+  cudaStreamCreate(&ossBias);
+  cudaStreamCreate(&ossBonded);
+  cudaStreamCreate(&ossDirect);
+  cudaStreamCreate(&ossRecip);
+
   // Set priorities if desired:
   // int low,high;
   // cudaDeviceGetStreamPriorityRange(&low,&high);
@@ -128,6 +134,14 @@ Run::Run(System *system)
   cudaEventCreate(&nbrecipComplete);
   // cudaEventCreate(&forceComplete);
   cudaEventCreate(&communicate);
+
+  // Orthogonal Bias events
+  cudaEventCreate(&ossForceBegin);
+  cudaEventCreate(&ossBiasComplete);
+  cudaEventCreate(&ossBondedComplete);
+  cudaEventCreate(&ossDirectComplete);
+  cudaEventCreate(&ossRecipComplete);
+
 
   if (system->idCount>0) {
     communicate_omp=(cudaEvent_t*)calloc(system->idCount,sizeof(cudaEvent_t));
@@ -536,7 +550,7 @@ void Run::dynamics_initialize(System *system)
 #endif
 
   // Finish setting up MSLD
-  system->msld->initialize(system); 
+  system->msld->initialize(system);
 
   // Set up update structures
   if (system->state) delete system->state;

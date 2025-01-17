@@ -7,4 +7,7 @@ class System;
 void getforce_nb14(System *system,bool calcEnergy);
 void getforce_nbex(System *system,bool calcEnergy);
 
+void getforce_nb14_oss(System *system);
+void getforce_nbex_oss(System *system);
+
 #endif

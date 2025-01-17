@@ -94,9 +94,20 @@ class Run {
   cudaEvent_t biaspotComplete;
   cudaEvent_t nbdirectComplete;
   cudaEvent_t nbrecipComplete;
-  // cudaEvent_t forceComplete;
+  cudaEvent_t forceComplete;
   cudaEvent_t communicate;
   cudaEvent_t *communicate_omp;
+
+  // OST streams
+  cudaEvent_t ossForceBegin;
+  cudaStream_t ossBias;
+  cudaEvent_t ossBiasComplete;
+  cudaStream_t ossBonded;
+  cudaEvent_t ossBondedComplete;
+  cudaStream_t ossDirect;
+  cudaEvent_t ossDirectComplete;
+  cudaStream_t ossRecip;
+  cudaEvent_t ossRecipComplete;
 
 
   Run(System *system);

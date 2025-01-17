@@ -5,6 +5,7 @@
 #include "msld/msld.h"
 #include "system/system.h"
 #include "io/io.h"
+#include "main/gpu_check.h"
 #include "system/selections.h"
 #include "system/structure.h"
 #include "system/state.h"
@@ -675,9 +676,9 @@ void Msld::initialize(System *system)
   // Thermodynamic Integration/Metadynamics/OST variables
   // TODO: Reset these to be zero
   cudaMalloc(&dGdF_d, blockCount*sizeof(real)); // use blockCount so that it is indexed same as lambda array
-  cudaMemset(&dGdF_d, 1, blockCount*sizeof(real));
+  cudaMemset(dGdF_d, 1, blockCount*sizeof(real));
   cudaMalloc(&dGdL_d, blockCount*sizeof(real));
-  cudaMemset(&dGdL_d, 1, blockCount*sizeof(real));
+  cudaMemset(dGdL_d, 1, blockCount*sizeof(real));
   int nL = blockCount-1; // 0th lambda is environment
 
   // Atom restraints

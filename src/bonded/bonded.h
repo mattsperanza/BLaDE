@@ -10,4 +10,11 @@ void getforce_dihe(System *system,bool calcEnergy);
 void getforce_impr(System *system,bool calcEnergy);
 void getforce_cmap(System *system,bool calcEnergy);
 
+void getforce_bond_oss(System *system);
+void getforce_angle_oss(System *system);
+void getforce_dihe_oss(System *system);
+void getforce_impr_oss(System *system);
+void getforce_cmap_oss(System *system);
+
+
 #endif

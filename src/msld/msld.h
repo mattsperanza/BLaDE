@@ -56,6 +56,9 @@ class Msld {
   struct VariableBias *variableBias_d;
 
   // Orthogonal Space Sampling Variables
+  bool oss = true; // Perform Orthogonal Space Sampling calculations (requires additional lambda force calculation)
+  bool update_histogram = true;
+  int sample_freq = 10;
   real* dGdF_d;
   real* dGdL_d;
 

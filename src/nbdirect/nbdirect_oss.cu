@@ -332,16 +332,17 @@ __global__ void getforce_nbdirect_oss_kernel(
                 real erfcrinv=fasterfc(br)*rinv;
                 real U_dir = kELECTRIC*inp.q*jtmpnp_q*erfcrinv;
                 // First Derivatives - these should eventually match current implementation
-                dU_drijp = lixljtmp*-kELECTRIC*inp.q*jtmpnp_q*rinv
+                real dU_drijp_tmp = -kELECTRIC*inp.q*jtmpnp_q*rinv
                   *(erfcrinv+((real)1.128379167095513)*cutoffs.betaEwald*expf(-br*br));
+                dU_drijp = lixljtmp * dU_drijp_tmp;
                 dU_dlami = !bi ? 0 : ljtmp * U_dir;
                 dU_dlamj = !bjtmp ? 0 : li * U_dir;
                 // Second Derivatives
                 // Distribute expf(-br*br) term to avoid exp(br*br)
                 d2U_drijp2 = lixljtmp*2*kELECTRIC*inp.q*jtmpnp_q*rinv*rinv*rinv*(1/M_PI)*
                   (2*sqrt(M_PI)*br*br*br*expf(-br*br) + 2*sqrt(M_PI)*br*expf(-br*br) + M_PI*fasterfc(br));
-                d2U_drijp_dlami = !bi ? 0 : dU_drijp / li;
-                d2U_drijp_dlamj = !bjtmp ? 0 : dU_drijp / ljtmp;
+                d2U_drijp_dlami = !bi ? 0 : ljtmp * dU_drijp_tmp;
+                d2U_drijp_dlamj = !bjtmp ? 0 : li * dU_drijp_tmp;
                 d2U_dlami_dlamj = bi && bjtmp && bi != bjtmp ? U_dir : 0;
                 // Accumulate later...
               }
@@ -392,15 +393,15 @@ __global__ void getforce_nbdirect_oss_kernel(
                 real dv6=usevdWSwitch?0:1/(rCut3*rSwitch3);
                 real U_dir = vdwp.c12*(rinv6*rinv6-dv6*dv6)-vdwp.c6*(rinv6-dv6);
                 // First Derivatives
-                real dU_drijp_tmp = lixljtmp*rinv*rinv6*(-12*vdwp.c12*rinv6+6*vdwp.c6);
-                dU_drijp += dU_drijp_tmp;
+                real dU_drijp_tmp = rinv*rinv6*(-12*vdwp.c12*rinv6+6*vdwp.c6);
+                dU_drijp += lixljtmp * dU_drijp_tmp;
                 dU_dlami += !bi ? 0 : ljtmp * U_dir;
                 dU_dlamj += !bjtmp ? 0 : li * U_dir;
                 // Second Derivatives
                 // Distribute expf(-br*br) term to avoid exp(br*br)
                 d2U_drijp2 += lixljtmp*6*rinv6*rinv*rinv*(26*vdwp.c12*rinv6-7*vdwp.c6);
-                d2U_drijp_dlami += !bi ? 0 : dU_drijp_tmp / li;
-                d2U_drijp_dlamj += !bjtmp ? 0 : dU_drijp_tmp / ljtmp;
+                d2U_drijp_dlami += !bi ? 0 : ljtmp * dU_drijp_tmp;
+                d2U_drijp_dlamj += !bjtmp ? 0 : li * dU_drijp_tmp;
                 d2U_dlami_dlamj += bi && bjtmp && bi != bjtmp ? U_dir : 0;
                 // Accumulate later...
               } else {
