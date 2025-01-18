@@ -265,6 +265,12 @@ __global__ void getforce_nbdirect_oss_kernel(
                * Code identical to nbdirect kernel up to here.
                *
                */
+              // Derivatives of the lambda function
+              // not bi = bj then = lj, bi = bj then = 1, if not bi then = 0
+              real dlixlj_dli = bi != bjtmp ? ljtmp : 1;
+              dlixlj_dli = bi ? dlixlj_dli : 0;
+              real dlixlj_dlj = bi != bjtmp ? li : 1;
+              dlixlj_dlj = bjtmp ? dlixlj_dlj : 0;
               // Softcore OST
               // rSoft derivatives
               real drlam_dlami=0;
@@ -275,8 +281,6 @@ __global__ void getforce_nbdirect_oss_kernel(
               real drijp_dlamj=0;
               // First derivative intermediates
               real drijp_drlam=0;
-              // Primary second derivatives
-              real d2rijp_drij2=0;
               // Primary cross derivatives
               real d2rijp_drij_dlamj=0;
               real d2rijp_drij_dlami=0;
@@ -300,18 +304,16 @@ __global__ void getforce_nbdirect_oss_kernel(
                     dredll*=-SOFTCORERADIUS; // missing lambda factor corrected later
                     rEff*=rSoft;
                     // Terms with li or lj in it need to be conditioned
-                    drlam_dlami = bi ? -SOFTCORERADIUS*lixljtmp/li : 0; // Correct
-                    drlam_dlamj = bjtmp ? -SOFTCORERADIUS*lixljtmp/ljtmp : 0; // Correct
+                    drlam_dlami = bi ? -SOFTCORERADIUS*dlixlj_dli : 0;
+                    drlam_dlamj = bjtmp ? -SOFTCORERADIUS*dlixlj_dlj : 0;
                     drijp_drlam = -.5*pow(r/rSoft, 4) + pow(r/rSoft,3) +
-                      rSoft*(2*pow(r,4)/pow(rSoft,5) - 3*pow(r,3)/pow(rSoft,4))+.5; // Correct
+                      rSoft*(2*pow(r,4)/pow(rSoft,5) - 3*pow(r,3)/pow(rSoft,4))+.5;
                     d2rijp_drlam_drij = r*r*(6*r/rSoft-6)/pow(rSoft,3);
                     d2rijp_drlam2 = r*r*r*(-6*r/rSoft+6)/pow(rSoft, 3);
                     // First partials
-                    drijp_drij = rSoft*(-2.0*pow(r,3)/pow(rSoft,4)+3*pow(r,2)/pow(rSoft,3)); // Correct
+                    drijp_drij = rSoft*(-2.0*pow(r,3)/pow(rSoft,4)+3*pow(r,2)/pow(rSoft,3));
                     drijp_dlami = drijp_drlam*drlam_dlami;
                     drijp_dlamj = drijp_drlam*drlam_dlamj;
-                    // Second partials
-                    d2rijp_drij2 = -r*(5*r/rSoft-6)/pow(rSoft,2);
                     // Second mixed partials
                     d2rijp_drij_dlami = d2rijp_drlam_drij * drlam_dlami;
                     d2rijp_drij_dlamj = d2rijp_drlam_drij * drlam_dlamj;
@@ -322,8 +324,7 @@ __global__ void getforce_nbdirect_oss_kernel(
               rinv=1/rEff;
 
               // Terms which require calculation for soft-coring - both vdw and elec can be accumulated here
-              real dU_drijp, dU_dlami, dU_dlamj;
-              real d2U_drijp2, d2U_drijp_dlami, d2U_drijp_dlamj, d2U_dlami_dlamj;
+              real dU_drijp, d2U_drijp2, d2U_drijp_dlami, d2U_drijp_dlamj, d2U_dlami_dlamj;
 
               fij=0;
               // Electrostatics (define the above variables)
@@ -335,18 +336,19 @@ __global__ void getforce_nbdirect_oss_kernel(
                 real dU_drijp_tmp = -kELECTRIC*inp.q*jtmpnp_q*rinv
                   *(erfcrinv+((real)1.128379167095513)*cutoffs.betaEwald*expf(-br*br));
                 dU_drijp = lixljtmp * dU_drijp_tmp;
-                dU_dlami = !bi ? 0 : ljtmp * U_dir;
-                dU_dlamj = !bjtmp ? 0 : li * U_dir;
                 // Second Derivatives
                 // Distribute expf(-br*br) term to avoid exp(br*br)
                 d2U_drijp2 = lixljtmp*2*kELECTRIC*inp.q*jtmpnp_q*rinv*rinv*rinv*(1/M_PI)*
                   (2*sqrt(M_PI)*br*br*br*expf(-br*br) + 2*sqrt(M_PI)*br*expf(-br*br) + M_PI*fasterfc(br));
-                d2U_drijp_dlami = !bi ? 0 : ljtmp * dU_drijp_tmp;
-                d2U_drijp_dlamj = !bjtmp ? 0 : li * dU_drijp_tmp;
+                d2U_drijp_dlami = bi ? dlixlj_dli * dU_drijp_tmp : 0;
+                d2U_drijp_dlamj = bjtmp ? dlixlj_dlj * dU_drijp_tmp : 0;
                 d2U_dlami_dlamj = bi && bjtmp && bi != bjtmp ? U_dir : 0;
                 // Accumulate later...
               }
               else {
+                // TODO: Implement this path
+                printf("Coulomb Cutoff OSS path not implemented!");
+                assert(false);
                 real roff2=cutoffs.rCut*cutoffs.rCut;
                 real ron2=cutoffs.rSwitch*cutoffs.rSwitch;
                 real ginv=1/((roff2-ron2)*(roff2-ron2)*(roff2-ron2));
@@ -367,20 +369,9 @@ __global__ void getforce_nbdirect_oss_kernel(
 
                 if (rEff<cutoffs.rSwitch) {
                   // OSS on soft-cored coulomb:
-                  // TODO: Implement this path
-                  printf("Coulomb Cutoff OSS path not implemented!");
-                  assert(false);
                   // Accumulate later...
                 } else {
                   // OSS on non-soft-cored tapered coulomb:
-                  real d2U_drij_dlami = !bi ? 0 : fij_tmp * ljtmp;
-                  real d2U_drij_dlamj = !bjtmp ? 0 : fij_tmp * li;
-                  real d2U_dlami_dlamj = bi && bjtmp && bi != bjtmp ? eij_tmp : 0;
-                  // Accumulate ost forces into force variables directly since they aren't soft-cored
-                  fij = dGdFi*d2U_drij_dlami + dGdFjtmp*d2U_drij_dlamj;
-                  fli = dGdFjtmp*d2U_dlami_dlamj; // li feels lj histogram where lj may be li
-                  fljtmp = dGdFjtmp*d2U_dlami_dlamj;
-                  // even if li=lj and derivative wasn't zero, above doesn't over count because of power rule
                 }
               }
 
@@ -396,13 +387,10 @@ __global__ void getforce_nbdirect_oss_kernel(
                 // First Derivatives
                 real dU_drijp_tmp = rinv*rinv6*(-12*vdwp.c12*rinv6+6*vdwp.c6);
                 dU_drijp += lixljtmp * dU_drijp_tmp;
-                dU_dlami += !bi ? 0 : ljtmp * U_dir;
-                dU_dlamj += !bjtmp ? 0 : li * U_dir;
                 // Second Derivatives
-                // Distribute expf(-br*br) term to avoid exp(br*br)
                 d2U_drijp2 += lixljtmp*6*rinv6*rinv*rinv*(26*vdwp.c12*rinv6-7*vdwp.c6);
-                d2U_drijp_dlami += !bi ? 0 : ljtmp * dU_drijp_tmp;
-                d2U_drijp_dlamj += !bjtmp ? 0 : li * dU_drijp_tmp;
+                d2U_drijp_dlami += bi ? dlixlj_dli * dU_drijp_tmp : 0;
+                d2U_drijp_dlamj += bjtmp ? dlixlj_dlj * dU_drijp_tmp : 0;
                 d2U_dlami_dlamj += bi && bjtmp && bi != bjtmp ? U_dir : 0;
                 // Accumulate later...
               } else {
@@ -414,8 +402,8 @@ __global__ void getforce_nbdirect_oss_kernel(
                   real eij_tmp=vdwp.c12*k12*(rinv6-rCutinv3*rCutinv3)*(rinv6-rCutinv3*rCutinv3)-vdwp.c6*k6*(rinv3-rCutinv3)*(rinv3-rCutinv3);
 
                   // OSS calculation (not soft-cored):
-                  real d2U_drij_dlami = !bi ? 0 : fij_tmp * ljtmp;
-                  real d2U_drij_dlamj = !bjtmp ? 0 : fij_tmp * li;
+                  real d2U_drij_dlami = bi ? dlixlj_dli * fij_tmp : 0;
+                  real d2U_drij_dlamj = bjtmp ? dlixlj_dlj * fij_tmp : 0;
                   real d2U_dlami_dlamj = bi && bjtmp && bi != bjtmp ? eij_tmp : 0;
                   // Accumulate ost forces into force variables directly since they aren't soft-cored
                   fij += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
@@ -435,8 +423,8 @@ __global__ void getforce_nbdirect_oss_kernel(
                   real eij_tmp=fsw*(vdwp.c12*rinv6-vdwp.c6)*rinv6;
 
                   // OSS calculation (not soft-cored):
-                  real d2U_drij_dlami = !bi ? 0 : fij_tmp * ljtmp;
-                  real d2U_drij_dlamj = !bjtmp ? 0 : fij_tmp * li;
+                  real d2U_drij_dlami = bi ? dlixlj_dli * fij_tmp : 0;
+                  real d2U_drij_dlamj = bjtmp ? dlixlj_dlj * fij_tmp : 0;
                   real d2U_dlami_dlamj = bi && bjtmp && bi != bjtmp ? eij_tmp : 0;
                   // Accumulate ost forces into force variables directly since they aren't soft-cored and don't need chain rule terms
                   fij += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
@@ -461,7 +449,7 @@ __global__ void getforce_nbdirect_oss_kernel(
               // Accumulate ost forces
               fij += fij_ost;
               fli += fli_ost;
-              flj += fljtmp_ost;
+              fljtmp += fljtmp_ost;
 
               rinv=1/r; // rinv previously based on soft-core
               real3_scaleinc(&fi, fij*rinv,dr);

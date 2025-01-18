@@ -619,6 +619,14 @@ bool Msld::interacting(int i,int j)
   return atomBlock[i]==atomBlock[j] || lambdaSite[atomBlock[i]]!=lambdaSite[atomBlock[j]];
 }
 
+__global__ void set_zeroth_to_zero(real* dGdF, real* dGdL) {
+  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  if (i == 0) {
+    dGdF[0] = 0.0;
+    dGdL[0] = 0.0;
+  }
+}
+
 // Initialize MSLD for a simulation
 void Msld::initialize(System *system)
 {
@@ -674,11 +682,11 @@ void Msld::initialize(System *system)
 
 
   // Thermodynamic Integration/Metadynamics/OST variables
-  // TODO: Reset these to be zero
   cudaMalloc(&dGdF_d, blockCount*sizeof(real)); // use blockCount so that it is indexed same as lambda array
   cudaMemset(dGdF_d, 1, blockCount*sizeof(real));
   cudaMalloc(&dGdL_d, blockCount*sizeof(real));
   cudaMemset(dGdL_d, 1, blockCount*sizeof(real));
+  set_zeroth_to_zero<<<1,1>>>(dGdF_d, dGdL_d);
   int nL = blockCount-1; // 0th lambda is environment
 
   // Atom restraints

@@ -1631,6 +1631,7 @@ void Potential::calc_force(int step,System *system)
   calc_virtual_force(system);
 
   // cudaEventRecord(r->forceComplete,r->updateStream);
+  printf("OSS: \n");
   if (system->msld->oss) {
     // Wait on lambda force calc being complete
     cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
@@ -1642,7 +1643,6 @@ void Potential::calc_force(int step,System *system)
 
     // Wait on calculation of dGdF
     cudaEventRecord(r->ossForceBegin, r->ossBias);
-    // TODO: Calculate bonded forces & corrections
     if (system->id == helper) {
       cudaStreamWaitEvent(r->ossBonded, r->ossForceBegin, 0);
       getforce_bond_oss(system);
@@ -1655,18 +1655,16 @@ void Potential::calc_force(int step,System *system)
       cudaEventRecord(r->ossBondedComplete, r->ossBonded);
       cudaStreamWaitEvent(r->updateStream, r->ossBondedComplete, 0);
     }
-    // Calculate direct space forces
     if (system->id>=0) {
       cudaStreamWaitEvent(r->nbdirectStream, r->ossForceBegin, 0);
       getforce_nbdirect_oss(system);
       cudaEventRecord(r->ossDirectComplete, r->ossDirect);
       cudaStreamWaitEvent(r->updateStream, r->ossDirectComplete, 0);
     }
-    // TODO: Calculate reciprocal space and self forces
     if (system->id==0) {
       cudaStreamWaitEvent(r->nbrecipStream, r->ossForceBegin, 0);
-      //getforce_ewald_oss(system);
-      //getforce_ewaldself_oss();
+      getforce_ewald_oss(system);
+      getforce_ewaldself_oss(system);
       cudaEventRecord(r->ossRecipComplete, r->ossRecip);
       cudaStreamWaitEvent(r->updateStream, r->ossRecipComplete, 0);
     }
@@ -1678,5 +1676,6 @@ void Potential::calc_force(int step,System *system)
       }
     }
   }
+  printf("Done \n");
 }
 
