@@ -96,19 +96,21 @@ __global__ void getforce_bond_kernel_oss(
       // Lambda force
       real fij = 0;
       real fli,flj;
-      // Environment lambda block always first and is 0 if environment
       //atomicAdd(&lambdaForce[b[0]],l[1]*lEnergy);
-      real d2U_drij_dli = fbond * l[1];
-      fij += chain[1] * d2U_drij_dli;
+      real d2U_drij_dli = l[1]*fbond;
+      fij += chain[0]*d2U_drij_dli;
       if (b[1]) {
         //atomicAdd(&lambdaForce[b[1]],l[0]*lEnergy);
         real d2U_drij_dlj = fbond * l[0];
-        fij += chain[0] * d2U_drij_dli;
-        real d2U_dli_dlj = fbond;
-        fli = chain[0] * d2U_dli_dlj;
-        atomicAdd(&lambdaForce[b[0]], fli);
-        flj = chain[1] * d2U_dli_dlj;
-        atomicAdd(&lambdaForce[b[1]], flj);
+        fij += chain[1] * d2U_drij_dlj;
+        // Lambda bias force only exists when both alchemical
+        if (b[0] != b[1]) {
+          real d2U_dli_dlj = fbond;
+          fli = chain[0] * d2U_dli_dlj;
+          atomicAdd(&lambdaForce[b[0]], fli);
+          flj = chain[1] * d2U_dli_dlj;
+          atomicAdd(&lambdaForce[b[1]], flj);
+        }
       }
 
       // Spatial force
@@ -184,6 +186,7 @@ __global__ void getforce_angle_kernel_oss(int angleCount,struct AnglePotential *
   real3 xi, xj, xk;
   int b[2];
   real l[2]={1,1};
+  real chain[2]={0,0};
 
   if (i<angleCount) {
     // Geometry
@@ -205,53 +208,72 @@ __global__ void getforce_angle_kernel_oss(int angleCount,struct AnglePotential *
     // Scaling
     b[0]=0xFFFF & ap.siteBlock[0];
     b[1]=0xFFFF & ap.siteBlock[1];
-    if (b[0]) {
+    if (b[0]){ // if !b[0] then both are environment
       l[0]=lambda[b[0]];
+      chain[0]=dGdF[b[0]];
       if (b[1]) {
         l[1]=lambda[b[1]];
+        chain[1]=dGdF[b[1]];
       }
-    }
 
-    // Interaction
-    fangle=ap.kangle*(t-ap.angle0);
-    if (b[0]) {
+      // Interaction
+      fangle=ap.kangle*(t-ap.angle0);
       lEnergy=((real)0.5)*ap.kangle*(t-ap.angle0)*(t-ap.angle0);
-    }
-    if (soft) {
-      fangle*=pow(l[0]*l[1],softExp);
-    } else {
-      fangle*=l[0]*l[1];
-    }
-
-    // Lambda force
-    if (soft) {
-      lEnergy*=softExp*pow(l[0]*l[1],softExp-1);
-    }
-    if (b[0]) {
-      //atomicAdd(&lambdaForce[b[0]],l[1]*lEnergy);
-      if (b[1]) {
-        //atomicAdd(&lambdaForce[b[1]],l[0]*lEnergy);
+      // TODO: handle soft exponent for consistancy with soft-bond
+      /*
+      if (soft) {
+        fangle*=pow(l[0]*l[1],softExp);
+      } else {
+        fangle*=l[0]*l[1];
       }
-    }
-    if (soft) {
-      lEnergy/=softExp;
-    }
+       Lambda force
+      if (soft) {
+        lEnergy*=softExp*pow(l[0]*l[1],softExp-1);
+      }
+      if (b[0]) {
+        atomicAdd(&lambdaForce[b[0]],l[1]*lEnergy);
+        if (b[1]) {
+          atomicAdd(&lambdaForce[b[1]],l[0]*lEnergy);
+        }
+      }
+      if (soft) {
+        lEnergy/=softExp;
+      }
+      */
 
-    // Spatial force
-    fi=real3_cross(drij,crop);
-// NOTE #warning "division on kernel, was using realRecip before."
-    real3_scaleself(&fi, fangle/(mcrop*real3_mag2<real>(drij)));
-    //at_real3_inc(&force[ii], fi);
-    fk=real3_cross(drkj,crop);
-    real3_scaleself(&fk,-fangle/(mcrop*real3_mag2<real>(drkj)));
-    //at_real3_inc(&force[kk], fk);
-    fj=real3_add(fi,fk);
-    real3_scaleself(&fj,-1);
-    //at_real3_inc(&force[jj], fj);
+      // Spatial force - OST I've removed fangle from here
+      fi=real3_cross(drij,crop);
+      real3_scaleself(&fi, 1/(mcrop*real3_mag2<real>(drij)));
+      //at_real3_inc(&force[ii], fi);
+      fk=real3_cross(drkj,crop);
+      real3_scaleself(&fk,-1/(mcrop*real3_mag2<real>(drkj)));
+      //at_real3_inc(&force[kk], fk);
+      fj=real3_add(fi,fk);
+      real3_scaleself(&fj,-1);
+      //at_real3_inc(&force[jj], fj);
+
+      // OST Forces
+      real d2U_dphi_dl0 = l[1]*fangle;
+      real d2U_dphi_dl1 = 0;
+      if (b[1]) {
+        d2U_dphi_dl1 = l[0]*fangle;
+        if (b[0] != b[1]) { // lambda scaling only applied once if li=lj
+          real d2U_dl0_dl1 = fangle;
+          real fli = chain[1]*d2U_dl0_dl1;
+          atomicAdd(&lambdaForce[b[0]], fli);
+          real flj = chain[0]*d2U_dl0_dl1;
+          atomicAdd(&lambdaForce[b[1]], flj);
+        }
+      }
+      real tmp = chain[0]*d2U_dphi_dl0 + chain[1]*d2U_dphi_dl1;
+      real3_scaleself(&fi,tmp);
+      at_real3_inc(&force[ii], fi);
+      real3_scaleself(&fj, tmp);
+      at_real3_inc(&force[jj], fj);
+      real3_scaleself(&fk, tmp);
+      at_real3_inc(&force[kk], fk);
+    }
   }
-
-  // Energy, if requested
-  lEnergy*=l[0]*l[1];
 }
 
 template <bool flagBox,typename box_type>
@@ -337,10 +359,10 @@ __global__ void getforce_torsion_kernel_oss(int torsionCount,TorsionPotential *t
   real3 fi,fj,fk,fl;
   real ftorsion;
   real lEnergy=0;
-  extern __shared__ real sEnergy[];
   real3 xi,xj,xk,xl;
   int b[2];
   real l[2]={1,1};
+  real chain[2]={0,0};
 
   if (i<torsionCount) {
     // Geometry
@@ -370,61 +392,88 @@ __global__ void getforce_torsion_kernel_oss(int torsionCount,TorsionPotential *t
     // Scaling
     b[0]=0xFFFF & tp.siteBlock[0];
     b[1]=0xFFFF & tp.siteBlock[1];
-    if (b[0]) {
+    if (b[0]){ // non-alchemical interaction if b[0] is zero
       l[0]=lambda[b[0]];
+      chain[0] = dGdF[b[0]];
       if (b[1]) {
         l[1]=lambda[b[1]];
+        chain[1] = dGdF[b[1]];
       }
-    }
 
-    // Interaction
-    function_torsion_oss(tp,phi,&ftorsion,&lEnergy);
-    if (soft) {
-      ftorsion*=pow(l[0]*l[1],softExp);
-    } else {
-      ftorsion*=l[0]*l[1];
-    }
+      // Interaction
+      function_torsion_oss(tp,phi,&ftorsion,&lEnergy);
+      // TODO: Implement soft-torsion for consistency with soft-bond
+      /*
+      if (soft) {
+        ftorsion*=pow(l[0]*l[1],softExp);
+      } else {
+        ftorsion*=l[0]*l[1];
+      }
 
-    // Lambda force
-    if (soft) {
-      lEnergy*=softExp*pow(l[0]*l[1],softExp-1);
-    }
-    if (b[0]) {
-      //atomicAdd(&lambdaForce[b[0]],l[1]*lEnergy);
+      // Lambda force
+      if (soft) {
+        lEnergy*=softExp*pow(l[0]*l[1],softExp-1);
+      }
+      if (b[0]) {
+        //atomicAdd(&lambdaForce[b[0]],l[1]*lEnergy);
+        if (b[1]) {
+          //atomicAdd(&lambdaForce[b[1]],l[0]*lEnergy);
+        }
+      }
+      if (soft) {
+        lEnergy/=softExp;
+      }
+      */
+
+      // Spatial force
+      // NOTE #warning "Division and sqrt in kernel"
+      minv2=1/(real3_mag2<real>(mvec));
+      ninv2=1/(real3_mag2<real>(nvec));
+      rjk=sqrt(real3_mag2<real>(drjk));
+      rjkinv2=1/(rjk*rjk);
+      fi=real3_scale<real3>(-ftorsion*rjk*minv2,mvec);
+      //at_real3_inc(&force[ii], fi);
+
+      fk=real3_scale<real3>(-ftorsion*rjk*ninv2,nvec);
+      p=real3_dot<real>(drij,drjk)*rjkinv2;
+      q=real3_dot<real>(drkl,drjk)*rjkinv2;
+      fj=real3_scale<real3>(-p,fi);
+      real3_scaleinc(&fj,-q,fk);
+      fl=real3_scale<real3>(-1,fk);
+      //at_real3_inc(&force[ll], fl);
+
+      real3_dec(&fk,fj);
+      //at_real3_inc(&force[kk], fk);
+
+      real3_dec(&fj,fi);
+      //at_real3_inc(&force[jj], fj);
+
+      // OST Forces - copy and pasted from angle + fl force
+      real d2U_dphi_dl0 = l[1]*ftorsion;
+      real d2U_dphi_dl1 = 0;
       if (b[1]) {
-        //atomicAdd(&lambdaForce[b[1]],l[0]*lEnergy);
+        d2U_dphi_dl1 = l[0]*ftorsion;
+        // TODO: Understand this
+        // redundant check left in for now
+        if (b[0] != b[1]) { // lambda scaling only applied once if li=lj
+          real d2U_dl0_dl1 = ftorsion;
+          real fli = chain[1]*d2U_dl0_dl1;
+          atomicAdd(&lambdaForce[b[0]], fli);
+          real flj = chain[0]*d2U_dl0_dl1;
+          atomicAdd(&lambdaForce[b[1]], flj);
+        }
       }
+      real tmp = chain[0]*d2U_dphi_dl0 + chain[1]*d2U_dphi_dl1;
+      real3_scaleself(&fi,tmp);
+      at_real3_inc(&force[ii], fi);
+      real3_scaleself(&fj, tmp);
+      at_real3_inc(&force[jj], fj);
+      real3_scaleself(&fk, tmp);
+      at_real3_inc(&force[kk], fk);
+      real3_scaleself(&fl, tmp);
+      at_real3_inc(&force[ll], fl);
     }
-    if (soft) {
-      lEnergy/=softExp;
-    }
-
-    // Spatial force
-// NOTE #warning "Division and sqrt in kernel"
-    minv2=1/(real3_mag2<real>(mvec));
-    ninv2=1/(real3_mag2<real>(nvec));
-    rjk=sqrt(real3_mag2<real>(drjk));
-    rjkinv2=1/(rjk*rjk);
-    fi=real3_scale<real3>(-ftorsion*rjk*minv2,mvec);
-    //at_real3_inc(&force[ii], fi);
-
-    fk=real3_scale<real3>(-ftorsion*rjk*ninv2,nvec);
-    p=real3_dot<real>(drij,drjk)*rjkinv2;
-    q=real3_dot<real>(drkl,drjk)*rjkinv2;
-    fj=real3_scale<real3>(-p,fi);
-    real3_scaleinc(&fj,-q,fk);
-    fl=real3_scale<real3>(-1,fk);
-    //at_real3_inc(&force[ll], fl);
-
-    real3_dec(&fk,fj);
-    //at_real3_inc(&force[kk], fk);
-
-    real3_dec(&fj,fi);
-    //at_real3_inc(&force[jj], fj);
   }
-
-  // Energy, if requested
-  lEnergy*=l[0]*l[1];
 }
 
 template <bool flagBox,typename box_type>
@@ -502,7 +551,6 @@ void getforce_impr_oss(System *system)
 
 
 
-// getforce_cmap_kernel<<<(2*N+BLBO-1)/BLBO,BLBO,shMem,p->bondedStream>>>(N,p->cmaps_d,(real3*)s->position_d,(real3*)s->force_d,s->orthBox,m->lambda_d,m->lambdaForce_d,pEnergy);
 template <bool flagBox,bool soft,typename box_type>
 __global__ void getforce_cmap_kernel_oss(
   int cmapCount,struct CmapPotential *cmaps,real3 *position,
@@ -661,9 +709,11 @@ __global__ void getforce_cmap_kernel_oss(
   }
     fcmap=__shfl_xor_sync(0xFFFFFFFF,fcmap,1);
   if (i<2*cmapCount) { // Avoid hang
-      // Add own force
+    // Add own force
     fcmap+=fcmapPhi[lastBit];
     fcmap*=invSpace;
+    // TODO: Implement soft-cmap for consistency with soft-bond
+    /*
     if (soft) {
       fcmap*=pow(l[0]*l[1]*l[2],softExp);
     } else {
@@ -686,6 +736,7 @@ __global__ void getforce_cmap_kernel_oss(
     if (soft) {
       lEnergy/=softExp;
     }
+    */
 
     // Spatial force
     minv2=1/(real3_mag2<real>(mvec));
@@ -709,12 +760,31 @@ __global__ void getforce_cmap_kernel_oss(
     real3_dec(&fj,fi);
     //at_real3_inc(&force[jj], fj);
 
-    // TODO: Handle soft exp case
-    // OST derivatives
+    // OST Forces - Copy and pasted from torsion
+    real d2U_dphi_dl0 = l[1]*fcmap;
+    real d2U_dphi_dl1 = 0;
+    if (b[1]) {
+      d2U_dphi_dl1 = l[0]*fcmap;
+      // TODO: Understand this
+      // redundant check left in for now
+      if (b[0] != b[1]) { // lambda scaling only applied once if li=lj
+        real d2U_dl0_dl1 = fcmap;
+        real fli = chain[1]*d2U_dl0_dl1;
+        atomicAdd(&lambdaForce[b[0]], fli);
+        real flj = chain[0]*d2U_dl0_dl1;
+        atomicAdd(&lambdaForce[b[1]], flj);
+      }
+    }
+    real tmp = chain[0]*d2U_dphi_dl0 + chain[1]*d2U_dphi_dl1;
+    real3_scaleself(&fi,tmp);
+    at_real3_inc(&force[ii], fi);
+    real3_scaleself(&fj, tmp);
+    at_real3_inc(&force[jj], fj);
+    real3_scaleself(&fk, tmp);
+    at_real3_inc(&force[kk], fk);
+    real3_scaleself(&fl, tmp);
+    at_real3_inc(&force[ll], fl);
   }
-
-  // Energy, if requested
-  lEnergy*=l[0]*l[1]*l[2];
 }
 
 template <bool flagBox,typename box_type>

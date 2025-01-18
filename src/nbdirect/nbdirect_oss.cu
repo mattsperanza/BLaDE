@@ -377,9 +377,10 @@ __global__ void getforce_nbdirect_oss_kernel(
                   real d2U_drij_dlamj = !bjtmp ? 0 : fij_tmp * li;
                   real d2U_dlami_dlamj = bi && bjtmp && bi != bjtmp ? eij_tmp : 0;
                   // Accumulate ost forces into force variables directly since they aren't soft-cored
-                  fij = dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
-                  fli = dGdFjtmp * d2U_dlami_dlamj;
-                  fljtmp = dGdFi * d2U_dlami_dlamj;
+                  fij = dGdFi*d2U_drij_dlami + dGdFjtmp*d2U_drij_dlamj;
+                  fli = dGdFjtmp*d2U_dlami_dlamj; // li feels lj histogram where lj may be li
+                  fljtmp = dGdFjtmp*d2U_dlami_dlamj;
+                  // even if li=lj and derivative wasn't zero, above doesn't over count because of power rule
                 }
               }
 
@@ -455,13 +456,14 @@ __global__ void getforce_nbdirect_oss_kernel(
                 + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami) * drijp_dlamj;
               fli_ost = dGdFjtmp * d2U_dlami_dlamj_tot; // lam_i feels lam_j histogram
               fljtmp_ost = dGdFi * d2U_dlami_dlamj_tot; // lam_j feels lam_i histogram
+              // Again, if d2U_dli_dlj != 0 for i=j, above doesn't over-count due to power rule
 
               // Accumulate ost forces
               fij += fij_ost;
               fli += fli_ost;
               flj += fljtmp_ost;
 
-              rinv=1/r;
+              rinv=1/r; // rinv previously based on soft-core
               real3_scaleinc(&fi, fij*rinv,dr);
               fjtmp=real3_scale<real3>(-fij*rinv,dr);
             }
