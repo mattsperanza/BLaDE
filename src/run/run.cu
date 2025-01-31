@@ -409,6 +409,13 @@ void shift_kernel(real_x *x,real_x dx)
   }
 }
 
+__global__ void shift_lambda(real* lambda, real dl, int index) {
+  int i=blockDim.x*blockIdx.x+threadIdx.x;
+  if (i==0) {
+    lambda[index]+=dl;
+  }
+}
+
 void Run::energy(char *line,char *token,System *system)
 {
   dynamics_initialize(system);
@@ -416,6 +423,107 @@ void Run::energy(char *line,char *token,System *system)
   system->state->recv_energy();
   print_nrg(0,system);
   dynamics_finalize(system);
+}
+
+void test_OST(System *system, real dl) {
+  /*
+   * Steps for testing OST numerically (d2U_dli_dlj and d2U_dli_dri):
+   * ) Loop over force components (eeterm): i
+   *   ) Turn on only eeterm[i]
+   *   ) Loop over lambdas: j
+   *     # Numerical Forces
+   *     ) Turn off OST
+   *     ) Add dl to lj
+   *     ) Store force array F1
+   *     ) Subtract 2*dl from lj
+   *     ) Store force array F2
+   *     ) Add dl to lj
+   *     ) Calculate: [F1(li+dl) - F2(li-dl)] / 2*dl
+   *     # Analytic Forces
+   *     ) dGdF[:] = 0
+   *     ) dGdF[j] = pi*e
+   *     ) Turn on OST and calculate force
+   *     ) Subtract force from step 2
+   *     ) Compare to numerical force array
+   *       --> e*pi*d2U_dlj_dl is in lj's force -> hessian row sum?
+   *       --> e*pi*d2U_dlj_dr is in rj's force
+   */
+  dl = 1e-5;
+  bool flags[eeend];
+  for (int i = 0; i < eeend; i++) {
+    flags[i] = system->run->calcTermFlag[i];
+    system->run->calcTermFlag[i] = false;
+  }
+  // TODO: Relax this assumption
+  system->msld->useSoftCore = false;
+  system->msld->useSoftCore14 = false;
+  int len = system->state->lambdaCount+3*system->state->atomCount; // theta forces at end
+  for (int i = 0; i < eeend; i++) {
+    printf("Term %d Numerical Test: \n", i);
+    system->run->calcTermFlag[i] = true;
+    // Calculate ref force at (X, L) to subtract from force w/ oss
+    real dU[len];
+    system->msld->oss = false;
+    system->potential->calc_force(0, system);
+    system->msld->oss = true;
+    cudaMemcpy(dU, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+    for (int j = 1; j < system->state->lambdaCount; j++) { // skip environment lambda
+      // Set dGdF[:] = 0 and dGdF[j] = e * pi
+      real pi_e = M_E * M_PI;
+      real dGdF[system->state->lambdaCount];
+      memset(dGdF, 0, system->state->lambdaCount*sizeof(real));
+      dGdF[j] = pi_e;
+      cudaMemcpy(system->msld->dGdF_d, dGdF, system->state->lambdaCount*sizeof(real), cudaMemcpyHostToDevice);
+      system->msld->oss = false;
+      // Numerical Force = dU(X, L+dl) - dU(X, L-dl) / 2*dl
+      real_f d2U_numeric[len];
+      // L+dl
+      shift_lambda<<<1, 1>>>(system->state->lambda_d, dl, j);
+      system->potential->calc_force(0, system);
+      cudaDeviceSynchronize();
+      cudaMemcpy(d2U_numeric, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+      cudaDeviceSynchronize();
+      // L-dl
+      real_f tmp[len];
+      shift_lambda<<<1, 1>>>(system->state->lambda_d, -2*dl, j);
+      system->potential->calc_force(0, system);
+      cudaDeviceSynchronize();
+      cudaMemcpy(tmp, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+      cudaDeviceSynchronize();
+      // Reset and diff
+      shift_lambda<<<1, 1>>>(system->state->lambda_d, dl, j);
+      for (int k = 0; k < len; k++) {
+        d2U_numeric[k] = (d2U_numeric[k] - tmp[k]) / (2.0*dl);
+      }
+      // Analytic Force
+      real d2U_analytic[len];
+      system->msld->oss = true;
+      system->potential->calc_force(0, system);
+      cudaMemcpy(d2U_analytic, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+      // Check if they match
+      real diff[len];
+      for (int k = 0; k < len; k++) {
+        d2U_analytic[k] = (d2U_analytic[k] - dU[k]) / pi_e;
+        diff[k] = abs(d2U_analytic[k] - d2U_numeric[k]);
+        if (diff[k] > 1e-6) {
+          printf("Num lambdas: %d \n", system->state->lambdaCount);
+          printf("Test %d failed at force array index %d! \n", i, k);
+          printf("Numeric d2U:       %15.8f\n", d2U_numeric[k]);
+          printf("Analytic d2U:      %15.8f\n", d2U_analytic[k]);
+          printf("Analytic dU(X,L):  %15.8f\n", dU[k]);
+          printf("|Diff|:   %15.8f\n", diff[k]);
+          printf("Exiting...\n");
+          exit(1);
+        }
+      }
+    }
+    printf("Passed!\n");
+    //gpuCheck(cudaPeekAtLastError());
+    system->run->calcTermFlag[i] = false;
+  }
+  for (int i = 0; i < eeend; i++) { // Just in case things get run after this
+    system->run->calcTermFlag[i] = flags[i];
+  }
 }
 
 void Run::test(char *line,char *token,System *system)
@@ -431,9 +539,9 @@ void Run::test(char *line,char *token,System *system)
   dynamics_initialize(system);
 
   // Calculate forces
-  system->potential->calc_force(0,system);
+  //system->potential->calc_force(0,system);
   // Save position and forces
-  system->state->backup_position();
+  //system->state->backup_position();
 
   if (testType=="alchemical") {
     dx=io_nextf(line); // dimensionless
@@ -449,7 +557,12 @@ void Run::test(char *line,char *token,System *system)
     ij0=system->state->lambdaCount;
     imax=system->state->atomCount;
     jmax=3;
-  } else {
+  } else if (testType=="oss") {
+    dx=io_nextf(line); // dimensionless alchemical
+    test_OST(system, dx);
+    return;
+  }
+  else {
     fatal(__FILE__,__LINE__,"Error: test type %s does not match alchemical or spatial\n",testType.c_str());
   }
 

@@ -216,7 +216,8 @@ __global__ void getforce_nbdirect_oss_kernel(
       bj_any = __any_sync(0xFFFFFFFF, bj);
       // If bi && bj are both 0, then we can skip this block-block interaction
       if (bi_any == 0 && bj_any == 0) {
-        continue;
+        // TODO: Figure out how to make this work correctly
+        //continue;
       }
       bool jFlag=check_proximity(iBlockVolume,xj,cutoffs.rCut*cutoffs.rCut);
 
@@ -250,27 +251,29 @@ __global__ void getforce_nbdirect_oss_kernel(
 
             if (r<cutoffs.rCut) {
               // Scaling
-              if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) {
-                if (bi==bjtmp) {
+              real dlixlj_dli, dlixlj_dlj, dlixlj_dli_dlj; // scale derivatives
+              // includes environment lambda
+              if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) { // same site
+                if (bi==bjtmp) { // same sub
                   lixljtmp=li;
-                } else {
+                  dlixlj_dli = bi ? 1 : 0;
+                  dlixlj_dlj = bjtmp ? 1 : 0;
+                  dlixlj_dli_dlj = 0;
+                } else { // diff sub
                   lixljtmp=0;
+                  dlixlj_dli = 0;
+                  dlixlj_dlj = 0;
+                  dlixlj_dli_dlj = 0;
                 }
-              } else {
+              } else { // diff site
                 lixljtmp=li*ljtmp;
+                dlixlj_dli = bi ? ljtmp : 0;
+                dlixlj_dlj = bjtmp ? li : 0;
+                dlixlj_dli_dlj = bi && bjtmp ? 1 : 0;
               }
 
               rEff=r;
-              /*
-               * Code identical to nbdirect kernel up to here.
-               *
-               */
               // Derivatives of the lambda function
-              // not bi = bj then = lj, bi = bj then = 1, if not bi then = 0
-              real dlixlj_dli = bi != bjtmp ? ljtmp : 1;
-              dlixlj_dli = bi ? dlixlj_dli : 0;
-              real dlixlj_dlj = bi != bjtmp ? li : 1;
-              dlixlj_dlj = bjtmp ? dlixlj_dlj : 0;
               // Softcore OST
               // rSoft derivatives
               real drlam_dlami=0;
@@ -324,8 +327,11 @@ __global__ void getforce_nbdirect_oss_kernel(
               rinv=1/rEff;
 
               // Terms which require calculation for soft-coring - both vdw and elec can be accumulated here
-              real dU_drijp, d2U_drijp2, d2U_drijp_dlami, d2U_drijp_dlamj, d2U_dlami_dlamj;
-
+              real dU_drijp = 0;
+              real d2U_drijp2 = 0;
+              real d2U_drijp_dlami = 0;
+              real d2U_drijp_dlamj = 0;
+              real d2Up_dlami_dlamj = 0;
               fij=0;
               // Electrostatics (define the above variables)
               if (usePME) {
@@ -335,14 +341,14 @@ __global__ void getforce_nbdirect_oss_kernel(
                 // First Derivatives - these should eventually match current implementation
                 real dU_drijp_tmp = -kELECTRIC*inp.q*jtmpnp_q*rinv
                   *(erfcrinv+((real)1.128379167095513)*cutoffs.betaEwald*expf(-br*br));
-                dU_drijp = lixljtmp * dU_drijp_tmp;
+                dU_drijp += lixljtmp * dU_drijp_tmp;
                 // Second Derivatives
                 // Distribute expf(-br*br) term to avoid exp(br*br)
                 d2U_drijp2 = lixljtmp*2*kELECTRIC*inp.q*jtmpnp_q*rinv*rinv*rinv*(1/M_PI)*
                   (2*sqrt(M_PI)*br*br*br*expf(-br*br) + 2*sqrt(M_PI)*br*expf(-br*br) + M_PI*fasterfc(br));
-                d2U_drijp_dlami = bi ? dlixlj_dli * dU_drijp_tmp : 0;
-                d2U_drijp_dlamj = bjtmp ? dlixlj_dlj * dU_drijp_tmp : 0;
-                d2U_dlami_dlamj = bi && bjtmp && bi != bjtmp ? U_dir : 0;
+                d2U_drijp_dlami += dlixlj_dli * dU_drijp_tmp;
+                d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
+                d2Up_dlami_dlamj += dlixlj_dli_dlj * U_dir;
                 // Accumulate later...
               }
               else {
@@ -389,9 +395,9 @@ __global__ void getforce_nbdirect_oss_kernel(
                 dU_drijp += lixljtmp * dU_drijp_tmp;
                 // Second Derivatives
                 d2U_drijp2 += lixljtmp*6*rinv6*rinv*rinv*(26*vdwp.c12*rinv6-7*vdwp.c6);
-                d2U_drijp_dlami += bi ? dlixlj_dli * dU_drijp_tmp : 0;
-                d2U_drijp_dlamj += bjtmp ? dlixlj_dlj * dU_drijp_tmp : 0;
-                d2U_dlami_dlamj += bi && bjtmp && bi != bjtmp ? U_dir : 0;
+                d2U_drijp_dlami += dlixlj_dli * dU_drijp_tmp;
+                d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
+                d2Up_dlami_dlamj += dlixlj_dli_dlj * U_dir;
                 // Accumulate later...
               } else {
                 if ( !usevdWSwitch ) { // Force Switch
@@ -402,14 +408,15 @@ __global__ void getforce_nbdirect_oss_kernel(
                   real eij_tmp=vdwp.c12*k12*(rinv6-rCutinv3*rCutinv3)*(rinv6-rCutinv3*rCutinv3)-vdwp.c6*k6*(rinv3-rCutinv3)*(rinv3-rCutinv3);
 
                   // OSS calculation (not soft-cored):
-                  real d2U_drij_dlami = bi ? dlixlj_dli * fij_tmp : 0;
-                  real d2U_drij_dlamj = bjtmp ? dlixlj_dlj * fij_tmp : 0;
-                  real d2U_dlami_dlamj = bi && bjtmp && bi != bjtmp ? eij_tmp : 0;
+                  real d2U_drij_dlami = dlixlj_dli * fij_tmp;
+                  real d2U_drij_dlamj = dlixlj_dlj * fij_tmp;
+                  real d2U_dlami_dlamj = dlixlj_dli_dlj * eij_tmp;
                   // Accumulate ost forces into force variables directly since they aren't soft-cored
                   fij += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
                   fli += dGdFjtmp * d2U_dlami_dlamj;
                   fljtmp += dGdFi * d2U_dlami_dlamj;
-                } else { // Potential Switch
+                }
+                else { // Potential Switch
                   real c2ofnb=cutoffs.rCut*cutoffs.rCut;
                   real c2onnb=cutoffs.rSwitch*cutoffs.rSwitch;
                   real rul3=(c2ofnb-c2onnb)*(c2ofnb-c2onnb)*(c2ofnb-c2onnb);
@@ -423,9 +430,9 @@ __global__ void getforce_nbdirect_oss_kernel(
                   real eij_tmp=fsw*(vdwp.c12*rinv6-vdwp.c6)*rinv6;
 
                   // OSS calculation (not soft-cored):
-                  real d2U_drij_dlami = bi ? dlixlj_dli * fij_tmp : 0;
-                  real d2U_drij_dlamj = bjtmp ? dlixlj_dlj * fij_tmp : 0;
-                  real d2U_dlami_dlamj = bi && bjtmp && bi != bjtmp ? eij_tmp : 0;
+                  real d2U_drij_dlami = dlixlj_dli * fij_tmp;
+                  real d2U_drij_dlamj = dlixlj_dlj * fij_tmp;
+                  real d2U_dlami_dlamj = dlixlj_dli_dlj * eij_tmp;
                   // Accumulate ost forces into force variables directly since they aren't soft-cored and don't need chain rule terms
                   fij += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
                   fli += dGdFjtmp * d2U_dlami_dlamj;
@@ -440,7 +447,7 @@ __global__ void getforce_nbdirect_oss_kernel(
               fij_ost = dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
 
               // First term is with holding rij' constant
-              real d2U_dlami_dlamj_tot = d2U_dlami_dlamj + (d2U_drijp_dlamj*drijp_dlami + dU_drijp * d2rijp_dlami_dlamj)
+              real d2U_dlami_dlamj_tot = d2Up_dlami_dlamj + (d2U_drijp_dlamj*drijp_dlami + dU_drijp * d2rijp_dlami_dlamj)
                 + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami) * drijp_dlamj;
               fli_ost = dGdFjtmp * d2U_dlami_dlamj_tot; // lam_i feels lam_j histogram
               fljtmp_ost = dGdFi * d2U_dlami_dlamj_tot; // lam_j feels lam_i histogram

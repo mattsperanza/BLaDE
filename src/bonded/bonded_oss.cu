@@ -431,10 +431,10 @@ __global__ void getforce_torsion_kernel_oss(int torsionCount,TorsionPotential *t
       ninv2=1/(real3_mag2<real>(nvec));
       rjk=sqrt(real3_mag2<real>(drjk));
       rjkinv2=1/(rjk*rjk);
-      fi=real3_scale<real3>(-ftorsion*rjk*minv2,mvec);
+      fi=real3_scale<real3>(-1*rjk*minv2,mvec);
       //at_real3_inc(&force[ii], fi);
 
-      fk=real3_scale<real3>(-ftorsion*rjk*ninv2,nvec);
+      fk=real3_scale<real3>(-1*rjk*ninv2,nvec);
       p=real3_dot<real>(drij,drjk)*rjkinv2;
       q=real3_dot<real>(drkl,drjk)*rjkinv2;
       fj=real3_scale<real3>(-p,fi);
@@ -449,18 +449,19 @@ __global__ void getforce_torsion_kernel_oss(int torsionCount,TorsionPotential *t
       //at_real3_inc(&force[jj], fj);
 
       // OST Forces - copy and pasted from angle + fl force
+      // fl0 = dGdF0*d2U_dl0_dl0 + dGdF1*d2U_dl1_dl0 // first term zero
+      // fl1 = dGdF0*d2U_dl0_dl1 + dGdF1*d2U_dl1_dl1 // second term zero
+      // Each should have one term added
       real d2U_dphi_dl0 = l[1]*ftorsion;
       real d2U_dphi_dl1 = 0;
       if (b[1]) {
         d2U_dphi_dl1 = l[0]*ftorsion;
-        // TODO: Understand this
-        // redundant check left in for now
         if (b[0] != b[1]) { // lambda scaling only applied once if li=lj
           real d2U_dl0_dl1 = ftorsion;
           real fli = chain[1]*d2U_dl0_dl1;
-          atomicAdd(&lambdaForce[b[0]], fli);
+          atomicAdd(&lambdaForce[b[0]], fli); // fl0
           real flj = chain[0]*d2U_dl0_dl1;
-          atomicAdd(&lambdaForce[b[1]], flj);
+          atomicAdd(&lambdaForce[b[1]], flj); // fl1
         }
       }
       real tmp = chain[0]*d2U_dphi_dl0 + chain[1]*d2U_dphi_dl1;
@@ -590,6 +591,7 @@ __global__ void getforce_cmap_kernel_oss(
   real chain[3]={0,0,0};
 
   lastBit=threadIdx.x&1;
+  // TODO: Potentially end kernel here if b[0] false
   if (i<2*cmapCount) { // Threads work in pairs
     // Geometry
     cp=cmaps[i>>1];
@@ -760,22 +762,48 @@ __global__ void getforce_cmap_kernel_oss(
     real3_dec(&fj,fi);
     //at_real3_inc(&force[jj], fj);
 
-    // OST Forces - Copy and pasted from torsion
-    real d2U_dphi_dl0 = l[1]*fcmap;
+    // OST Forces
+    real d2U_dphi_dl0 = l[2]*l[1]*fcmap;
     real d2U_dphi_dl1 = 0;
+    real d2U_dphi_dl2 = 0;
+    // Lambda Forces - symmetric matrix times vector of dGdF
+    // fl0 = dGdF0*d2U_dl0_dl0 + dGdF1*d2U_dl0_dl1 + dGdF2*d2U_dl0_dl2 -> first term zero
+    // fl1 = dGdF0*d2U_dl0_dl1 + dGdF1*d2U_dl1_dl1 + dGdF2*d2U_dl2_dl1 -> second term zero
+    // fl2 = dGdF0*d2U_dl0_dl2 + dGdF1*d2U_dl1_dl2 + dGdF2*d2U_dl2_dl2 -> third term zero
+    // Each lambda should have 2 added terms
     if (b[1]) {
-      d2U_dphi_dl1 = l[0]*fcmap;
-      // TODO: Understand this
-      // redundant check left in for now
-      if (b[0] != b[1]) { // lambda scaling only applied once if li=lj
-        real d2U_dl0_dl1 = fcmap;
+      d2U_dphi_dl1 = l[0]*l[2]*fcmap;
+      // d2U_dl0_dl1
+      if (b[0] != b[1]) {
+        real d2U_dl0_dl1 = l[2]*fcmap; // (0, 1) and (1, 0) of matrix
         real fli = chain[1]*d2U_dl0_dl1;
-        atomicAdd(&lambdaForce[b[0]], fli);
+        atomicAdd(&lambdaForce[b[0]], fli); // fl0
         real flj = chain[0]*d2U_dl0_dl1;
-        atomicAdd(&lambdaForce[b[1]], flj);
+        atomicAdd(&lambdaForce[b[1]], flj); // fl1
+      }
+      if (b[2]) {
+        d2U_dphi_dl2 = l[0]*l[1]*fcmap;
+        // d2U_dl0_dl2
+        if (b[0] != b[2]) {
+          real d2U_dl0_dl2 = l[1]*fcmap; // (0, 2) and (2, 0) of matrix
+          real fli = chain[0]*d2U_dl0_dl2;
+          atomicAdd(&lambdaForce[b[0]], fli); // fl0
+          real flj = chain[2]*d2U_dl0_dl2;
+          atomicAdd(&lambdaForce[b[2]], flj); // fl2
+        }
+        // d2U_dl1_dl2
+        if (b[1] != b[2]) {
+          real d2U_dl0_dl2 = l[0]*fcmap; // (1, 2) and (2, 1) of matrix
+          real fli = chain[1]*d2U_dl0_dl2;
+          atomicAdd(&lambdaForce[b[1]], fli); // fl1
+          real flj = chain[2]*d2U_dl0_dl2;
+          atomicAdd(&lambdaForce[b[2]], flj); // fl2
+        }
       }
     }
-    real tmp = chain[0]*d2U_dphi_dl0 + chain[1]*d2U_dphi_dl1;
+    // Spatial OST Forces
+    // dU/dX = sum(dG/dFi * d2U/dLdX)
+    real tmp = chain[0]*d2U_dphi_dl0 + chain[1]*d2U_dphi_dl1 + chain[2]*d2U_dphi_dl2;
     real3_scaleself(&fi,tmp);
     at_real3_inc(&force[ii], fi);
     real3_scaleself(&fj, tmp);

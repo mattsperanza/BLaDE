@@ -1631,7 +1631,6 @@ void Potential::calc_force(int step,System *system)
   calc_virtual_force(system);
 
   // cudaEventRecord(r->forceComplete,r->updateStream);
-  printf("OSS: \n");
   if (system->msld->oss) {
     // Wait on lambda force calc being complete
     cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
@@ -1676,6 +1675,5 @@ void Potential::calc_force(int step,System *system)
       }
     }
   }
-  printf("Done \n");
 }
 
