@@ -134,7 +134,6 @@ __global__ void getforce_nbdirect_oss_kernel(
   real li,lj,ljtmp,lixljtmp;
   real rEff,dredr,dredll; // Soft core stuff
   int exclAddress, exclMask;
-  real fij_ost, fli_ost, fljtmp_ost;
   real dGdFi, dGdFj, dGdFjtmp;
 
   if (iBlock<endBlock && threadIdx.x==0) iBlockVolume=blockVolume[iBlock];
@@ -251,25 +250,24 @@ __global__ void getforce_nbdirect_oss_kernel(
 
             if (r<cutoffs.rCut) {
               // Scaling
-              real dlixlj_dli, dlixlj_dlj, dlixlj_dli_dlj; // scale derivatives
-              // includes environment lambda
+              real dlixlj_dli, dlixlj_dlj, dlixlj_dli_dlj;
               if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) { // same site
-                if (bi==bjtmp) { // same sub
+                if (bi==bjtmp) { // intra-sub
                   lixljtmp=li;
-                  dlixlj_dli = bi ? 1 : 0;
-                  dlixlj_dlj = bjtmp ? 1 : 0;
+                  dlixlj_dli = bi ? .5 : 0; // .5 to prevent adding same thing twice
+                  dlixlj_dlj = bjtmp ? .5 : 0;
                   dlixlj_dli_dlj = 0;
-                } else { // diff sub
+                } else { // intra-site
                   lixljtmp=0;
                   dlixlj_dli = 0;
                   dlixlj_dlj = 0;
                   dlixlj_dli_dlj = 0;
                 }
-              } else { // diff site
+              } else { // inter-site
                 lixljtmp=li*ljtmp;
                 dlixlj_dli = bi ? ljtmp : 0;
                 dlixlj_dlj = bjtmp ? li : 0;
-                dlixlj_dli_dlj = bi && bjtmp ? 1 : 0;
+                dlixlj_dli_dlj = 1;
               }
 
               rEff=r;
@@ -344,7 +342,7 @@ __global__ void getforce_nbdirect_oss_kernel(
                 dU_drijp += lixljtmp * dU_drijp_tmp;
                 // Second Derivatives
                 // Distribute expf(-br*br) term to avoid exp(br*br)
-                d2U_drijp2 = lixljtmp*2*kELECTRIC*inp.q*jtmpnp_q*rinv*rinv*rinv*(1/M_PI)*
+                d2U_drijp2 += lixljtmp*2*kELECTRIC*inp.q*jtmpnp_q*rinv*rinv*rinv*(1/M_PI)*
                   (2*sqrt(M_PI)*br*br*br*expf(-br*br) + 2*sqrt(M_PI)*br*expf(-br*br) + M_PI*fasterfc(br));
                 d2U_drijp_dlami += dlixlj_dli * dU_drijp_tmp;
                 d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
@@ -441,6 +439,7 @@ __global__ void getforce_nbdirect_oss_kernel(
               }
 
               // Calculate chain rule derivatives due to soft-coring
+              real fij_ost, fli_ost, fljtmp_ost;
               real d2U_drij_dlami = dU_drijp*d2rijp_drij_dlami + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami) * drijp_drij;
               real d2U_drij_dlamj = dU_drijp*d2rijp_drij_dlamj + (d2U_drijp_dlamj + d2U_drijp2*drijp_dlamj) * drijp_drij;
               // Interaction feels i, j, or both histograms
@@ -457,10 +456,8 @@ __global__ void getforce_nbdirect_oss_kernel(
               fij += fij_ost;
               fli += fli_ost;
               fljtmp += fljtmp_ost;
-
-              rinv=1/r; // rinv previously based on soft-core
-              real3_scaleinc(&fi, fij*rinv,dr);
-              fjtmp=real3_scale<real3>(-fij*rinv,dr);
+              real3_scaleinc(&fi, fij/r,dr);
+              fjtmp=real3_scale<real3>(-fij/r,dr);
             }
           }
           __syncwarp();
@@ -531,7 +528,6 @@ void getforce_nbdirect_ossTTTT(System *system,box_type box)
   // TODO: Kill program if rSoft > rSwitch
 
   if (r->calcTermFlag[eenbdirect]==false) return;
-
   getforce_nbdirect_oss_kernel<flagBox,useSoftCore,usevdWSwitch,usePME><<<((32<<WARPSPERBLOCK)*N+(32<<WARPSPERBLOCK)-1)/(32<<WARPSPERBLOCK),(32<<WARPSPERBLOCK),shMem,r->nbdirectStream>>>(startBlock,endBlock,d->maxPartnersPerBlock,d->blockBounds_d,d->blockPartnerCount_d,d->blockPartners_d,d->blockVolume_d,d->localNbonds_d,p->vdwParameterCount,
 #ifdef USE_TEXTURE
     p->vdwParameters_tex,
@@ -541,7 +537,8 @@ void getforce_nbdirect_ossTTTT(System *system,box_type box)
     system->domdec->blockExcls_d,system->run->cutoffs,d->localPosition_d,d->localForce_d,box,s->lambda_fd,s->lambdaForce_d,
     system->msld->dGdF_d);
 
-  system->domdec->unpack_forces(system);
+  // TODO: Ask what this does and see if needed
+  //system->domdec->unpack_forces(system);
 }
 
 template <bool flagBox,bool useSoftCore,bool usevdWSwitch,typename box_type>

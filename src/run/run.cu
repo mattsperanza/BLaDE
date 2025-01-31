@@ -454,14 +454,12 @@ void test_OST(System *system, real dl) {
     flags[i] = system->run->calcTermFlag[i];
     system->run->calcTermFlag[i] = false;
   }
-  // TODO: Relax this assumption
   system->msld->useSoftCore = false;
-  system->msld->useSoftCore14 = false;
   int len = system->state->lambdaCount+3*system->state->atomCount; // theta forces at end
   for (int i = 0; i < eeend; i++) {
     printf("Term %d Numerical Test: \n", i);
     system->run->calcTermFlag[i] = true;
-    // Calculate ref force at (X, L) to subtract from force w/ oss
+    // Calculate ref dU(X, L) to subtract from force w/ oss
     real dU[len];
     system->msld->oss = false;
     system->potential->calc_force(0, system);
@@ -476,42 +474,60 @@ void test_OST(System *system, real dl) {
       cudaMemcpy(system->msld->dGdF_d, dGdF, system->state->lambdaCount*sizeof(real), cudaMemcpyHostToDevice);
       system->msld->oss = false;
       // Numerical Force = dU(X, L+dl) - dU(X, L-dl) / 2*dl
-      real_f d2U_numeric[len];
       // L+dl
+      real tmp_high[len];
       shift_lambda<<<1, 1>>>(system->state->lambda_d, dl, j);
       system->potential->calc_force(0, system);
       cudaDeviceSynchronize();
-      cudaMemcpy(d2U_numeric, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+      cudaMemcpy(tmp_high, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
       cudaDeviceSynchronize();
       // L-dl
-      real_f tmp[len];
-      shift_lambda<<<1, 1>>>(system->state->lambda_d, -2*dl, j);
+      real tmp_low[len];
+      shift_lambda<<<1, 1>>>(system->state->lambda_d, -2.0*dl, j);
       system->potential->calc_force(0, system);
       cudaDeviceSynchronize();
-      cudaMemcpy(tmp, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+      cudaMemcpy(tmp_low, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
       cudaDeviceSynchronize();
       // Reset and diff
+      real d2U_numeric[len];
       shift_lambda<<<1, 1>>>(system->state->lambda_d, dl, j);
       for (int k = 0; k < len; k++) {
-        d2U_numeric[k] = (d2U_numeric[k] - tmp[k]) / (2.0*dl);
+        d2U_numeric[k] = (tmp_high[k] - tmp_low[k]) / (2.0*dl);
       }
       // Analytic Force
       real d2U_analytic[len];
       system->msld->oss = true;
       system->potential->calc_force(0, system);
+      cudaDeviceSynchronize();
       cudaMemcpy(d2U_analytic, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+      cudaDeviceSynchronize();
       // Check if they match
       real diff[len];
       for (int k = 0; k < len; k++) {
         d2U_analytic[k] = (d2U_analytic[k] - dU[k]) / pi_e;
         diff[k] = abs(d2U_analytic[k] - d2U_numeric[k]);
         if (diff[k] > 1e-6) {
+          printf("Test %d failed at force array index %d for lambda %d! \n", i, k, j);
+          system->state->recv_position();
+          system->state->recv_lambda();
           printf("Num lambdas: %d \n", system->state->lambdaCount);
-          printf("Test %d failed at force array index %d! \n", i, k);
-          printf("Numeric d2U:       %15.8f\n", d2U_numeric[k]);
-          printf("Analytic d2U:      %15.8f\n", d2U_analytic[k]);
-          printf("Analytic dU(X,L):  %15.8f\n", dU[k]);
-          printf("|Diff|:   %15.8f\n", diff[k]);
+          real sum = 0;
+          printf("Lambdas: [ ");
+          for (int l = 1; l < system->state->lambdaCount; l++) {
+            printf("%.3f, ", system->state->lambda[l]);
+            sum += system->state->lambda[l];
+          }
+          printf("] --> Sum: %.12f\n", sum);
+          real lmd = system->state->lambda[j];
+          real x = system->state->positionBuffer[k];
+          printf("Position[%d] = %f\n", k, x);
+          printf("Analytic dU(X,L+dl):          %15.8f\n", tmp_high[k]);
+          printf("Analytic dU(X,L=%.2f):        %15.8f\n", lmd, dU[k]);
+          printf("Analytic dU(X,L-dl):          %15.8f\n", tmp_low[k]);
+          printf("Analytic dU(X,L) + d2U_dl_d:  %15.8f\n", dU[k] + pi_e*d2U_analytic[k]);
+          printf("Numeric d2U:     %15.8f\n", d2U_numeric[k]);
+          printf("Analytic d2U:    %15.8f\n", d2U_analytic[k]);
+          printf("|Diff|:          %15.8f\n", diff[k]);
           printf("Exiting...\n");
           exit(1);
         }

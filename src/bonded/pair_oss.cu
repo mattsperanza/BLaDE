@@ -189,10 +189,11 @@ __global__ void getforce_14pair_kernel_oss(
       } else {
         lixljtmp=li*ljtmp;
       }
-      real dlixlj_dli = bi != bjtmp ? ljtmp : 1;
+      real dlixlj_dli = bi != bjtmp ? ljtmp : .5;
       dlixlj_dli = bi ? dlixlj_dli : 0;
-      real dlixlj_dlj = bi != bjtmp ? li : 1;
+      real dlixlj_dlj = bi != bjtmp ? li : .5;
       dlixlj_dlj = bjtmp ? dlixlj_dlj : 0;
+      real dlixlj_dli_dlj = bi && bjtmp && bi != bjtmp ? 1 : 0;
       // 2) PME correction with li*lj -> these are simpler so they are implemented in-line
 
       // Force storage
@@ -273,9 +274,9 @@ __global__ void getforce_14pair_kernel_oss(
           real dU_drijp_tmp = -U_dir*rinv;
           dU_drijp = lixljtmp*dU_drijp_tmp;
           d2U_drijp2 = 2*U_dir*rinv*rinv;
-          d2U_drijp_dlami = bi ? dlixlj_dli * dU_drijp_tmp : 0;
-          d2U_drijp_dlamj = bjtmp ? dlixlj_dlj * dU_drijp_tmp : 0;
-          d2Up_dlami_dlamj = bi && bjtmp && bi != bjtmp ? U_dir : 0;
+          d2U_drijp_dlami = dlixlj_dli * dU_drijp_tmp;
+          d2U_drijp_dlamj = dlixlj_dlj * dU_drijp_tmp;
+          d2Up_dlami_dlamj = dlixlj_dli_dlj * U_dir;
           // Accumulate later...
         }
         else {
@@ -314,9 +315,9 @@ __global__ void getforce_14pair_kernel_oss(
           real dU_drijp_tmp = rinv*rinv6*(-12*pp.c12*rinv6+6*pp.c6);
           dU_drijp += lixljtmp * dU_drijp_tmp;
           d2U_drijp2 += lixljtmp*6*rinv6*rinv*rinv*(26*pp.c12*rinv6-7*pp.c6);
-          d2U_drijp_dlami += bi ? dlixlj_dli * dU_drijp_tmp : 0;
-          d2U_drijp_dlamj += bjtmp ? dlixlj_dlj * dU_drijp_tmp : 0;
-          d2Up_dlami_dlamj += bi && bjtmp && bi != bjtmp ? U_dir : 0;
+          d2U_drijp_dlami += dlixlj_dli * dU_drijp_tmp;
+          d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
+          d2Up_dlami_dlamj += dlixlj_dli_dlj * U_dir;
           // Accumulate later...
         }
         else { // Not soft-cored
@@ -327,9 +328,9 @@ __global__ void getforce_14pair_kernel_oss(
             real fij_tmp=(6*pp.c6*k6*(rinv3-rCutinv3)*rinv3-12*pp.c12*k12*(rinv6-rCutinv3*rCutinv3)*rinv6)*rinv;
             real eij_tmp=pp.c12*k12*(rinv6-rCutinv3*rCutinv3)*(rinv6-rCutinv3*rCutinv3)-pp.c6*k6*(rinv3-rCutinv3)*(rinv3-rCutinv3);
             // OSS calculation (not soft-cored):
-            real d2U_drij_dlami = bi ? dlixlj_dli * fij_tmp : 0;
-            real d2U_drij_dlamj = bjtmp ? dlixlj_dlj * fij_tmp : 0;
-            real d2U_dli_dlj = bi && bjtmp && bi != bjtmp ? eij_tmp : 0;
+            real d2U_drij_dlami = dlixlj_dli * fij_tmp;
+            real d2U_drij_dlamj = dlixlj_dlj * fij_tmp;
+            real d2U_dli_dlj = dlixlj_dli_dlj * eij_tmp;
             // No soft-core = direct accumulation
             fij += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
             fli += dGdFjtmp * d2U_dli_dlj;
@@ -347,9 +348,9 @@ __global__ void getforce_14pair_kernel_oss(
               +dfsw*(pp.c12*rinv6-pp.c6)*rinv6;
             real eij_tmp=fsw*(pp.c12*rinv6-pp.c6)*rinv6;
             // OSS calculation (not soft-cored):
-            real d2U_drij_dlami = bi ? dlixlj_dli * fij_tmp : 0;
-            real d2U_drij_dlamj = bjtmp ? dlixlj_dlj * fij_tmp : 0;
-            real d2U_dli_dlj = bi && bjtmp && bi != bjtmp ? eij_tmp : 0;
+            real d2U_drij_dlami = dlixlj_dli * fij_tmp;
+            real d2U_drij_dlamj = dlixlj_dlj * fij_tmp;
+            real d2U_dli_dlj = dlixlj_dli_dlj * eij_tmp;
             // No soft-core = direct accumulation
             fij += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
             fli += dGdFjtmp * d2U_dli_dlj;

@@ -1649,8 +1649,8 @@ void Potential::calc_force(int step,System *system)
       getforce_dihe_oss(system);
       getforce_impr_oss(system);
       getforce_cmap_oss(system);
-      getforce_nbdirect_oss(system);
       getforce_nb14_oss(system);
+      getforce_nbex_oss(system);
       cudaEventRecord(r->ossBondedComplete, r->ossBonded);
       cudaStreamWaitEvent(r->updateStream, r->ossBondedComplete, 0);
     }
