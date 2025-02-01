@@ -1669,7 +1669,7 @@ void Potential::calc_force(int step,System *system)
     }
     // Call gather_force & nbdirect_oss_force
     if (system->id>1) {
-      // system->state->gather_force(system); // Do I need to call this?
+      //system->state->gather_force(system, false); // Do I need to call this?
       if (system->id==0) {
         getforce_nbdirect_oss_reduce(system);
       }

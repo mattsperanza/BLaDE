@@ -176,25 +176,11 @@ __global__ void getforce_14pair_kernel_oss(
       real ljtmp = lambda[b[1]];
       real dGdFi = dGdF[b[0]];
       real dGdFjtmp = dGdF[b[1]];
-      // Two types of lambda scaling:
-      // 1) Normal one for Coulomb and VdW
-      // Lambda Scaling option one: lixljtmp -> this is used in nbdirect
-      real lixljtmp = 0.0;
-      if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) { // TODO: Make sure this is correct for Nb14 same as regular Nb
-        if (bi==bjtmp) {
-          lixljtmp=li;
-        } else {
-          lixljtmp=0;
-        }
-      } else {
-        lixljtmp=li*ljtmp;
-      }
-      real dlixlj_dli = bi != bjtmp ? ljtmp : .5;
-      dlixlj_dli = bi ? dlixlj_dli : 0;
-      real dlixlj_dlj = bi != bjtmp ? li : .5;
-      dlixlj_dlj = bjtmp ? dlixlj_dlj : 0;
-      real dlixlj_dli_dlj = bi && bjtmp && bi != bjtmp ? 1 : 0;
-      // 2) PME correction with li*lj -> these are simpler so they are implemented in-line
+      // TODO: Check lambda scaling
+      real lixljtmp = li*ljtmp;
+      real dlixlj_dli = ljtmp;
+      real dlixlj_dlj = bjtmp ? li : 0;
+      real dlixlj_dli_dlj = bjtmp ? 1 : 0;
 
       // Force storage
       real fij=0;

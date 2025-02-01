@@ -251,46 +251,37 @@ __global__ void getforce_nbdirect_oss_kernel(
             if (r<cutoffs.rCut) {
               // Scaling
               real dlixlj_dli, dlixlj_dlj, dlixlj_dli_dlj;
-              if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) { // same site
-                if (bi==bjtmp) { // intra-sub
-                  lixljtmp=li;
-                  dlixlj_dli = bi ? .5 : 0; // .5 to prevent adding same thing twice
-                  dlixlj_dlj = bjtmp ? .5 : 0;
+              // for l_{m,i} and l_{n,j}
+              if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) { // same site (m == n)
+                if (bi==bjtmp) { // intra-sub (i == j, alc-alc or env-env)
+                  lixljtmp = li;
+                  dlixlj_dli = bi ? 1 : 0; // Only one of the derivatives exists
+                  dlixlj_dlj = 0;
                   dlixlj_dli_dlj = 0;
-                } else { // intra-site
-                  lixljtmp=0;
+                } else { // intra-site (i != j, alc-alc or env-env)
+                  lixljtmp = bi ? 0 : 1;
                   dlixlj_dli = 0;
                   dlixlj_dlj = 0;
                   dlixlj_dli_dlj = 0;
                 }
-              } else { // inter-site
-                lixljtmp=li*ljtmp;
+              } else { // inter-site (m != n)
+                lixljtmp = li*ljtmp;
                 dlixlj_dli = bi ? ljtmp : 0;
                 dlixlj_dlj = bjtmp ? li : 0;
-                dlixlj_dli_dlj = 1;
+                dlixlj_dli_dlj = bi && bjtmp ? 1 : 0;
               }
 
-              rEff=r;
-              // Derivatives of the lambda function
               // Softcore OST
+              rEff=r;
               // rSoft derivatives
-              real drlam_dlami=0;
-              real drlam_dlamj=0;
-              // Softcore primary first derivatives
               real drijp_drij=1;
               real drijp_dlami=0;
               real drijp_dlamj=0;
-              // First derivative intermediates
-              real drijp_drlam=0;
-              // Primary cross derivatives
               real d2rijp_drij_dlamj=0;
               real d2rijp_drij_dlami=0;
               real d2rijp_dlami_dlamj=0;
-              // Second derivative intermediates
-              real d2rijp_drlam_drij=0;
-              real d2rijp_drlam2=0;
-              real rSoft=SOFTCORERADIUS*(1-lixljtmp);
               if (useSoftCore) {
+                real rSoft=SOFTCORERADIUS*(1-lixljtmp);
                 dredr=1; // d(rEff) / d(r)
                 dredll=0; // d(rEff) / d(lixljtmp)
                 if (bi || bjtmp) { // if either is a site
@@ -305,12 +296,12 @@ __global__ void getforce_nbdirect_oss_kernel(
                     dredll*=-SOFTCORERADIUS; // missing lambda factor corrected later
                     rEff*=rSoft;
                     // Terms with li or lj in it need to be conditioned
-                    drlam_dlami = bi ? -SOFTCORERADIUS*dlixlj_dli : 0;
-                    drlam_dlamj = bjtmp ? -SOFTCORERADIUS*dlixlj_dlj : 0;
-                    drijp_drlam = -.5*pow(r/rSoft, 4) + pow(r/rSoft,3) +
+                    real drlam_dlami = bi ? -SOFTCORERADIUS*dlixlj_dli : 0;
+                    real drlam_dlamj = bjtmp ? -SOFTCORERADIUS*dlixlj_dlj : 0;
+                    real drijp_drlam = -.5*pow(r/rSoft, 4) + pow(r/rSoft,3) +
                       rSoft*(2*pow(r,4)/pow(rSoft,5) - 3*pow(r,3)/pow(rSoft,4))+.5;
-                    d2rijp_drlam_drij = r*r*(6*r/rSoft-6)/pow(rSoft,3);
-                    d2rijp_drlam2 = r*r*r*(-6*r/rSoft+6)/pow(rSoft, 3);
+                    real d2rijp_drlam_drij = r*r*(6*r/rSoft-6)/pow(rSoft,3);
+                    real d2rijp_drlam2 = r*r*r*(-6*r/rSoft+6)/pow(rSoft, 3);
                     // First partials
                     drijp_drij = rSoft*(-2.0*pow(r,3)/pow(rSoft,4)+3*pow(r,2)/pow(rSoft,3));
                     drijp_dlami = drijp_drlam*drlam_dlami;
@@ -526,7 +517,6 @@ void getforce_nbdirect_ossTTTT(System *system,box_type box)
   int shMem=0;
 
   // TODO: Kill program if rSoft > rSwitch
-
   if (r->calcTermFlag[eenbdirect]==false) return;
   getforce_nbdirect_oss_kernel<flagBox,useSoftCore,usevdWSwitch,usePME><<<((32<<WARPSPERBLOCK)*N+(32<<WARPSPERBLOCK)-1)/(32<<WARPSPERBLOCK),(32<<WARPSPERBLOCK),shMem,r->nbdirectStream>>>(startBlock,endBlock,d->maxPartnersPerBlock,d->blockBounds_d,d->blockPartnerCount_d,d->blockPartners_d,d->blockVolume_d,d->localNbonds_d,p->vdwParameterCount,
 #ifdef USE_TEXTURE
@@ -538,7 +528,8 @@ void getforce_nbdirect_ossTTTT(System *system,box_type box)
     system->msld->dGdF_d);
 
   // TODO: Ask what this does and see if needed
-  //system->domdec->unpack_forces(system);
+  // Note this should be done once per force calculation and is potentially done here instead of in reg nbdirect
+  system->domdec->unpack_forces(system);
 }
 
 template <bool flagBox,bool useSoftCore,bool usevdWSwitch,typename box_type>

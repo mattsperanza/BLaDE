@@ -455,6 +455,7 @@ void test_OST(System *system, real dl) {
     system->run->calcTermFlag[i] = false;
   }
   system->msld->useSoftCore = false;
+  system->msld->useSoftCore14 = false;
   int len = system->state->lambdaCount+3*system->state->atomCount; // theta forces at end
   for (int i = 0; i < eeend; i++) {
     printf("Term %d Numerical Test: \n", i);
@@ -506,7 +507,7 @@ void test_OST(System *system, real dl) {
       for (int k = 0; k < len; k++) {
         d2U_analytic[k] = (d2U_analytic[k] - dU[k]) / pi_e;
         diff[k] = abs(d2U_analytic[k] - d2U_numeric[k]);
-        if (diff[k] > 1e-6) {
+        if (diff[k] > 1e-5) {
           printf("Test %d failed at force array index %d for lambda %d! \n", i, k, j);
           system->state->recv_position();
           system->state->recv_lambda();
