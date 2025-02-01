@@ -91,8 +91,11 @@ Potential::Potential() {
   excls_d=NULL;
 
   chargeGridPME_d=NULL;
+  ostGridPME_d=NULL;
   fourierGridPME_d=NULL;
+  ostFourierGridPME_d=NULL;
   potentialGridPME_d=NULL;
+  ostPotentialGridPME_d=NULL;
 #ifdef USE_TEXTURE
   potentialGridPME_tex=0;
 #endif
@@ -1070,8 +1073,11 @@ void Potential::initialize(System *system)
   }
 
   cudaMalloc(&chargeGridPME_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
+  cudaMalloc(&ostGridPME_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
   cudaMalloc(&fourierGridPME_d,gridDimPME[0]*gridDimPME[1]*(gridDimPME[2]/2+1)*sizeof(myCufftComplex));
+  cudaMalloc(&ostFourierGridPME_d,gridDimPME[0]*gridDimPME[1]*(gridDimPME[2]/2+1)*sizeof(myCufftComplex));
   cudaMalloc(&potentialGridPME_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
+  cudaMalloc(&ostPotentialGridPME_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
 #ifdef USE_TEXTURE
   {
     cudaResourceDesc resDesc;
@@ -1662,14 +1668,14 @@ void Potential::calc_force(int step,System *system)
     }
     if (system->id==0) {
       cudaStreamWaitEvent(r->nbrecipStream, r->ossForceBegin, 0);
-      getforce_ewald_oss(system);
       getforce_ewaldself_oss(system);
+      getforce_ewald_oss(system);
       cudaEventRecord(r->ossRecipComplete, r->ossRecip);
       cudaStreamWaitEvent(r->updateStream, r->ossRecipComplete, 0);
     }
     // Call gather_force & nbdirect_oss_force
     if (system->id>1) {
-      //system->state->gather_force(system, false); // Do I need to call this?
+      system->state->gather_force(system, false); // Do I need to call this?
       if (system->id==0) {
         getforce_nbdirect_oss_reduce(system);
       }

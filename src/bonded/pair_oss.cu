@@ -98,11 +98,6 @@ __global__ void getforce_exclusion_pair_kernel_oss(
       real ljtmp = lambda[b[1]];
       real dGdFi = dGdF[b[0]];
       real dGdFjtmp = dGdF[b[1]];
-      // Derivatives of the lambda function
-      real dlixlj_dli = ljtmp; // this is simplified
-      dlixlj_dli = bi ? dlixlj_dli : 0;
-      real dlixlj_dlj = li;
-      dlixlj_dlj = bjtmp ? dlixlj_dlj : 0;
       // Force storage
       real fij=0;
       real fli=0;
@@ -115,10 +110,9 @@ __global__ void getforce_exclusion_pair_kernel_oss(
       fij=kqq*(erff(br)*rinv-((real)1.128379167095513)*cutoffs.betaEwald*expf(-br*br))*rinv;
       real uij=-kqq*erff(br)*rinv;
 
-      // TODO: Check if product of lambdas is correct
       // OST Derivatives - lixlij is always just li*lj for ewald?
-      real dU_drij_dli = dlixlj_dli*fij;
-      real dU_drij_dlj = dlixlj_dlj*fij;
+      real dU_drij_dli = ljtmp*fij;
+      real dU_drij_dlj = bjtmp ? li*fij : 0;
       real dU_dlami_dlamj = uij;
 
       // Forces redef
@@ -128,7 +122,9 @@ __global__ void getforce_exclusion_pair_kernel_oss(
 
       // Lambda and spatial forces
       atomicAdd(&lambdaForce[b[0]], fli);
-      atomicAdd(&lambdaForce[b[1]], fljtmp);
+      if (b[1]) {
+        atomicAdd(&lambdaForce[b[1]], fljtmp);
+      }
       at_real3_scaleinc(&force[ii], fij/r,dr);
       at_real3_scaleinc(&force[jj],-fij/r,dr);
     }
