@@ -56,7 +56,6 @@ __global__ void getforce_ewald_spread_kernel_oss(int atomCount,real *charge,int 
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   real q;
   int b;
-  real l=0;
   real dGdFi=0;
   real3 xi; // position
   real u; // fractional coordinate remainder
@@ -77,114 +76,113 @@ __global__ void getforce_ewald_spread_kernel_oss(int atomCount,real *charge,int 
   }
 
   // Only spread alchemical atoms
-  if (b) {
-    if (iAtom<atomCount) {
-      // Scaling
-      q=charge[iAtom];
-      l=lambda[b];
+  if (iAtom<atomCount) {
+    // Scaling
+    q=charge[iAtom];
+    if (b) {
       dGdFi=dGdF[b];
-      q*=l*dGdFi;
-      xi=position[iAtom];
+    }
+    q*=dGdFi; // zero if non-alchemical, no lambda scaling since dQ/dL
+    xi=position[iAtom];
 
-      // Get grid position
-      if (flagBox) {
-        u=gridDimPME.x*(xi.x*boxxx(kbox)+xi.y*boxxy(kbox)+xi.z*boxxz(kbox));
-      } else {
-        u=xi.x*gridDimPME.x*boxxx(kbox);
-      }
-      u0.x=(int)floor(u);
-      u-=u0.x;
-      if (flagBox) { // x-direction could be up to 1.25*Lx+diff out of box
-        u0.x=nearby_modulus(u0.x,gridDimPME.x);
-      }
+    // Get grid position
+    if (flagBox) {
+      u=gridDimPME.x*(xi.x*boxxx(kbox)+xi.y*boxxy(kbox)+xi.z*boxxz(kbox));
+    } else {
+      u=xi.x*gridDimPME.x*boxxx(kbox);
+    }
+    u0.x=(int)floor(u);
+    u-=u0.x;
+    if (flagBox) { // x-direction could be up to 1.25*Lx+diff out of box
       u0.x=nearby_modulus(u0.x,gridDimPME.x);
-      u+=(order-1-threadOfAtom); // very important
     }
-    else {
-      u=0;
-    }
+    u0.x=nearby_modulus(u0.x,gridDimPME.x);
+    u+=(order-1-threadOfAtom); // very important
+  }
+  else {
+    u=0;
+  }
 
-    Modd=0;
-    Meven=(threadOfAtom==(order-1))?u:0;
-    Meven=(threadOfAtom==(order-2))?2-u:Meven; // Second order B spline
-    for (j=2; j<order; j+=2) {
-      Modd=u*Meven+(j+1-u)*__shfl_sync(0xFFFFFFFF,Meven,iThread+1);
-      Modd*=1.0f/j; // 1/(n-1)
-      Meven=u*Modd+(j+2-u)*__shfl_sync(0xFFFFFFFF,Modd,iThread+1);
-      Meven*=1.0f/(j+1); // 1/(n-1)
-    }
-    density.x=Meven;
-    // dDensity.x=Modd-__shfl_sync(0xFFFFFFFF,Modd,iThread+1);
+  Modd=0;
+  Meven=(threadOfAtom==(order-1))?u:0;
+  Meven=(threadOfAtom==(order-2))?2-u:Meven; // Second order B spline
+  for (j=2; j<order; j+=2) {
+    Modd=u*Meven+(j+1-u)*__shfl_sync(0xFFFFFFFF,Meven,iThread+1);
+    Modd*=1.0f/j; // 1/(n-1)
+    Meven=u*Modd+(j+2-u)*__shfl_sync(0xFFFFFFFF,Modd,iThread+1);
+    Meven*=1.0f/(j+1); // 1/(n-1)
+  }
+  density.x=Meven;
+  // dDensity.x=Modd-__shfl_sync(0xFFFFFFFF,Modd,iThread+1);
 
-    if (iAtom<atomCount) {
-      if (flagBox) {
-        u=gridDimPME.y*(xi.y*boxyy(kbox)+xi.z*boxyz(kbox));
-      } else {
-        u=xi.y*gridDimPME.y*boxyy(kbox);
-      }
-      u0.y=(int)floor(u);
-      u-=u0.y;
-      // y direction is only 0.5*Ly+diff out of triclinic box
-      u0.y=nearby_modulus(u0.y,gridDimPME.y);
-      u+=(order-1-threadOfAtom); // very important
+  if (iAtom<atomCount) {
+    if (flagBox) {
+      u=gridDimPME.y*(xi.y*boxyy(kbox)+xi.z*boxyz(kbox));
     } else {
-      u=0;
+      u=xi.y*gridDimPME.y*boxyy(kbox);
     }
+    u0.y=(int)floor(u);
+    u-=u0.y;
+    // y direction is only 0.5*Ly+diff out of triclinic box
+    u0.y=nearby_modulus(u0.y,gridDimPME.y);
+    u+=(order-1-threadOfAtom); // very important
+  } else {
+    u=0;
+  }
 
-    Modd=0;
-    Meven=(threadOfAtom==(order-1))?u:0;
-    Meven=(threadOfAtom==(order-2))?2-u:Meven; // Second order B spline
-    for (j=2; j<order; j+=2) {
-      Modd=u*Meven+(j+1-u)*__shfl_sync(0xFFFFFFFF,Meven,iThread+1);
-      Modd*=1.0f/j; // 1/(n-1)
-      Meven=u*Modd+(j+2-u)*__shfl_sync(0xFFFFFFFF,Modd,iThread+1);
-      Meven*=1.0f/(j+1); // 1/(n-1)
-    }
-    density.y=Meven;
-    // dDensity.y=Modd-__shfl_sync(0xFFFFFFFF,Modd,iThread+1);
+  Modd=0;
+  Meven=(threadOfAtom==(order-1))?u:0;
+  Meven=(threadOfAtom==(order-2))?2-u:Meven; // Second order B spline
+  for (j=2; j<order; j+=2) {
+    Modd=u*Meven+(j+1-u)*__shfl_sync(0xFFFFFFFF,Meven,iThread+1);
+    Modd*=1.0f/j; // 1/(n-1)
+    Meven=u*Modd+(j+2-u)*__shfl_sync(0xFFFFFFFF,Modd,iThread+1);
+    Meven*=1.0f/(j+1); // 1/(n-1)
+  }
+  density.y=Meven;
+  // dDensity.y=Modd-__shfl_sync(0xFFFFFFFF,Modd,iThread+1);
 
-    if (iAtom<atomCount) {
-      if (flagBox) {
-        u=gridDimPME.z*(xi.z*boxzz(kbox));
-      } else {
-        u=xi.z*gridDimPME.z*boxzz(kbox);
-      }
-      u0.z=(int)floor(u);
-      u-=u0.z;
-      // z direction is only diff out of triclinic box, same as orthogonal box
-      u0.z=nearby_modulus(u0.z,gridDimPME.z);
-      u+=(order-1-threadOfAtom); // very important
+  if (iAtom<atomCount) {
+    if (flagBox) {
+      u=gridDimPME.z*(xi.z*boxzz(kbox));
     } else {
-      u=0;
+      u=xi.z*gridDimPME.z*boxzz(kbox);
     }
+    u0.z=(int)floor(u);
+    u-=u0.z;
+    // z direction is only diff out of triclinic box, same as orthogonal box
+    u0.z=nearby_modulus(u0.z,gridDimPME.z);
+    u+=(order-1-threadOfAtom); // very important
+  } else {
+    u=0;
+  }
 
-    Modd=0;
-    Meven=(threadOfAtom==(order-1))?u:0;
-    Meven=(threadOfAtom==(order-2))?2-u:Meven; // Second order B spline
-    for (j=2; j<order; j+=2) {
-      Modd=u*Meven+(j+1-u)*__shfl_sync(0xFFFFFFFF,Meven,iThread+1);
-      Modd*=1.0f/j; // 1/(n-1)
-      Meven=u*Modd+(j+2-u)*__shfl_sync(0xFFFFFFFF,Modd,iThread+1);
-      Meven*=1.0f/(j+1); // 1/(n-1)
-    }
-    density.z=Meven;
-    // dDensity.z=Modd-__shfl_sync(0xFFFFFFFF,Modd,iThread+1);
+  Modd=0;
+  Meven=(threadOfAtom==(order-1))?u:0;
+  Meven=(threadOfAtom==(order-2))?2-u:Meven; // Second order B spline
+  for (j=2; j<order; j+=2) {
+    Modd=u*Meven+(j+1-u)*__shfl_sync(0xFFFFFFFF,Meven,iThread+1);
+    Modd*=1.0f/j; // 1/(n-1)
+    Meven=u*Modd+(j+2-u)*__shfl_sync(0xFFFFFFFF,Modd,iThread+1);
+    Meven*=1.0f/(j+1); // 1/(n-1)
+  }
+  density.z=Meven;
+  // dDensity.z=Modd-__shfl_sync(0xFFFFFFFF,Modd,iThread+1);
 
-    jxs=(threadIdx.x&4)==4;
-    jys=(threadIdx.x&2)==2;
-    jzs=(threadIdx.x&1);
-    for (jx=0; jx<order/2; jx++) {
-      dIndex.x=__shfl_sync(0xFFFFFFFF,density.x,2*jx+jxs,8);
-      index.x=over_modulus(u0.x+2*jx+jxs,gridDimPME.x);
-      for (jy=0; jy<order/2; jy++) {
-        dIndex.y=__shfl_sync(0xFFFFFFFF,density.y,2*jy+jys,8);
-        index.y=index.x*gridDimPME.y+over_modulus(u0.y+2*jy+jys,gridDimPME.y);
-        for (jz=0; jz<order/2; jz++) {
-          dIndex.z=__shfl_sync(0xFFFFFFFF,density.z,2*jz+jzs,8);
-          index.z=index.y*gridDimPME.z+over_modulus(u0.z+2*jz+jzs,gridDimPME.z);
-          if (iAtom<atomCount) {
-            atomicAdd(&ostGrid[index.z], q*dIndex.x*dIndex.y*dIndex.z);
-          }
+  jxs=(threadIdx.x&4)==4;
+  jys=(threadIdx.x&2)==2;
+  jzs=(threadIdx.x&1);
+  for (jx=0; jx<order/2; jx++) {
+    dIndex.x=__shfl_sync(0xFFFFFFFF,density.x,2*jx+jxs,8);
+    index.x=over_modulus(u0.x+2*jx+jxs,gridDimPME.x);
+    for (jy=0; jy<order/2; jy++) {
+      dIndex.y=__shfl_sync(0xFFFFFFFF,density.y,2*jy+jys,8);
+      index.y=index.x*gridDimPME.y+over_modulus(u0.y+2*jy+jys,gridDimPME.y);
+      for (jz=0; jz<order/2; jz++) {
+        dIndex.z=__shfl_sync(0xFFFFFFFF,density.z,2*jz+jzs,8);
+        index.z=index.y*gridDimPME.z+over_modulus(u0.z+2*jz+jzs,gridDimPME.z);
+        if (iAtom<atomCount) {
+          atomicAdd(&ostGrid[index.z], q*dIndex.x*dIndex.y*dIndex.z);
         }
       }
     }
@@ -434,7 +432,7 @@ __global__ void getforce_ewald_gather_kernel_oss(
   // Lambda force
   if (iAtom<atomCount) {
     if (b && threadOfAtom==0) {
-      atomicAdd(&lambdaForce[b],q*gEnergy);
+      atomicAdd(&lambdaForce[b], 2*q*gEnergy); // dQ/dL * (T * G)
     }
   }
 

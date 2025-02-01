@@ -448,7 +448,7 @@ void test_OST(System *system, real dl) {
    *       --> e*pi*d2U_dlj_dl is in lj's force -> hessian row sum?
    *       --> e*pi*d2U_dlj_dr is in rj's force
    */
-  dl = 1e-5;
+  dl = 1e-4;
   bool flags[eeend];
   for (int i = 0; i < eeend; i++) {
     flags[i] = system->run->calcTermFlag[i];
@@ -520,9 +520,10 @@ void test_OST(System *system, real dl) {
           printf("Analytic dU(X,L+dl):          %15.8f\n", tmp_high[k]);
           printf("Analytic dU(X,L=%.2f):        %15.8f\n", lmd, dU[k]);
           printf("Analytic dU(X,L-dl):          %15.8f\n", tmp_low[k]);
-          printf("Numeric d2U:     %15.8f\n", d2U_numeric[k]);
-          printf("Analytic d2U:    %15.8f\n", d2U_analytic[k]);
-          printf("|Diff|:          %15.8f\n", diff[k]);
+          printf("Numeric d2U:                  %15.8f\n", d2U_numeric[k]);
+          printf("Analytic d2U:                 %15.8f\n", d2U_analytic[k]);
+          printf("|Diff|:                       %15.8f\n", diff[k]);
+          printf("Scaling num->analytic:        %15.8f\n", d2U_analytic[k]/d2U_numeric[k]);
           printf("Exiting...\n");
           exit(1);
         }
