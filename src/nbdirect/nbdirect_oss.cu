@@ -237,12 +237,7 @@ __global__ void getforce_nbdirect_oss_kernel(
           fjtmp=real3_reset<real3>();
           fljtmp=0;
           if (iThread<iCount && ((1<<jtmp)&exclMask)) {
-#ifdef USE_TEXTURE
-            struct VdwPotential vdwp;
-            ((real2*)(&vdwp))[0]=tex1Dfetch<real2>(vdwParameters,inp.typeIdx*vdwParameterCount+jtmpnp_typeIdx);
-#else
             struct VdwPotential vdwp=vdwParameters[inp.typeIdx*vdwParameterCount+jtmpnp_typeIdx];
-#endif
 
             // Geometry
             dr=real3_sub(xi,xjtmp);
@@ -255,11 +250,11 @@ __global__ void getforce_nbdirect_oss_kernel(
               if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) { // same site (m == n)
                 if (bi==bjtmp) { // intra-sub (i == j, alc-alc or env-env)
                   lixljtmp = li;
-                  dlixlj_dli = bi ? 1 : 0; // Only one of the derivatives exists
-                  dlixlj_dlj = 0;
+                  dlixlj_dli = bi ? 1 : 0;
+                  dlixlj_dlj = bjtmp ? 1 : 0;
                   dlixlj_dli_dlj = 0;
                 } else { // intra-site (i != j, alc-alc or env-env)
-                  lixljtmp = bi ? 0 : 1;
+                  lixljtmp = 0; // zero contribution from env-env anyway
                   dlixlj_dli = 0;
                   dlixlj_dlj = 0;
                   dlixlj_dli_dlj = 0;
@@ -282,37 +277,34 @@ __global__ void getforce_nbdirect_oss_kernel(
               real d2rijp_dlami_dlamj=0;
               if (useSoftCore) {
                 real rSoft=SOFTCORERADIUS*(1-lixljtmp);
-                dredr=1; // d(rEff) / d(r)
-                dredll=0; // d(rEff) / d(lixljtmp)
                 if (bi || bjtmp) { // if either is a site
                   if (r<rSoft) {
                     // Original soft
                     real rdivrs=r/rSoft;
                     rEff=1-((real)0.5)*rdivrs;
                     rEff=rEff*rdivrs*rdivrs*rdivrs+((real)0.5); // Soft-core: rEff = rL * (.5 + (r/rL)^3 - .5*(r/rL)^4)
-                    dredr=3-2*rdivrs;
-                    dredr*=rdivrs*rdivrs;
-                    dredll=rEff-dredr*rdivrs;
-                    dredll*=-SOFTCORERADIUS; // missing lambda factor corrected later
                     rEff*=rSoft;
-                    // Terms with li or lj in it need to be conditioned
-                    real drlam_dlami = bi ? -SOFTCORERADIUS*dlixlj_dli : 0;
-                    real drlam_dlamj = bjtmp ? -SOFTCORERADIUS*dlixlj_dlj : 0;
+                    real drlam_dlami = -SOFTCORERADIUS*dlixlj_dli;
+                    real drlam_dlamj = -SOFTCORERADIUS*dlixlj_dlj;
+                    real d2rlam_dli_dlj = -SOFTCORERADIUS*dlixlj_dli_dlj;
                     real drijp_drlam = -.5*pow(r/rSoft, 4) + pow(r/rSoft,3) +
                       rSoft*(2*pow(r,4)/pow(rSoft,5) - 3*pow(r,3)/pow(rSoft,4))+.5;
                     real d2rijp_drlam_drij = r*r*(6*r/rSoft-6)/pow(rSoft,3);
-                    real d2rijp_drlam2 = r*r*r*(-6*r/rSoft+6)/pow(rSoft, 3);
+                    real d2rijp_drlam2 = r*r*r*(-6*r/rSoft+6)/pow(rSoft, 4);
                     // First partials
                     drijp_drij = rSoft*(-2.0*pow(r,3)/pow(rSoft,4)+3*pow(r,2)/pow(rSoft,3));
                     drijp_dlami = drijp_drlam*drlam_dlami;
                     drijp_dlamj = drijp_drlam*drlam_dlamj;
                     // Second mixed partials
-                    d2rijp_drij_dlami = d2rijp_drlam_drij * drlam_dlami;
-                    d2rijp_drij_dlamj = d2rijp_drlam_drij * drlam_dlamj;
-                    d2rijp_dlami_dlamj = d2rijp_drlam2 * drlam_dlami * drlam_dlamj; // symmetric
+                    d2rijp_drij_dlami = d2rijp_drlam_drij*drlam_dlami;
+                    d2rijp_drij_dlamj = d2rijp_drlam_drij*drlam_dlamj;
+                    // This one depends on what lixljtmp looks like
+                    d2rijp_dlami_dlamj = d2rijp_drlam2*drlam_dlami*drlam_dlamj + drijp_drlam*d2rlam_dli_dlj;
                   }
                 }
               }
+              // Fix lambda scaling since soft-core derivatives require this be = 1 sometimes
+              dlixlj_dlj = (bi&0xFFFF0000)==(bjtmp&0xFFFF0000) && bi == bjtmp ? 0 : dlixlj_dlj;
               rinv=1/rEff;
 
               // Terms which require calculation for soft-coring - both vdw and elec can be accumulated here
@@ -376,19 +368,17 @@ __global__ void getforce_nbdirect_oss_kernel(
               real rCut3=cutoffs.rCut*cutoffs.rCut*cutoffs.rCut;
               real rSwitch3=cutoffs.rSwitch*cutoffs.rSwitch*cutoffs.rSwitch;
               if (rEff<cutoffs.rSwitch) {
-                // OSS calculation:
                 real dv6=usevdWSwitch?0:1/(rCut3*rSwitch3);
                 real U_dir = vdwp.c12*(rinv6*rinv6-dv6*dv6)-vdwp.c6*(rinv6-dv6);
-                // First Derivatives
                 real dU_drijp_tmp = rinv*rinv6*(-12*vdwp.c12*rinv6+6*vdwp.c6);
                 dU_drijp += lixljtmp * dU_drijp_tmp;
-                // Second Derivatives
                 d2U_drijp2 += lixljtmp*6*rinv6*rinv*rinv*(26*vdwp.c12*rinv6-7*vdwp.c6);
                 d2U_drijp_dlami += dlixlj_dli * dU_drijp_tmp;
                 d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
                 d2Up_dlami_dlamj += dlixlj_dli_dlj * U_dir;
                 // Accumulate later...
               } else {
+                // Soft-coring c.r. terms make these work out in same var theoretically, I don't try very hard to make that work
                 if ( !usevdWSwitch ) { // Force Switch
                   real k6=rCut3/(rCut3-rSwitch3);
                   real k12=rCut3*rCut3/(rCut3*rCut3-rSwitch3*rSwitch3);
@@ -437,11 +427,11 @@ __global__ void getforce_nbdirect_oss_kernel(
               fij_ost = dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
 
               // First term is with holding rij' constant
-              real d2U_dlami_dlamj_tot = d2Up_dlami_dlamj + (d2U_drijp_dlamj*drijp_dlami + dU_drijp * d2rijp_dlami_dlamj)
+              real d2U_dlami_dlamj_tot = d2Up_dlami_dlamj + (d2U_drijp_dlamj*drijp_dlami + dU_drijp*d2rijp_dlami_dlamj)
                 + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami) * drijp_dlamj;
               fli_ost = dGdFjtmp * d2U_dlami_dlamj_tot; // lam_i feels lam_j histogram
               fljtmp_ost = dGdFi * d2U_dlami_dlamj_tot; // lam_j feels lam_i histogram
-              // Again, if d2U_dli_dlj != 0 for i=j, above doesn't over-count due to power rule
+              // Again, if d2U_dli_dlj != 0 for m!=n && i=j, above doesn't over-count due to power rule
 
               // Accumulate ost forces
               fij += fij_ost;

@@ -448,17 +448,15 @@ void test_OST(System *system, real dl) {
    *       --> e*pi*d2U_dlj_dl is in lj's force -> hessian row sum?
    *       --> e*pi*d2U_dlj_dr is in rj's force
    */
-  dl = 1e-4;
+  dl = 1e-5;
   bool flags[eeend];
   for (int i = 0; i < eeend; i++) {
     flags[i] = system->run->calcTermFlag[i];
     system->run->calcTermFlag[i] = false;
   }
-  system->msld->useSoftCore = false;
-  system->msld->useSoftCore14 = false;
+  //system->msld->useSoftCore = false;
   int len = system->state->lambdaCount+3*system->state->atomCount; // theta forces at end
   for (int i = 0; i < eeend; i++) {
-    if (i == 7){ continue; } // skips nbdirect
     printf("Term %d Numerical Test: \n", i);
     system->run->calcTermFlag[i] = true;
     // Calculate ref dU(X, L) to subtract from force w/ oss
@@ -498,11 +496,10 @@ void test_OST(System *system, real dl) {
       system->potential->calc_force(0, system);
       cudaMemcpy(d2U_analytic, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
       // Check if they match
-      real diff[len];
       for (int k = 0; k < len; k++) {
         d2U_analytic[k] = (d2U_analytic[k] - dU[k]) / pi_e;
-        diff[k] = abs(d2U_analytic[k] - d2U_numeric[k]);
-        if (diff[k] > 1e-5) {
+        real diff = abs(d2U_analytic[k] - d2U_numeric[k]);
+        if (diff > 1e-5) {
           printf("Test %d failed at force array index %d for lambda %d! \n", i, k, j);
           printf("Num lambdas: %d \n", system->state->lambdaCount);
           real sum = 0;
@@ -522,7 +519,7 @@ void test_OST(System *system, real dl) {
           printf("Analytic dU(X,L-dl):          %15.8f\n", tmp_low[k]);
           printf("Numeric d2U:                  %15.8f\n", d2U_numeric[k]);
           printf("Analytic d2U:                 %15.8f\n", d2U_analytic[k]);
-          printf("|Diff|:                       %15.8f\n", diff[k]);
+          printf("|Diff|:                       %15.8f\n", diff);
           printf("Scaling num->analytic:        %15.8f\n", d2U_analytic[k]/d2U_numeric[k]);
           printf("Exiting...\n");
           exit(1);

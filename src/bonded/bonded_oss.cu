@@ -15,8 +15,7 @@ __global__ void getforce_bond_kernel_oss(
     int bond12Count,int bondCount,struct BondPotential *bonds,
     real3 *position,real3_f *force,box_type box,real *lambda,
     real_f *lambdaForce,real softAlpha,real softExp,
-    real* dGdF
-    )
+    real* dGdF)
 {
 // NYI - maybe energy should be a double
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -95,22 +94,18 @@ __global__ void getforce_bond_kernel_oss(
 
       // Lambda force
       real fij = 0;
-      real fli,flj;
-      //atomicAdd(&lambdaForce[b[0]],l[1]*lEnergy);
+      real fli = 0;
+      real flj = 0;
       real d2U_drij_dli = l[1]*fbond;
       fij += chain[0]*d2U_drij_dli;
       if (b[1]) {
-        //atomicAdd(&lambdaForce[b[1]],l[0]*lEnergy);
-        real d2U_drij_dlj = fbond * l[0];
-        fij += chain[1] * d2U_drij_dlj;
-        // Lambda bias force only exists when both alchemical
-        if (b[0] != b[1]) {
-          real d2U_dli_dlj = fbond;
-          fli = chain[0] * d2U_dli_dlj;
-          atomicAdd(&lambdaForce[b[0]], fli);
-          flj = chain[1] * d2U_dli_dlj;
-          atomicAdd(&lambdaForce[b[1]], flj);
-        }
+        real d2U_drij_dlj = l[0]*fbond;
+        fij += chain[1]*d2U_drij_dlj;
+        real d2U_dli_dlj = fbond;
+        fli = chain[1]*d2U_dli_dlj;
+        atomicAdd(&lambdaForce[b[0]], fli);
+        flj = chain[0]*d2U_dli_dlj;
+        atomicAdd(&lambdaForce[b[1]], flj);
       }
 
       // Spatial force
