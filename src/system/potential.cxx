@@ -1637,14 +1637,21 @@ void Potential::calc_force(int step,System *system)
   calc_virtual_force(system);
 
   // cudaEventRecord(r->forceComplete,r->updateStream);
-  if (system->msld->oss) {
+  if (system->msld->oss || system->msld->update_histogram) {
     // Wait on lambda force calc being complete
     cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->nbrecipComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
-    // Calculate dGdF from histogram/ABF & conditionally add sample
-    // system->msld->getforce_hist(system,calcEnergy);
+    // Calculate dGdF from histogram/ABF
+    cudaMemset(system->msld->step_potential_d, 0, system->state->lambdaCount-1*sizeof(real));
+    system->msld->getforce_hist(system,calcEnergy);
+    system->msld->getforce_abf(system,calcEnergy);
+    // Need to know histogram/abf potentials to add sample
+    if (system->msld->update_histogram) {
+      system->msld->add_sample_hist(system);
+      system->msld->add_sample_abf(system);
+    }
 
     // Wait on calculation of dGdF
     cudaEventRecord(r->ossForceBegin, r->ossBias);

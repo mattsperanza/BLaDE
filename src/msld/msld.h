@@ -56,11 +56,44 @@ class Msld {
   struct VariableBias *variableBias_d;
 
   // Orthogonal Space Sampling Variables
-  bool oss = true; // Perform Orthogonal Space Sampling calculations (requires additional lambda force calculation)
-  bool update_histogram = true;
+  // Mem not allocated if not set since histogram so large
+  bool oss = true; // Perform Orthogonal Space Sampling force calculations
+  bool update_histogram = true; // add samples to histogram
   int sample_freq = 10;
   real* dGdF_d;
   real* dGdL_d;
+  real* step_potential_d; // potential from histogram+abf at each lambda
+
+  // Histogram - uniform binning
+  float dUdL_max = 1500;
+  float dUdL_min = -dUdL_min; // symmetric
+  int dUdL_bins = 1000;
+  float dUdL_resolution = 2*abs(dUdL_max) / ((real)dUdL_bins);
+  int dUdL_search = (int) .1*dUdL_bins; // search 20 percent of histogram dUdL range
+  float dUdL_std = ((float)dUdL_search)*dUdL_resolution/4; // feel 4 std in each direction
+  int L_hist_bins = 100; // 0-1 in lambda space
+  int L_search =  (int) .1*L_hist_bins; // search 20 percent of histogram lambda range
+  float L_resolution = 1.0 / ((float)L_hist_bins);
+  float L_std = ((float)L_search)*L_resolution/4;
+  float* histogram_d; // 1000 x 100 = 1 million float = 4 -> stores sum of 1*weight*tempering pre-factor to gaussian
+  int* histogram_index_d; // index into lambda's histogram
+  float tempering = 2.0; // exp(-g(X,L)/tempering) = tempering weight
+  float weight = .05; // kcal/mol
+
+  // ABF - uniform binning - separate from histogram estimation
+  int nFull = 0;
+  int L_abf_bins = 200;
+  int* abf_index_d; // index into abf histogram
+  real* abf_counts_d;
+  real* ensemble_dUdL_d;
+  real* ensemble_dUdL2_d;
+  real* weights_d;
+  real* weighted_dUdL_d;
+  real* weighted_dUdL2_d;
+  real* offsets_d;
+  real* integral_components_d;
+  real* average_dUdL_d;
+  real* variance_d;
 
   int thetaCollBiasCount;
   real *kThetaCollBias;
@@ -122,6 +155,11 @@ class Msld {
   void getforce_thetaBias(System *system,bool calcEnergy);
   void getforce_atomRestraints(System *system,bool calcEnergy);
   void getforce_chargeRestraints(System *system,bool calcEnergy);
+
+  void add_sample_hist(System *system);
+  void add_sample_abf(System *system);
+  void getforce_hist(System *system, bool calcEnergy);
+  void getforce_abf(System *system, bool calcEnergy);
 };
 
 void parse_msld(char *line,System *system);
