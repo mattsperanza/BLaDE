@@ -525,7 +525,7 @@ void getforce_nbdirect_ossTTTT(System *system,box_type box)
 
   // TODO: Kill program if rSoft > rSwitch
   if (r->calcTermFlag[eenbdirect]==false) return;
-  getforce_nbdirect_oss_kernel<flagBox,useSoftCore,usevdWSwitch,usePME><<<((32<<WARPSPERBLOCK)*N+(32<<WARPSPERBLOCK)-1)/(32<<WARPSPERBLOCK),(32<<WARPSPERBLOCK),shMem,r->nbdirectStream>>>(startBlock,endBlock,d->maxPartnersPerBlock,d->blockBounds_d,d->blockPartnerCount_d,d->blockPartners_d,d->blockVolume_d,d->localNbonds_d,p->vdwParameterCount,
+  getforce_nbdirect_oss_kernel<flagBox,useSoftCore,usevdWSwitch,usePME><<<((32<<WARPSPERBLOCK)*N+(32<<WARPSPERBLOCK)-1)/(32<<WARPSPERBLOCK),(32<<WARPSPERBLOCK),shMem,r->ossDirect>>>(startBlock,endBlock,d->maxPartnersPerBlock,d->blockBounds_d,d->blockPartnerCount_d,d->blockPartners_d,d->blockVolume_d,d->localNbonds_d,p->vdwParameterCount,
 #ifdef USE_TEXTURE
     p->vdwParameters_tex,
 #else
@@ -534,7 +534,6 @@ void getforce_nbdirect_ossTTTT(System *system,box_type box)
     system->domdec->blockExcls_d,system->run->cutoffs,d->localPosition_d,d->localForce_d,box,s->lambda_fd,s->lambdaForce_d,
     system->msld->dGdF_d);
 
-  // TODO: Ask what this does and see if needed
   // Note this should be done once per force calculation and is potentially done here instead of in reg nbdirect
   system->domdec->unpack_forces(system);
 }

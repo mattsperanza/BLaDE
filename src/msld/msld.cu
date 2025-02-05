@@ -677,9 +677,6 @@ void Msld::initialize(System *system)
   if (oss) {
     int nL = blockCount-1; // 0th lambda is environment
     cudaMalloc(&dGdF_d, blockCount*sizeof(real)); // use blockCount so that it is indexed same as lambda array
-    cudaMemset(dGdF_d, 0, blockCount*sizeof(real));
-    cudaMalloc(&dGdL_d, blockCount*sizeof(real));
-    cudaMemset(dGdL_d, 0, blockCount*sizeof(real));
     cudaMalloc(&step_potential_d, nL*sizeof(real));
 
     int index[nL];
@@ -790,7 +787,7 @@ void Msld::add_sample_abf(System* system){
   int shMem = 0;
 
   if (system->run) { // need to wait for energy
-    stream=system->run->updateStream;
+    stream=system->run->ossBias;
   }
 
   add_sample_abf_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
@@ -832,14 +829,13 @@ void Msld::add_sample_hist(System* system) {
   int shMem = 0;
 
   if (system->run) {
-    stream=system->run->updateStream;
+    stream=system->run->ossBias;
   }
 
   add_sample_hist_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->leapParms1->kT, blockCount-1, s->lambda_fd, s->lambdaForce_d, step_potential_d,
     weight, tempering, histogram_d, histogram_index_d,
-    L_hist_bins, dUdL_bins, dUdL_max
-    );
+    L_hist_bins, dUdL_bins, dUdL_max);
 }
 
 // This is done on GPU just to avoid moving data back and forth
@@ -848,14 +844,14 @@ __global__ void getforce_abf_kernel(
   int* abf_hist_indices, int total_bins,
   real* ensemble_dUdL, real* integral_components,
   real_e *energy,
-  int blockCount)
+  int nL)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   extern __shared__ real sEnergy[];
   real lEnergy=0;
 
   real dUdL_abf = 0;
-  if (i < blockCount) {
+  if (i < nL) {
     real lambda = lambdas[i+1];
     // This value is in range for bins, +1 is in range for edges, but + 2 may be out of range
     int bin = (int) lambda * total_bins;
@@ -886,7 +882,6 @@ __global__ void getforce_abf_kernel(
   }
 }
 
-// Only called if oss is true
 void Msld::getforce_abf(System *system, bool calcEnergy) {
   cudaStream_t stream = 0;
   Run *r = system->run;
@@ -900,7 +895,7 @@ void Msld::getforce_abf(System *system, bool calcEnergy) {
     pEnergy=s->energy_d+eelambda;
   }
   if (system->run) {
-    stream=system->run->biaspotStream;
+    stream=system->run->ossBias;
   }
 
   getforce_abf_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
@@ -913,10 +908,10 @@ void Msld::getforce_abf(System *system, bool calcEnergy) {
 // Applies mirror conditions outside of lambda [0-1] range
 // Samples at bin are assumed to be at center of bin
 __global__ void getforce_hist_kernel(
-  real kT, int nL, real* lambdas, real* lambdaForce, real* step_potential,
+  int nL, real* lambdas, real* lambdaForce, real* step_potential,
   int* hist_indicies, float* histogram, float dUdL_max,
   int dUdL_bins, int dUdL_search, int L_bins, int L_search,
-  float dUdL_std, float L_std, real* dGdF, real* dGdL
+  float dUdL_std, float L_std, real* dGdF
 ) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
@@ -960,13 +955,12 @@ __global__ void getforce_hist_kernel(
     }
     // ABF race
     atomicAdd(&step_potential[i], bias);
+    atomicAdd(&lambdaForce[i+1], L_force);
     // No race here
     dGdF[i+1] = dUdL_force;
-    dGdL[i+1] = L_force;
   }
 }
 
-// only here if oss is true
 void Msld::getforce_hist(System *system, bool calcEnergy) {
   cudaStream_t stream = 0;
   Run *r = system->run;
@@ -980,13 +974,18 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
     pEnergy=s->energy_d+eelambda;
   }
   if (system->run) {
-    stream=system->run->biaspotStream;
+    stream=system->run->ossBias;
   }
 
-  getforce_hist_kernel
+  // Currently set up to do one thread per lambda, each thread loops over (dUdL_search+1)*(L_search+1) bins
+  getforce_hist_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
+    s->lambdaCount-1, s->lambda_fd, s->lambdaForce_d, step_potential_d,
+    histogram_index_d, histogram_d, dUdL_max,
+    dUdL_bins, dUdL_search, L_hist_bins, L_search,
+    dUdL_std, L_std, dGdF_d
+  );
 
 }
-
 
 __global__ void calc_lambda_from_theta_kernel(real_x *lambda,real_x *theta,int siteCount,int *siteBound,real fnex)
 {

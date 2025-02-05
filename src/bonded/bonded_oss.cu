@@ -107,6 +107,8 @@ __global__ void getforce_bond_kernel_oss(
         flj = chain[0]*d2U_dli_dlj;
         atomicAdd(&lambdaForce[b[1]], flj);
       }
+      printf("bi: %d, bj: %d, li: %f, lj: %f, dGdFi: %f, dGdFj: %f, fbond: %f, fij: %f, fli: %f, flj: %f\n",
+        b[0], b[1], l[0], l[1], chain[0], chain[1], fbond, fij, fli, flj);
 
       // Spatial force
       at_real3_scaleinc(&force[ii], fij/r,dr);
@@ -132,7 +134,7 @@ void getforce_bondT_oss(System *system,box_type box)
   N12=(r->calcTermFlag[eebond]?p->bond12Count:0);
   N=N12+(r->calcTermFlag[eeurey]?p->bond13Count:0);
   bonds=p->bonds_d+(p->bond12Count-N12);
-  if (N>0) getforce_bond_kernel_oss<flagBox,false><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+  if (N>0) getforce_bond_kernel_oss<flagBox,false><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N12,N,bonds,(real3*)s->position_fd,
     (real3_f*)s->force_d,box,s->lambda_fd,
     s->lambdaForce_d,0,1,
@@ -142,7 +144,7 @@ void getforce_bondT_oss(System *system,box_type box)
   N12=(r->calcTermFlag[eebond]?p->softBond12Count:0);
   N=N12+(r->calcTermFlag[eeurey]?p->softBond13Count:0);
   bonds=p->softBonds_d+(p->softBond12Count-N12);
-  if (N>0) getforce_bond_kernel_oss<flagBox,true><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+  if (N>0) getforce_bond_kernel_oss<flagBox,true><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N12,N,bonds,(real3*)s->position_fd,
     (real3_f*)s->force_d,box,s->lambda_fd,
     s->lambdaForce_d,softAlpha,softExp,
@@ -284,13 +286,13 @@ void getforce_angleT_oss(System *system,box_type box)
   if (r->calcTermFlag[eeangle]==false) return;
 
   N=p->angleCount;
-  if (N>0) getforce_angle_kernel_oss<flagBox,false><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+  if (N>0) getforce_angle_kernel_oss<flagBox,false><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->angles_d,(real3*)s->position_fd,
     (real3_f*)s->force_d,box,s->lambda_fd,
     s->lambdaForce_d,1,
     system->msld->dGdF_d);
   N=p->softAngleCount;
-  if (N>0) getforce_angle_kernel_oss<flagBox,true><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+  if (N>0) getforce_angle_kernel_oss<flagBox,true><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->softAngles_d,(real3*)s->position_fd,
     (real3_f*)s->force_d,box,s->lambda_fd,
     s->lambdaForce_d,softExp,
@@ -485,14 +487,14 @@ void getforce_diheT_oss(System *system,box_type box)
   if (r->calcTermFlag[eedihe]==false) return;
 
   N=p->diheCount;
-  if (N>0) getforce_torsion_kernel_oss<flagBox,DihePotential,false> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+  if (N>0) getforce_torsion_kernel_oss<flagBox,DihePotential,false> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->dihes_d,(real3*)s->position_fd,
     (real3_f*) s->force_d, box,
     s->lambda_fd,s->lambdaForce_d, 1,
     system->msld->dGdF_d);
 
   N=p->softDiheCount;
-  if (N>0) getforce_torsion_kernel_oss<flagBox,DihePotential,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+  if (N>0) getforce_torsion_kernel_oss<flagBox,DihePotential,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->softDihes_d,(real3*)s->position_fd,
     (real3_f*) s->force_d, box,
     s->lambda_fd, s->lambdaForce_d, softExp,
@@ -823,14 +825,14 @@ void getforce_cmapT_oss(System *system,box_type box)
   if (r->calcTermFlag[eecmap]==false) return;
 
   N=p->cmapCount;
-  if (N>0) getforce_cmap_kernel_oss<flagBox,false><<<(2*N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+  if (N>0) getforce_cmap_kernel_oss<flagBox,false><<<(2*N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->cmaps_d,
     (real3*)s->position_fd, (real3_f*) s->force_d, box,
     s->lambda_fd,s->lambdaForce_d, 1,
     system->msld->dGdF_d);
 
   N=p->softCmapCount;
-  if (N>0) getforce_cmap_kernel_oss<flagBox,true><<<(2*N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+  if (N>0) getforce_cmap_kernel_oss<flagBox,true><<<(2*N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->softCmaps_d,
     (real3*)s->position_fd, (real3_f*) s->force_d, box,
     s->lambda_fd,s->lambdaForce_d, softExp,

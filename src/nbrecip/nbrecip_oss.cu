@@ -44,7 +44,7 @@ void getforce_ewaldself_oss(System *system)
   if (r->usePME==false) return;
   if (r->calcTermFlag[eenbrecipself]==false) return;
 
-  getforce_ewaldself_kernel_oss<<<(N+BLNB-1)/BLNB,BLNB,shMem,r->nbrecipStream>>>(
+  getforce_ewaldself_kernel_oss<<<(N+BLNB-1)/BLNB,BLNB,shMem,r->ossRecip>>>(
     N,p->charge_d,prefactor,m->atomBlock_d,
     s->lambda_fd,s->lambdaForce_d,
     m->dGdF_d);
@@ -503,7 +503,7 @@ void getforce_ewaldTT_oss(System *system,box_type kbox)
   int spreadGatherBlocks=(N + BLNB/8 - 1)/(BLNB/8);
 
   // Spread kernel
-  getforce_ewald_spread_kernel_oss<flagBox,order><<<spreadGatherBlocks,BLNB,0,r->nbrecipStream>>>(
+  getforce_ewald_spread_kernel_oss<flagBox,order><<<spreadGatherBlocks,BLNB,0,r->ossRecip>>>(
     N,p->charge_d,m->atomBlock_d,(real3*)s->position_fd,kbox,
     s->lambda_fd,((int3*)p->gridDimPME)[0],
     dGdF, p->ostGridPME_d);
@@ -513,13 +513,13 @@ void getforce_ewaldTT_oss(System *system,box_type kbox)
   // Convolution kernel
   dim3 blockCount((p->gridDimPME[0]+8-1)/8,(p->gridDimPME[1]+8-1)/8,(p->gridDimPME[2]/2+1+8-1)/8);
   dim3 blockSize(8,8,8);
-  getforce_ewald_convolution_kernel_oss<flagBox><<<blockCount,blockSize,0,r->nbrecipStream>>>(((int3*)p->gridDimPME)[0],
+  getforce_ewald_convolution_kernel_oss<flagBox><<<blockCount,blockSize,0,r->ossRecip>>>(((int3*)p->gridDimPME)[0],
     p->ostFourierGridPME_d, p->bGridPME_d,system->run->betaEwald,kbox);
 
   myCufftExecC2R(p->planIFFTPME, p->ostFourierGridPME_d, p->ostPotentialGridPME_d);
 
   // Gather kernel
-  getforce_ewald_gather_kernel_oss<flagBox,order><<<spreadGatherBlocks,BLNB,shMem,r->nbrecipStream>>>(
+  getforce_ewald_gather_kernel_oss<flagBox,order><<<spreadGatherBlocks,BLNB,shMem,r->ossRecip>>>(
     N,p->charge_d,m->atomBlock_d,((int3*)p->gridDimPME)[0],
     p->potentialGridPME_d, p->ostPotentialGridPME_d, dGdF,
     (real3*)s->position_fd,(real3_f*)s->force_d,kbox,s->lambda_fd,s->lambdaForce_d);

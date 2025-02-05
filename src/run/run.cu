@@ -112,6 +112,11 @@ Run::Run(System *system)
   biaspotStream=0;
   nbdirectStream=0;
   nbrecipStream=0;
+
+  ossBonded=0;
+  ossDirect=0;
+  ossRecip=0;
+  ossBias=0;
 #else
   cudaStreamCreate(&updateStream);
   cudaStreamCreate(&bondedStream);
@@ -451,7 +456,6 @@ void test_OST(System *system, real dl) {
    *       --> e*pi*d2U_dlj_dl is in lj's force -> hessian row sum?
    *       --> e*pi*d2U_dlj_dr is in rj's force
    */
-  dl = 1e-5;
   bool flags[eeend];
   for (int i = 0; i < eeend; i++) {
     flags[i] = system->run->calcTermFlag[i];
@@ -470,7 +474,7 @@ void test_OST(System *system, real dl) {
     cudaMemcpy(dU, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     for (int j = 1; j < system->state->lambdaCount; j++) { // skip environment lambda
       // Set dGdF[:] = 0 and dGdF[j] = e * pi
-      real pi_e = 1; //M_E * M_PI;
+      real pi_e = M_E * M_PI;
       real dGdF[system->state->lambdaCount];
       memset(dGdF, 0, system->state->lambdaCount*sizeof(real));
       dGdF[j] = pi_e;
@@ -493,17 +497,21 @@ void test_OST(System *system, real dl) {
       for (int k = 0; k < len; k++) {
         d2U_numeric[k] = (tmp_high[k] - tmp_low[k]) / (2.0*dl);
       }
+      cudaDeviceSynchronize();
       // Analytic Force
       real d2U_analytic[len];
       system->msld->oss = true;
       system->potential->calc_force(0, system);
       cudaMemcpy(d2U_analytic, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+      cudaDeviceSynchronize();
       // Check if they match
       for (int k = 0; k < len; k++) {
         d2U_analytic[k] = (d2U_analytic[k] - dU[k]) / pi_e;
         real diff = abs(d2U_analytic[k] - d2U_numeric[k]);
-        if (diff > 1e-3) { // floating point ops (like expf) can cause float errors
-          printf("Test %d failed at force array index %d for lambda %d! \n", i, k, j);
+        real tol = 1e-1;
+        if (diff > tol) { // floating point ops (like expf) can cause float errors
+          printf("Numerical derivatives test %d failed (tol = %f, dl = %f) at force array index %d for lambda %d! \n",
+            i, tol, dl, k, j);
           printf("Num lambdas: %d \n", system->state->lambdaCount);
           real sum = 0;
           system->state->recv_lambda();

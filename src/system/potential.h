@@ -254,6 +254,7 @@ class Potential {
 #endif
   real *bGridPME, *bGridPME_d;
   cufftHandle planFFTPME, planIFFTPME;
+  cufftHandle ossPlanFFTPME, ossPlanIFFTPME;
   size_t bufferSizeFFTPME,bufferSizeIFFTPME;
 
   std::map<std::string,int> typeCount;

@@ -101,6 +101,8 @@ Potential::Potential() {
 #endif
   planFFTPME=0;
   planIFFTPME=0;
+  ossPlanFFTPME=0;
+  ossPlanIFFTPME=0;
 
   nbonds=NULL;
   nbonds_d=NULL;
@@ -1158,6 +1160,12 @@ void Potential::initialize(System *system)
   cufftCreate(&planIFFTPME);
   cufftMakePlan3d(planIFFTPME,gridDimPME[0],gridDimPME[1],gridDimPME[2],MYCUFFT_C2R,&bufferSizeIFFTPME);
   cufftSetStream(planIFFTPME,system->run->nbrecipStream);
+    cufftCreate(&ossPlanFFTPME);
+    cufftMakePlan3d(ossPlanFFTPME, gridDimPME[0], gridDimPME[1], gridDimPME[2], MYCUFFT_R2C, &bufferSizeFFTPME);
+    cufftSetStream(ossPlanFFTPME, system->run->ossRecip);
+    cufftCreate(&ossPlanIFFTPME);
+    cufftMakePlan3d(ossPlanIFFTPME, gridDimPME[0], gridDimPME[1], gridDimPME[2], MYCUFFT_R2C, &bufferSizeIFFTPME);
+    cufftSetStream(ossPlanIFFTPME, system->run->ossRecip);
 
   }
 
@@ -1637,23 +1645,25 @@ void Potential::calc_force(int step,System *system)
   calc_virtual_force(system);
 
   // cudaEventRecord(r->forceComplete,r->updateStream);
-  if (system->msld->oss || system->msld->update_histogram) {
+  if (system->msld->oss) {
     // Wait on lambda force calc being complete
     cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->nbrecipComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
     // Calculate dGdF from histogram/ABF
-    cudaMemset(system->msld->step_potential_d, 0, system->state->lambdaCount-1*sizeof(real));
-    system->msld->getforce_hist(system,calcEnergy);
-    system->msld->getforce_abf(system,calcEnergy);
-    // Need to know histogram/abf potentials to add sample
-    if (system->msld->update_histogram) {
-      system->msld->add_sample_hist(system);
-      system->msld->add_sample_abf(system);
+    cudaMemset(system->msld->step_potential_d, 0, (system->state->lambdaCount-1)*sizeof(real));
+    // Add dg/dl directly to lambda force array -> dg/dF * d2U/dlilj added later
+    //system->msld->getforce_hist(system,calcEnergy);
+    // Add abf directly to lambda force array
+    //system->msld->getforce_abf(system,calcEnergy);
+    // Need to know current histogram/abf potentials to add sample
+    if (system->msld->update_histogram && step % system->msld->sample_freq == 0 && step != 0) {
+      //system->msld->add_sample_hist(system);
+      //system->msld->add_sample_abf(system);
     }
 
-    // Wait on calculation of dGdF
+    // Wait on calculation of dGdF then add directly to force array
     cudaEventRecord(r->ossForceBegin, r->ossBias);
     if (system->id == helper) {
       cudaStreamWaitEvent(r->ossBonded, r->ossForceBegin, 0);

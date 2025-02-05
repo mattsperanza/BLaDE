@@ -58,10 +58,9 @@ class Msld {
   // Orthogonal Space Sampling Variables
   // Mem not allocated if not set since histogram so large
   bool oss = true; // Perform Orthogonal Space Sampling force calculations
-  bool update_histogram = true; // add samples to histogram
+  bool update_histogram = true; // add samples to histogram or not, not used with oss = false
   int sample_freq = 10;
   real* dGdF_d;
-  real* dGdL_d;
   real* step_potential_d; // potential from histogram+abf at each lambda
 
   // Histogram - uniform binning
