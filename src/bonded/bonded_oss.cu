@@ -101,10 +101,10 @@ __global__ void getforce_bond_kernel_oss(
       if (b[1]) {
         real d2U_drij_dlj = l[0]*fbond;
         fij += chain[1]*d2U_drij_dlj;
-        real d2U_dli_dlj = fbond;
-        fli = chain[1]*d2U_dli_dlj;
+        real d2U_dli_dlj = lEnergy;
+        fli = chain[1]*d2U_dli_dlj; // first term zero
         atomicAdd(&lambdaForce[b[0]], fli);
-        flj = chain[0]*d2U_dli_dlj;
+        flj = chain[0]*d2U_dli_dlj; // second term zero
         atomicAdd(&lambdaForce[b[1]], flj);
       }
 
@@ -142,6 +142,7 @@ void getforce_bondT_oss(System *system,box_type box)
   N12=(r->calcTermFlag[eebond]?p->softBond12Count:0);
   N=N12+(r->calcTermFlag[eeurey]?p->softBond13Count:0);
   bonds=p->softBonds_d+(p->softBond12Count-N12);
+  printf("Need to build soft-bond oss!!\n");
   if (N>0) getforce_bond_kernel_oss<flagBox,true><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N12,N,bonds,(real3*)s->position_fd,
     (real3_f*)s->force_d,box,s->lambda_fd,
@@ -250,15 +251,13 @@ __global__ void getforce_angle_kernel_oss(int angleCount,struct AnglePotential *
       // OST Forces
       real d2U_dphi_dl0 = l[1]*fangle;
       real d2U_dphi_dl1 = 0;
-      if (b[1]) {
+      if (b[1] && b[0] != b[1]) { // lambda scaling only applied once if li=lj
         d2U_dphi_dl1 = l[0]*fangle;
-        if (b[0] != b[1]) { // lambda scaling only applied once if li=lj
-          real d2U_dl0_dl1 = fangle;
-          real fli = chain[1]*d2U_dl0_dl1;
-          atomicAdd(&lambdaForce[b[0]], fli);
-          real flj = chain[0]*d2U_dl0_dl1;
-          atomicAdd(&lambdaForce[b[1]], flj);
-        }
+        real d2U_dl0_dl1 = lEnergy;
+        real fli = chain[1]*d2U_dl0_dl1;
+        atomicAdd(&lambdaForce[b[0]], fli);
+        real flj = chain[0]*d2U_dl0_dl1;
+        atomicAdd(&lambdaForce[b[1]], flj);
       }
       real tmp = chain[0]*d2U_dphi_dl0 + chain[1]*d2U_dphi_dl1;
       real3_scaleself(&fi,tmp);
@@ -290,6 +289,7 @@ void getforce_angleT_oss(System *system,box_type box)
     s->lambdaForce_d,1,
     system->msld->dGdF_d);
   N=p->softAngleCount;
+  printf("Need to implement softbond angle!!!\n");
   if (N>0) getforce_angle_kernel_oss<flagBox,true><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->softAngles_d,(real3*)s->position_fd,
     (real3_f*)s->force_d,box,s->lambda_fd,
@@ -452,7 +452,7 @@ __global__ void getforce_torsion_kernel_oss(int torsionCount,TorsionPotential *t
       if (b[1]) {
         d2U_dphi_dl1 = l[0]*ftorsion;
         if (b[0] != b[1]) { // lambda scaling only applied once if li=lj
-          real d2U_dl0_dl1 = ftorsion;
+          real d2U_dl0_dl1 = lEnergy;
           real fli = chain[1]*d2U_dl0_dl1;
           atomicAdd(&lambdaForce[b[0]], fli); // fl0
           real flj = chain[0]*d2U_dl0_dl1;
@@ -492,6 +492,8 @@ void getforce_diheT_oss(System *system,box_type box)
     system->msld->dGdF_d);
 
   N=p->softDiheCount;
+  printf("Need to build softbond dihedral!!!\n");
+  return;
   if (N>0) getforce_torsion_kernel_oss<flagBox,DihePotential,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->softDihes_d,(real3*)s->position_fd,
     (real3_f*) s->force_d, box,
@@ -527,6 +529,8 @@ void getforce_imprT_oss(System *system,box_type box)
     s->lambdaForce_d, 1,
     system->msld->dGdF_d);
   N=p->softImprCount;
+  printf("Need to implement softbond impr!!!\n");
+  return;
   if (N>0) getforce_torsion_kernel_oss <flagBox,ImprPotential,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
     N,p->softImprs_d,(real3*)s->position_fd,
     (real3_f*) s->force_d,
@@ -770,7 +774,7 @@ __global__ void getforce_cmap_kernel_oss(
       d2U_dphi_dl1 = l[0]*l[2]*fcmap;
       // d2U_dl0_dl1
       if (b[0] != b[1]) {
-        real d2U_dl0_dl1 = l[2]*fcmap; // (0, 1) and (1, 0) of matrix
+        real d2U_dl0_dl1 = l[2]*lEnergy; // (0, 1) and (1, 0) of matrix
         real fli = chain[1]*d2U_dl0_dl1;
         atomicAdd(&lambdaForce[b[0]], fli); // fl0
         real flj = chain[0]*d2U_dl0_dl1;
@@ -780,7 +784,7 @@ __global__ void getforce_cmap_kernel_oss(
         d2U_dphi_dl2 = l[0]*l[1]*fcmap;
         // d2U_dl0_dl2
         if (b[0] != b[2]) {
-          real d2U_dl0_dl2 = l[1]*fcmap; // (0, 2) and (2, 0) of matrix
+          real d2U_dl0_dl2 = l[1]*lEnergy; // (0, 2) and (2, 0) of matrix
           real fli = chain[0]*d2U_dl0_dl2;
           atomicAdd(&lambdaForce[b[0]], fli); // fl0
           real flj = chain[2]*d2U_dl0_dl2;
@@ -788,7 +792,7 @@ __global__ void getforce_cmap_kernel_oss(
         }
         // d2U_dl1_dl2
         if (b[1] != b[2]) {
-          real d2U_dl0_dl2 = l[0]*fcmap; // (1, 2) and (2, 1) of matrix
+          real d2U_dl0_dl2 = l[0]*lEnergy; // (1, 2) and (2, 1) of matrix
           real fli = chain[1]*d2U_dl0_dl2;
           atomicAdd(&lambdaForce[b[1]], fli); // fl1
           real flj = chain[2]*d2U_dl0_dl2;
@@ -830,6 +834,8 @@ void getforce_cmapT_oss(System *system,box_type box)
     system->msld->dGdF_d);
 
   N=p->softCmapCount;
+  printf("Need to implement softbond cmap!!!\n");
+  return;
   if (N>0) getforce_cmap_kernel_oss<flagBox,true><<<(2*N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->softCmaps_d,
     (real3*)s->position_fd, (real3_f*) s->force_d, box,
