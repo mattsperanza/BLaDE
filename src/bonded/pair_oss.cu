@@ -113,7 +113,7 @@ __global__ void getforce_exclusion_pair_kernel_oss(
       // OST Derivatives - lixlij is always just li*lj for ewald?
       real dU_drij_dli = ljtmp*fij;
       real dU_drij_dlj = bjtmp ? li*fij : 0;
-      real dU_dlami_dlamj = uij;
+      real dU_dlami_dlamj = bi && bjtmp ? uij : 0;
 
       // Forces redef
       fij = dGdFi * dU_drij_dli + dGdFjtmp * dU_drij_dlj;
@@ -172,11 +172,27 @@ __global__ void getforce_14pair_kernel_oss(
       real ljtmp = lambda[b[1]];
       real dGdFi = dGdF[b[0]];
       real dGdFjtmp = dGdF[b[1]];
-      // TODO: Check lambda scaling
-      real lixljtmp = li*ljtmp;
-      real dlixlj_dli = ljtmp;
-      real dlixlj_dlj = bjtmp ? li : 0;
-      real dlixlj_dli_dlj = bjtmp ? 1 : 0;
+      real lixljtmp, dlixlj_dli, dlixlj_dlj, dlixlj_dli_dlj;
+      if ((pp.siteBlock[0]&0xFFFF0000)==(pp.siteBlock[1]&0xFFFF0000)) { // same site (m == n)
+        if (bi==bjtmp) { // intra-sub (i == j, alc-alc or env-env)
+          lixljtmp = li;
+          dlixlj_dli = bi ? 1 : 0;
+          dlixlj_dlj = 0; // prevent over-count
+          dGdFjtmp = 0;
+          dlixlj_dli_dlj = 0;
+        } else { // intra-site (i != j, alc-alc or env-env)
+          lixljtmp = 0; // zero contribution from env-env anyway
+          dlixlj_dli = 0;
+          dlixlj_dlj = 0;
+          dlixlj_dli_dlj = 0;
+        }
+      }
+      else { // inter-site (m != n)
+        lixljtmp = li*ljtmp;
+        dlixlj_dli = bi ? ljtmp : 0;
+        dlixlj_dlj = bjtmp ? li : 0;
+        dlixlj_dli_dlj = bi && bjtmp ? 1 : 0;
+      }
 
       // Force storage
       real fij=0;
@@ -230,8 +246,8 @@ __global__ void getforce_14pair_kernel_oss(
             }
           }
         }
-
         real rinv=1/rEff;
+
         // Terms which require calculation for soft-coring - both vdw and elec can be accumulated here
         real dU_drijp = 0;
         real d2U_drijp2 = 0;
@@ -240,29 +256,33 @@ __global__ void getforce_14pair_kernel_oss(
         real d2Up_dlami_dlamj = 0;
         // Electrostatics (define the above variables for soft-core OST interactions)
         if (usePME) {
-          // lixlj*e14/r = lixlj*e14fac/rEff + (li*lj(erfc(r) - 1)/r + li*lj*erf(r)/r)
-          // Ewald Correction - never soft-cored
-          rinv = 1/r; // Corrected later
-          real br=cutoffs.betaEwald*r;
-          real erfcrinv=erfc(br)*rinv; // missing e14fac compared to pair.cu
-          real U_dir = kELECTRIC*pp.qxq*erfcrinv;
-          real dU_drij_tmp = kELECTRIC*pp.qxq*rinv*(((real)1.128379167095513)*cutoffs.betaEwald*expf(-br*br) - erf(br));
-          real d2U_drij_dlami = dlixlj_dli * dU_drij_tmp;
-          real d2U_drij_dlamj = dlixlj_dlj * dU_drij_tmp;
-          real d2U_dli_dlj = dlixlj_dli_dlj * U_dir; // this doesn't have second condition since li*lj always
-          fij += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
-          fli += dGdFjtmp * d2U_dli_dlj;
-          fljtmp += dGdFi * d2U_dli_dlj; // implicit product rule mult by 2 if li == lj
-          // Coulomb - soft-cored
+          // lixlj*e14/r = lixlj*e14fac/rEff + (-li*lj*erfc(r)/r + li*lj*erf(r)/r) (first term here)
+          // Ewald Correction - Soft Ewald (??!!):
+          // TODO: Check assumption that soft-core derivatives are based on li*ljtmp
+          // TODO: Check assumption that derivatives of lixlj are correct or if we just use li*ljtmp
+          real br=cutoffs.betaEwald*rEff;
+          real erfrinv=erf(br)*rinv;
+          real kqq = kELECTRIC*pp.qxq;
+          real two = (real) 2.0;
+          real U_dir = -kqq*erfrinv;
+          real dU_drijp_tmp = -kqq*rinv*((2/sqrt(M_PI))*cutoffs.betaEwald*expf(-br*br)-erfrinv);
+          dU_drijp += li*ljtmp * dU_drijp_tmp;
+          d2U_drijp2 += -li*ljtmp*two*kqq*rinv*rinv*rinv*(1/M_PI)*
+            (-two*sqrt(M_PI)*br*br*br*expf(-br*br) - two*sqrt(M_PI)*br*expf(-br*br) + M_PI*erf(br));
+          d2U_drijp_dlami += dlixlj_dli * dU_drijp_tmp;
+          d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
+          d2Up_dlami_dlamj += dlixlj_dli_dlj * U_dir;
+          // Accumulate later... or do I need to use special soft-core variables
+
+          // Coulomb - soft-cored - lixlj * e14/rEff
           rinv = 1/rEff; // Corrected above change to go back to soft-coring
-          // lixlj * e14/rEff
           U_dir = kELECTRIC*pp.qxq*pp.e14fac*rinv;
-          real dU_drijp_tmp = -U_dir*rinv;
-          dU_drijp = lixljtmp*dU_drijp_tmp;
-          d2U_drijp2 = 2*U_dir*rinv*rinv;
-          d2U_drijp_dlami = dlixlj_dli * dU_drijp_tmp;
-          d2U_drijp_dlamj = dlixlj_dlj * dU_drijp_tmp;
-          d2Up_dlami_dlamj = dlixlj_dli_dlj * U_dir;
+          dU_drijp_tmp = -U_dir*rinv;
+          dU_drijp += lixljtmp * dU_drijp_tmp;
+          d2U_drijp2 += -2*lixljtmp*dU_drijp_tmp*rinv;
+          d2U_drijp_dlami += dlixlj_dli * dU_drijp_tmp;
+          d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
+          d2Up_dlami_dlamj += dlixlj_dli_dlj * U_dir;
           // Accumulate later...
         }
         else {
@@ -345,29 +365,28 @@ __global__ void getforce_14pair_kernel_oss(
         }
 
         // Calculate chain rule derivatives due to soft-coring
-        real fij_ost, fli_ost, fljtmp_ost;
+        real fij_ost = 0;
         real d2U_drij_dlami = dU_drijp*d2rijp_drij_dlami + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami) * drijp_drij;
         real d2U_drij_dlamj = dU_drijp*d2rijp_drij_dlamj + (d2U_drijp_dlamj + d2U_drijp2*drijp_dlamj) * drijp_drij;
         // Interaction feels i, j, or both histograms
         fij_ost = dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
-        // First term is with holding rij' constant
-        real d2U_dlami_dlamj = d2Up_dlami_dlamj + (d2U_drijp_dlamj*drijp_dlami + dU_drijp * d2rijp_dlami_dlamj)
-          + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami) * drijp_dlamj;
+
+        // OST lambda force:
+        real fli_ost = 0;
+        real fljtmp_ost = 0;
+        // Only exists for alc-alc interactions
+        real d2U_dlami_dlamj = d2Up_dlami_dlamj +
+          d2U_drijp_dlamj*drijp_dlami + dU_drijp*d2rijp_dlami_dlamj + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami) * drijp_dlamj;
+        // Missing first term from previous - these are definitely not zero with soft-coring - exist for every alc-___ interaction
         real d2U_dlami2 = d2U_drijp_dlami*drijp_dlami + dU_drijp * d2rijp_dlami2 + (d2U_drijp_dlami + d2U_drijp2 * drijp_dlami)*drijp_dlami;
         real d2U_dlamj2 = d2U_drijp_dlamj*drijp_dlamj + dU_drijp * d2rijp_dlamj2 + (d2U_drijp_dlamj + d2U_drijp2 * drijp_dlamj)*drijp_dlamj;
         fli_ost = dGdFi*d2U_dlami2 + dGdFjtmp*d2U_dlami_dlamj;
         fljtmp_ost = dGdFi*d2U_dlami_dlamj + dGdFjtmp*d2U_dlamj2;
-        // If d2U_dli_dlj != 0 for i=j, above doesn't over-count due to power rule
 
         // Accumulate ost forces
         fij += fij_ost;
         fli += fli_ost;
         fljtmp += fljtmp_ost;
-        if (abs(fij) > 1e-5 || fli > 1e-5 || fljtmp > 1e-5) {
-          printf("bi: %d, bj: %d, dGdFi: %f, dGdFj: %f, fij: %f, fli: %f, flj: %f\n",
-            bi, bjtmp, dGdFi, dGdFjtmp, fij, fli, fljtmp
-          );
-        }
         atomicAdd(&lambdaForce[b[0]], fli);
         if (b[1]) {
           atomicAdd(&lambdaForce[b[1]], fljtmp);

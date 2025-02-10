@@ -107,8 +107,6 @@ __global__ void getforce_bond_kernel_oss(
         flj = chain[0]*d2U_dli_dlj;
         atomicAdd(&lambdaForce[b[1]], flj);
       }
-      printf("bi: %d, bj: %d, li: %f, lj: %f, dGdFi: %f, dGdFj: %f, fbond: %f, fij: %f, fli: %f, flj: %f\n",
-        b[0], b[1], l[0], l[1], chain[0], chain[1], fbond, fij, fli, flj);
 
       // Spatial force
       at_real3_scaleinc(&force[ii], fij/r,dr);

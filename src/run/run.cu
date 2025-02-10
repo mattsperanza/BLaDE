@@ -461,7 +461,8 @@ void test_OST(System *system, real dl) {
     flags[i] = system->run->calcTermFlag[i];
     system->run->calcTermFlag[i] = false;
   }
-  //system->msld->useSoftCore = false;
+  system->msld->useSoftCore = true;
+  system->msld->useSoftCore14 = true;
   int len = system->state->lambdaCount+3*system->state->atomCount; // theta forces at end
   for (int i = 0; i < eeend; i++) {
     printf("Term %d Numerical Test: \n", i);
@@ -472,6 +473,8 @@ void test_OST(System *system, real dl) {
     system->potential->calc_force(0, system);
     system->msld->oss = true;
     cudaMemcpy(dU, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+    double sum = 0;
+    double num_sum = 0;
     for (int j = 1; j < system->state->lambdaCount; j++) { // skip environment lambda
       // Set dGdF[:] = 0 and dGdF[j] = e * pi
       real pi_e = M_E * M_PI;
@@ -496,6 +499,7 @@ void test_OST(System *system, real dl) {
       shift_lambda<<<1, 1>>>(system->state->lambda_d, dl, j);
       for (int k = 0; k < len; k++) {
         d2U_numeric[k] = (tmp_high[k] - tmp_low[k]) / (2.0*dl);
+        num_sum += abs(d2U_numeric[k]);
       }
       cudaDeviceSynchronize();
       // Analytic Force
@@ -504,23 +508,26 @@ void test_OST(System *system, real dl) {
       system->potential->calc_force(0, system);
       cudaMemcpy(d2U_analytic, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
       cudaDeviceSynchronize();
-      // Check if they match
       for (int k = 0; k < len; k++) {
         d2U_analytic[k] = (d2U_analytic[k] - dU[k]) / pi_e;
+        sum += abs(d2U_analytic[k]);
+      }
+      // Check if they match
+      for (int k = 0; k < len; k++) {
         real diff = abs(d2U_analytic[k] - d2U_numeric[k]);
         real tol = 1e-1;
         if (diff > tol) { // floating point ops (like expf) can cause float errors
           printf("Numerical derivatives test %d failed (tol = %f, dl = %f) at force array index %d for lambda %d! \n",
             i, tol, dl, k, j);
           printf("Num lambdas: %d \n", system->state->lambdaCount);
-          real sum = 0;
+          real l_sum = 0;
           system->state->recv_lambda();
           printf("Lambdas: [ ");
           for (int l = 1; l < system->state->lambdaCount; l++) {
             printf("%.3f, ", system->state->lambda[l]);
-            sum += system->state->lambda[l];
+            l_sum += system->state->lambda[l];
           }
-          printf("] --> Sum: %.12f\n", sum);
+          printf("] --> Sum: %.12f\n", l_sum);
           real lmd = system->state->lambda[j];
           system->state->recv_position();
           real x = system->state->positionBuffer[k];
@@ -528,16 +535,17 @@ void test_OST(System *system, real dl) {
           printf("Analytic dU(X,L+dl):          %15.8f\n", tmp_high[k]);
           printf("Analytic dU(X,L=%.2f):        %15.8f\n", lmd, dU[k]);
           printf("Analytic dU(X,L-dl):          %15.8f\n", tmp_low[k]);
+          printf("\n|Diff|:                       %15.8f\n", diff);
           printf("Numeric d2U:                  %15.8f\n", d2U_numeric[k]);
           printf("Analytic d2U:                 %15.8f\n", d2U_analytic[k]);
-          printf("|Diff|:                       %15.8f\n", diff);
           printf("Scaling num->analytic:        %15.8f\n", d2U_analytic[k]/d2U_numeric[k]);
-          printf("Exiting...\n");
-          exit(1);
+          printf("Scaling analytic->num:        %15.8f\n\n", d2U_numeric[k]/d2U_analytic[k]);
+          //printf("Exiting...\n");
+          //exit(1);
         }
       }
     }
-    printf("Passed!\n");
+    printf("Total Forces Calculated: %lf analytic, %lf numeric\n\n", sum, num_sum);
     //gpuCheck(cudaPeekAtLastError());
     system->run->calcTermFlag[i] = false;
   }
