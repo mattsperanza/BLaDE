@@ -168,8 +168,6 @@ void getforce_bondT(System *system,box_type box,bool calcEnergy)
   N12=(r->calcTermFlag[eebond]?p->softBond12Count:0);
   N=N12+(r->calcTermFlag[eeurey]?p->softBond13Count:0);
   bonds=p->softBonds_d+(p->softBond12Count-N12);
-  printf("Need to implement softbond oss!!\n");
-  return;
   if (N>0) getforce_bond_kernel<flagBox,true><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N12,N,bonds,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,softAlpha,softExp,pEnergy);
 }
 
@@ -296,8 +294,6 @@ void getforce_angleT(System *system,box_type box,bool calcEnergy)
   N=p->angleCount;
   if (N>0) getforce_angle_kernel<flagBox,false><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->angles_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,1,pEnergy);
   N=p->softAngleCount;
-  printf("Need to implement softbond angle!!!\n");
-  return;
   if (N>0) getforce_angle_kernel<flagBox,true><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->softAngles_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,softExp,pEnergy);
 }
 
@@ -476,8 +472,6 @@ void getforce_diheT(System *system,box_type box,bool calcEnergy)
   N=p->diheCount;
   if (N>0) getforce_torsion_kernel <flagBox,DihePotential,false> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->dihes_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,1,pEnergy);
   N=p->softDiheCount;
-  printf("Need to implement softbond dihedral!!!\n");
-  return;
   if (N>0) getforce_torsion_kernel <flagBox,DihePotential,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->softDihes_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,softExp,pEnergy);
 }
 
@@ -511,8 +505,6 @@ void getforce_imprT(System *system,box_type box,bool calcEnergy)
   N=p->imprCount;
   if (N>0) getforce_torsion_kernel <flagBox,ImprPotential,false> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->imprs_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,1,pEnergy);
   N=p->softImprCount;
-  printf("Need to implement softbond improper!!!\n");
-  return;
   if (N>0) getforce_torsion_kernel <flagBox,ImprPotential,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->softImprs_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,softExp,pEnergy);
 }
 
@@ -754,8 +746,6 @@ void getforce_cmapT(System *system,box_type box,bool calcEnergy)
   N=p->cmapCount;
   if (N>0) getforce_cmap_kernel<flagBox,false><<<(2*N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->cmaps_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,1,pEnergy);
   N=p->softCmapCount;
-  printf("Need to implement softbond cmap!!!\n");
-  return;
   if (N>0) getforce_cmap_kernel<flagBox,true><<<(2*N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->softCmaps_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,softExp,pEnergy);
 }
 

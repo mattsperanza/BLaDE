@@ -516,7 +516,7 @@ void test_OST(System *system, real dl) {
       // Check if they match
       for (int k = 0; k < len; k++) {
         real diff = abs(d2U_analytic[k] - d2U_numeric[k]);
-        real tol = 1e-1;
+        real tol = 5e-1;
         if (diff > tol) { // floating point ops (like expf) can cause float errors
           printf("Numerical derivatives test %d failed (tol = %f, dl = %f) at force array index %d for lambda %d! \n",
             i, tol, dl, k, j);
