@@ -461,9 +461,10 @@ void test_OST(System *system, real dl) {
     flags[i] = system->run->calcTermFlag[i];
     system->run->calcTermFlag[i] = false;
   }
-  // TODO: Loop over possible combination of options (PME, soft-coring, tapering, coulomb taper)
+  system->run->vfSwitch = true;
   system->msld->useSoftCore = true;
   system->msld->useSoftCore14 = true;
+  system->msld->msldEwaldType = 1;
   int len = system->state->lambdaCount+3*system->state->atomCount; // theta forces at end
   for (int i = 0; i < eeend; i++) {
     printf("Term %d Numerical Test: \n", i);
@@ -478,7 +479,7 @@ void test_OST(System *system, real dl) {
     double num_sum = 0;
     for (int j = 1; j < system->state->lambdaCount; j++) { // skip environment lambda
       // Set dGdF[:] = 0 and dGdF[j] = e * pi
-      real pi_e = 1; //M_E * M_PI;
+      real pi_e = M_E * M_PI;
       real dGdF[system->state->lambdaCount];
       memset(dGdF, 0, system->state->lambdaCount*sizeof(real));
       dGdF[j] = pi_e;
@@ -547,7 +548,7 @@ void test_OST(System *system, real dl) {
       }
     }
     printf("Total Forces Calculated: %lf analytic, %lf numeric\n\n", sum, num_sum);
-    //gpuCheck(cudaPeekAtLastError());
+    gpuCheck(cudaPeekAtLastError());
     system->run->calcTermFlag[i] = false;
   }
   for (int i = 0; i < eeend; i++) { // Just in case things get run after this

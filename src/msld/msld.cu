@@ -692,7 +692,7 @@ void Msld::initialize(System *system)
     }
     cudaMalloc(&abf_index_d, nL*sizeof(int));
     cudaMemcpy(abf_index_d, index, nL*sizeof(int), cudaMemcpyHostToDevice);
-    cudaMalloc(&abf_counts_d, nL*L_abf_bins*sizeof(real));
+    cudaMalloc(&lambda_counts_d, nL*L_abf_bins*sizeof(real));
     cudaMalloc(&offsets_d, nL*L_abf_bins*sizeof(real));
     cudaMalloc(&ensemble_dUdL_d, nL*L_abf_bins*sizeof(real));
     cudaMalloc(&ensemble_dUdL2_d, nL*L_abf_bins*sizeof(real));
@@ -793,7 +793,7 @@ void Msld::add_sample_abf(System* system){
   add_sample_abf_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->leapParms1->kT, nFull, blockCount-1,
     s->lambda_fd, s->lambdaForce_d, step_potential_d,
-    abf_counts_d, abf_index_d, L_abf_bins, offsets_d,
+    lambda_counts_d, abf_index_d, L_abf_bins, offsets_d,
     weights_d, weighted_dUdL_d, weighted_dUdL2_d,
     ensemble_dUdL_d, average_dUdL_d, ensemble_dUdL2_d, variance_d,
     integral_components_d);

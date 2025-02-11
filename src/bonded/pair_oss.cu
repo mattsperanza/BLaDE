@@ -174,25 +174,12 @@ __global__ void getforce_14pair_kernel_oss(
       real dGdFjtmp = dGdF[b[1]];
       real lixljtmp, dlixlj_dli, dlixlj_dlj, dlixlj_dli_dlj;
       if ((pp.siteBlock[0]&0xFFFF0000)==(pp.siteBlock[1]&0xFFFF0000)) { // same site (m == n)
-        if (bi==bjtmp) { // intra-sub (i == j, alc-alc or env-env)
-          lixljtmp = li;
-          dlixlj_dli = bi ? 1 : 0;
-          dlixlj_dlj = 0; // prevent over-count
-          dGdFjtmp = 0;
-          dlixlj_dli_dlj = 0;
-        } else { // intra-site (i != j, alc-alc or env-env)
-          lixljtmp = 0; // zero contribution from env-env anyway
-          dlixlj_dli = 0;
-          dlixlj_dlj = 0;
-          dlixlj_dli_dlj = 0;
-        }
+        printf("Unexpected scaling case occurred! Don't expect this to run! Contact devs!");
       }
-      else { // inter-site (m != n)
-        lixljtmp = li*ljtmp;
-        dlixlj_dli = bi ? ljtmp : 0;
-        dlixlj_dlj = bjtmp ? li : 0;
-        dlixlj_dli_dlj = bi && bjtmp ? 1 : 0;
-      }
+      lixljtmp = li*ljtmp;
+      dlixlj_dli = bi ? ljtmp : 0;
+      dlixlj_dlj = bjtmp ? li : 0;
+      dlixlj_dli_dlj = bi && bjtmp ? 1 : 0;
 
       // Force storage
       real fij=0;
@@ -256,10 +243,8 @@ __global__ void getforce_14pair_kernel_oss(
         real d2Up_dlami_dlamj = 0;
         // Electrostatics (define the above variables for soft-core OST interactions)
         if (usePME) {
-          // lixlj*e14/r = lixlj*e14fac/rEff + (-li*lj*erfc(r)/r + li*lj*erf(r)/r) (first term here)
-          // Ewald Correction - Soft Ewald (??!!):
-          // TODO: Check assumption that soft-core derivatives are based on li*ljtmp
-          // TODO: Check assumption that derivatives of lixlj are correct or if we just use li*ljtmp
+          // lixlj*e14/r = lixlj*e14fac/rEff + (-li*lj*erfc(rEff)/rEff + li*lj*erf(r)/r) (first term here)
+          // Ewald Correction - Soft Ewald (end-states are what matter):
           real br=cutoffs.betaEwald*rEff;
           real erfrinv=erf(br)*rinv;
           real kqq = kELECTRIC*pp.qxq;

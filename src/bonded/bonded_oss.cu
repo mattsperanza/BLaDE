@@ -729,7 +729,6 @@ __global__ void getforce_cmap_kernel_oss(
     real3_dec(&fk,fj);
     real3_dec(&fj,fi);
 
-    // TODO: Check if li=lj ever for bonded terms
     // Derivatives of lambda combination function
     real dl_dl0 = soft ? l[1]*l[2]*softExp*pow(l[0]*l[1]*l[2], softExp-1) : l[1]*l[2];
     dl_dl0 = b[0] ? dl_dl0 : 0;

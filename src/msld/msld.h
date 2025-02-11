@@ -57,13 +57,14 @@ class Msld {
 
   // Orthogonal Space Sampling Variables
   // Mem not allocated if not set since histogram so large
-  bool oss = true; // Perform Orthogonal Space Sampling force calculations
   bool update_histogram = true; // add samples to histogram or not, not used with oss = false
   int sample_freq = 10;
   real* dGdF_d;
   real* step_potential_d; // potential from histogram+abf at each lambda
+  real* step_force_d; // force from non-orthogonal biases
 
   // Histogram - uniform binning
+  bool oss = true; // Perform Orthogonal Space Sampling force calculations
   float dUdL_max = 1500;
   float dUdL_min = -dUdL_min; // symmetric
   int dUdL_bins = 1000;
@@ -80,10 +81,12 @@ class Msld {
   float weight = .05; // kcal/mol
 
   // ABF - uniform binning - separate from histogram estimation
+  bool meta = false;
+  bool abf = true;
   int nFull = 0;
   int L_abf_bins = 200;
   int* abf_index_d; // index into abf histogram
-  real* abf_counts_d;
+  real* lambda_counts_d; // counts in bin -> also used for 1D meta
   real* ensemble_dUdL_d;
   real* ensemble_dUdL2_d;
   real* weights_d;
