@@ -754,7 +754,7 @@ void getforce_cmapT(System *system,box_type box,bool calcEnergy)
   N=p->cmapCount;
   if (N>0) getforce_cmap_kernel<flagBox,false><<<(2*N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->cmaps_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,1,pEnergy);
   N=p->softCmapCount;
-  printf("Need to implement softbond cmap!!!");
+  printf("Need to implement softbond cmap!!!\n");
   return;
   if (N>0) getforce_cmap_kernel<flagBox,true><<<(2*N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->softCmaps_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,softExp,pEnergy);
 }
