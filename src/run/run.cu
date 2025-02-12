@@ -113,16 +113,22 @@ Run::Run(System *system)
   nbdirectStream=0;
   nbrecipStream=0;
 
+  abfBias=0;
+  metaBias=0;
+  ossBias=0;
   ossBonded=0;
   ossDirect=0;
   ossRecip=0;
-  ossBias=0;
 #else
   cudaStreamCreate(&updateStream);
   cudaStreamCreate(&bondedStream);
   cudaStreamCreate(&biaspotStream);
   cudaStreamCreate(&nbdirectStream);
   cudaStreamCreate(&nbrecipStream);
+  // ABF Bias Streams
+  cudaStreamCreate(&abfBias);
+  // Meta Bias Streams
+  cudaStreamCreate(&metaBias);
   // Orthogonal Bias streams
   cudaStreamCreate(&ossBias);
   cudaStreamCreate(&ossBonded);
@@ -143,6 +149,10 @@ Run::Run(System *system)
   // cudaEventCreate(&forceComplete);
   cudaEventCreate(&communicate);
 
+  // ABF Bias Events
+  cudaEventCreate(&abfBiasComplete);
+  // Meta Bias Events
+  cudaEventCreate(&metaBiasComplete);
   // Orthogonal Bias events
   cudaEventCreate(&ossForceBegin);
   cudaEventCreate(&ossBiasComplete);
@@ -417,7 +427,7 @@ void shift_kernel(real_x *x,real_x dx)
   }
 }
 
-__global__ void shift_lambda(real* lambda, real dl, int index) {
+__global__ void shift_lambda(real_x* lambda, real_x dl, int index) {
   int i=blockDim.x*blockIdx.x+threadIdx.x;
   if (i==0) {
     lambda[index]+=dl;
@@ -433,29 +443,9 @@ void Run::energy(char *line,char *token,System *system)
   dynamics_finalize(system);
 }
 
-void test_OST(System *system, real dl) {
-  /*
-   * Steps for testing OST numerically (d2U_dli_dlj and d2U_dli_dri):
-   * ) Loop over force components (eeterm): i
-   *   ) Turn on only eeterm[i]
-   *   ) Loop over lambdas: j
-   *     # Numerical Forces
-   *     ) Turn off OST
-   *     ) Add dl to lj
-   *     ) Store force array F1
-   *     ) Subtract 2*dl from lj
-   *     ) Store force array F2
-   *     ) Add dl to lj
-   *     ) Calculate: [F1(li+dl) - F2(li-dl)] / 2*dl
-   *     # Analytic Forces
-   *     ) dGdF[:] = 0
-   *     ) dGdF[j] = pi*e
-   *     ) Turn on OST and calculate force
-   *     ) Subtract force from step 2
-   *     ) Compare to numerical force array
-   *       --> e*pi*d2U_dlj_dl is in lj's force -> hessian row sum?
-   *       --> e*pi*d2U_dlj_dr is in rj's force
-   */
+void test_OST(System *system) {
+  // TODO: Get this to work for float precision
+  real_x dl = .001;
   bool flags[eeend];
   for (int i = 0; i < eeend; i++) {
     flags[i] = system->run->calcTermFlag[i];
@@ -464,13 +454,13 @@ void test_OST(System *system, real dl) {
   system->run->vfSwitch = true;
   system->msld->useSoftCore = true;
   system->msld->useSoftCore14 = true;
-  system->msld->msldEwaldType = 1;
+  //system->msld->msldEwaldType = 1;
   int len = system->state->lambdaCount+3*system->state->atomCount; // theta forces at end
   for (int i = 0; i < eeend; i++) {
     printf("Term %d Numerical Test: \n", i);
     system->run->calcTermFlag[i] = true;
     // Calculate ref dU(X, L) to subtract from force w/ oss
-    real dU[len];
+    real_f dU[len];
     system->msld->oss = false;
     system->potential->calc_force(0, system);
     system->msld->oss = true;
@@ -480,44 +470,44 @@ void test_OST(System *system, real dl) {
     for (int j = 1; j < system->state->lambdaCount; j++) { // skip environment lambda
       // Set dGdF[:] = 0 and dGdF[j] = e * pi
       real pi_e = M_E * M_PI;
-      real dGdF[system->state->lambdaCount];
+      real_f dGdF[system->state->lambdaCount];
       memset(dGdF, 0, system->state->lambdaCount*sizeof(real));
       dGdF[j] = pi_e;
-      cudaMemcpy(system->msld->dGdF_d, dGdF, system->state->lambdaCount*sizeof(real), cudaMemcpyHostToDevice);
+      cudaMemcpy(system->msld->dGdF_d, dGdF, system->state->lambdaCount*sizeof(real_f), cudaMemcpyHostToDevice);
       system->msld->oss = false;
       // Numerical Force = dU(X, L+dl) - dU(X, L-dl) / 2*dl
       // L+dl
-      real tmp_high[len];
+      real_f tmp_high[len];
       shift_lambda<<<1, 1>>>(system->state->lambda_d, dl, j);
       system->potential->calc_force(0, system);
-      cudaMemcpy(tmp_high, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+      cudaMemcpy(tmp_high, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDeviceToHost);
       // L-dl
-      real tmp_low[len];
+      real_f tmp_low[len];
       shift_lambda<<<1, 1>>>(system->state->lambda_d, -2.0*dl, j);
       system->potential->calc_force(0, system);
-      cudaMemcpy(tmp_low, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+      cudaMemcpy(tmp_low, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDeviceToHost);
       // Reset and diff
-      real d2U_numeric[len];
+      real_f d2U_numeric[len];
       shift_lambda<<<1, 1>>>(system->state->lambda_d, dl, j);
       for (int k = 0; k < len; k++) {
         d2U_numeric[k] = (tmp_high[k] - tmp_low[k]) / (2.0*dl);
         num_sum += abs(d2U_numeric[k]);
       }
-      cudaDeviceSynchronize();
       // Analytic Force
-      real d2U_analytic[len];
+      real_f d2U_analytic[len];
       system->msld->oss = true;
       system->potential->calc_force(0, system);
-      cudaMemcpy(d2U_analytic, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
       cudaDeviceSynchronize();
+      gpuCheck(cudaPeekAtLastError());
+      cudaMemcpy(d2U_analytic, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDeviceToHost);
       for (int k = 0; k < len; k++) {
         d2U_analytic[k] = (d2U_analytic[k] - dU[k]) / pi_e;
         sum += abs(d2U_analytic[k]);
       }
       // Check if they match
       for (int k = 0; k < len; k++) {
-        real diff = abs(d2U_analytic[k] - d2U_numeric[k]);
-        real tol = 5e-1;
+        real_f diff = abs(d2U_analytic[k] - d2U_numeric[k]);
+        real_f tol = 5e-1;
         if (diff > tol) { // floating point ops (like expf) can cause float errors
           printf("Numerical derivatives test %d failed (tol = %f, dl = %f) at force array index %d for lambda %d! \n",
             i, tol, dl, k, j);
@@ -556,6 +546,92 @@ void test_OST(System *system, real dl) {
   }
 }
 
+void test_OSS_conservation(System* system) {
+  system->msld->abf = false;
+  system->msld->meta = false;
+  system->msld->update_fe_surface = false;
+  float* hist = system->msld->histogram_d;
+  int nL = system->state->lambdaCount-1; // no environment
+  int width = system->msld->L_hist_bins;
+  int hight = system->msld->dUdL_bins;
+  int count = nL*width*hight;
+  float random_hist[count];
+  for (int i = 0; i < count; i++) {
+    // Assign random number of samples between 0-100
+    random_hist[i] = 100*((float)rand())/RAND_MAX;
+  }
+  cudaMemcpy(hist, random_hist, count*sizeof(float), cudaMemcpyHostToDevice);
+
+  // 10k steps of NVT equil with oss dynamics
+  system->state->leapParms1->dt = .002;
+  system->state->leapParms1->gamma = 1;
+  system->state->leapParms1->kT = kB*298;
+  printf("Running 10k steps with oss to equilibrate!\n");
+  system->msld->oss = true;
+  for (int step=0; step<1000; step++) {
+    system->domdec->update_domdec(system,(step%system->domdec->freqDomdec)==0);
+    system->potential->calc_force(step,system);
+    system->state->update(step,system);
+    print_dynamics_output(step,system);
+    gpuCheck(cudaPeekAtLastError());
+    system->state->recv_energy();
+    printf("Equil Step: %d, Pot: %f, Kin: %f, Tot: %f\n",
+      step,
+      system->state->energy[eepotential],
+      system->state->energy[eekinetic],
+      system->state->energy[eetotal]);
+  }
+
+  // Turn on NVE
+  system->state->leapParms1->gamma = 0;
+  // 500k steps dynamics
+  printf("Running 500k steps with oss to check energy conservation!\n");
+  real eStart = system->state->energy[eetotal];
+  for (int step=0; step<500000; step++) {
+    system->domdec->update_domdec(system,(step%system->domdec->freqDomdec)==0);
+    system->potential->calc_force(step,system);
+    system->state->update(step,system);
+    print_dynamics_output(step,system);
+    gpuCheck(cudaPeekAtLastError());
+    system->state->recv_energy();
+    // 1 kT = .5922 kcal/mol at 298K?
+    real diff = system->state->energy[eetotal] - eStart;
+    real drift = abs(system->state->energy[eetotal] - eStart) * (1/.5922);
+    real drift_ns_dof = drift * (1/.5922) * (step / 1e6) / (system->state->atomCount*3 + system->state->lambdaCount - 2);
+    printf("Step: %d, Pot: %f, Kin: %f, Tot: %f, Start Tot: %f, Tot - Start (kcal/mol): %f, |Drift| (kT): %f, Drift/ns/dof: %f\n",
+      step,
+      system->state->energy[eepotential],
+      system->state->energy[eekinetic],
+      system->state->energy[eetotal],
+      eStart, diff,
+      drift, drift_ns_dof);
+    // Print bias from histogram on each lambda
+    real bias = system->state->energy[eelambda];
+    int nL = system->state->lambdaCount;
+    real step_p[nL];
+    cudaMemcpy(step_p, system->msld->step_potential_d,(nL-1)*sizeof(real), cudaMemcpyDeviceToHost);
+    printf("Histogram Bias Tot: %f, step_pot: [ ", bias);
+    for (int i = 0; i < nL-1; i++) {
+      printf(" %f, ", step_p[i]);
+    }
+    printf("]\n");
+    // Print force chain term and lambda force
+    real dGdF[nL];
+    cudaMemcpy(dGdF, system->msld->dGdF_d,nL*sizeof(real), cudaMemcpyDeviceToHost);
+    real step_f[nL];
+    cudaMemcpy(step_f, system->msld->step_force_d,(nL-1)*sizeof(real), cudaMemcpyDeviceToHost);
+    printf("step_f: [ ");
+    for (int i = 0; i < nL-1; i++) {
+      printf(" %f, ", step_f[i]);
+    }
+    printf(" ]   dGdF: [ ");
+    for (int i = 1; i < nL; i++) {
+      printf(" %f, ", dGdF[i]);
+    }
+    printf("]\n");
+  }
+}
+
 void Run::test(char *line,char *token,System *system)
 {
   std::string testType=io_nexts(line);
@@ -588,8 +664,10 @@ void Run::test(char *line,char *token,System *system)
     imax=system->state->atomCount;
     jmax=3;
   } else if (testType=="oss") {
-    dx=io_nextf(line); // dimensionless alchemical
-    test_OST(system, dx);
+    test_OST(system);
+    return;
+  } else if (testType=="oss_energy_cons") {
+    test_OSS_conservation(system);
     return;
   }
   else {

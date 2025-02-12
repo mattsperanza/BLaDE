@@ -1570,16 +1570,16 @@ void Potential::reset_force(System *system,bool calcEnergy)
   }
 }
 
-void Potential::calc_force(int step,System *system)
-{
+void Potential::calc_force(int step,System *system) {
   bool calcEnergy=(step%system->run->freqNRG==0);
   int helper=(system->idCount==2); // 0 unless there are 2 GPUs, then it's 1.
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
-  if (system->msld->oss && system->msld->update_histogram) { // Need energy to add sample for <dU/dL> weighting
-    calcEnergy = step % system->msld->sample_freq == 0;
+  if (system->msld->oss && system->msld->update_fe_surface) { // Need energy to add sample for <dU/dL> weighting
+    calcEnergy = calcEnergy || step % system->msld->sample_freq == 0;
   }
+  calcEnergy = true; // TODO: Remove once energy conserves
 #ifdef REPLICAEXCHANGE
   if (system->run->freqREx>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqREx==0));
@@ -1645,6 +1645,30 @@ void Potential::calc_force(int step,System *system)
   calc_virtual_force(system);
 
   // cudaEventRecord(r->forceComplete,r->updateStream);
+
+  // ABF, META, & OSS Calculations
+  if (system->msld->oss || system->msld->abf || system->msld->meta) {
+    // TODO: make this async safe
+    // TODO: add msld bias & force into respective
+    cudaMemset(system->msld->step_potential_d, 0, (system->state->lambdaCount-1)*sizeof(real));
+    cudaMemset(system->msld->step_force_d, 0, (system->state->lambdaCount-1)*sizeof(real));
+    // ABF & OSS update/calc energy&force w/ step_p, step_f, & lambdaF
+  }
+  // TODO: Make sure these three are race-condition safe
+  if (system->msld->abf) {
+    // Wait on lambda force calc
+    cudaStreamWaitEvent(r->abfBias, r->nbdirectComplete, 0);
+    cudaStreamWaitEvent(r->abfBias, r->nbrecipComplete, 0);
+    cudaStreamWaitEvent(r->abfBias, r->biaspotComplete, 0); // this is why we need to add into step_potential/force above
+    cudaStreamWaitEvent(r->abfBias, r->bondedComplete, 0);
+    system->msld->getforce_abf(system, calcEnergy);
+    if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
+      system->msld->add_sample_abf(system);
+    }
+  }
+  if (system->msld->meta) {
+    // TODO: Meta-dynamics
+  }
   if (system->msld->oss) {
     // Wait on lambda force calc being complete
     cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
@@ -1652,18 +1676,12 @@ void Potential::calc_force(int step,System *system)
     cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
     // Calculate dGdF from histogram/ABF
-    cudaMemset(system->msld->step_potential_d, 0, (system->state->lambdaCount-1)*sizeof(real));
-    // Add dg/dl directly to lambda force array -> dg/dF * d2U/dlilj added later
     //system->msld->getforce_hist(system,calcEnergy);
-    // Add abf directly to lambda force array
-    //system->msld->getforce_abf(system,calcEnergy);
-    // Need to know current histogram/abf potentials to add sample
-    if (system->msld->update_histogram && step % system->msld->sample_freq == 0 && step != 0) {
-      //system->msld->add_sample_hist(system);
-      //system->msld->add_sample_abf(system);
+    if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
+      system->msld->add_sample_hist(system);
     }
-
-    // Wait on calculation of dGdF then add directly to force array
+    cudaEventRecord(r->ossBiasComplete, r->ossBias);
+    // Wait on calculation of dGdF then add OSS forces directly into force array
     cudaEventRecord(r->ossForceBegin, r->ossBias);
     if (system->id == helper) {
       cudaStreamWaitEvent(r->ossBonded, r->ossForceBegin, 0);
@@ -1678,19 +1696,19 @@ void Potential::calc_force(int step,System *system)
       cudaStreamWaitEvent(r->updateStream, r->ossBondedComplete, 0);
     }
     if (system->id>=0) {
-      cudaStreamWaitEvent(r->nbdirectStream, r->ossForceBegin, 0);
+      cudaStreamWaitEvent(r->ossDirect, r->ossForceBegin, 0);
       getforce_nbdirect_oss(system);
       cudaEventRecord(r->ossDirectComplete, r->ossDirect);
       cudaStreamWaitEvent(r->updateStream, r->ossDirectComplete, 0);
     }
     if (system->id==0) {
-      cudaStreamWaitEvent(r->nbrecipStream, r->ossForceBegin, 0);
+      cudaStreamWaitEvent(r->ossRecip, r->ossForceBegin, 0);
       getforce_ewaldself_oss(system);
       getforce_ewald_oss(system);
       cudaEventRecord(r->ossRecipComplete, r->ossRecip);
       cudaStreamWaitEvent(r->updateStream, r->ossRecipComplete, 0);
     }
-    // Call gather_force & nbdirect_oss_force
+    // Call gather_force & nbdirect_oss_force -> multi-gpu?
     if (system->id>1) {
       system->state->gather_force(system, false); // Do I need to call this?
       if (system->id==0) {

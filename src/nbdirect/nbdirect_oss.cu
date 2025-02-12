@@ -126,7 +126,6 @@ __global__ void getforce_nbdirect_oss_kernel(
   real jtmpnp_q;
   int jtmpnp_typeIdx;
   real fij;
-  // extern __shared__ real sEnergy[];
   real3 xi,xj,xjtmp;
   real3 fi,fj,fjtmp;
   real fli,flj,fljtmp;
@@ -237,7 +236,12 @@ __global__ void getforce_nbdirect_oss_kernel(
           fjtmp=real3_reset<real3>();
           fljtmp=0;
           if (iThread<iCount && ((1<<jtmp)&exclMask)) {
+#ifdef USE_TEXTURE
+            struct VdwPotential vdwp;
+            ((real2*)(&vdwp))[0]=tex1Dfetch<real2>(vdwParameters,inp.typeIdx*vdwParameterCount+jtmpnp_typeIdx);
+#else
             struct VdwPotential vdwp=vdwParameters[inp.typeIdx*vdwParameterCount+jtmpnp_typeIdx];
+#endif
 
             // Geometry
             dr=real3_sub(xi,xjtmp);

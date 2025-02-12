@@ -57,7 +57,7 @@ class Msld {
 
   // Orthogonal Space Sampling Variables
   // Mem not allocated if not set since histogram so large
-  bool update_histogram = true; // add samples to histogram or not, not used with oss = false
+  bool update_fe_surface = true; // add samples to histogram or not, not used with oss = false
   int sample_freq = 10;
   real* dGdF_d;
   real* step_potential_d; // potential from histogram+abf at each lambda
@@ -69,16 +69,16 @@ class Msld {
   float dUdL_min = -dUdL_min; // symmetric
   int dUdL_bins = 1000;
   float dUdL_resolution = 2*abs(dUdL_max) / ((real)dUdL_bins);
-  int dUdL_search = (int) .1*dUdL_bins; // search 20 percent of histogram dUdL range
-  float dUdL_std = ((float)dUdL_search)*dUdL_resolution/4; // feel 4 std in each direction
+  float dUdL_std = 5;
+  int dUdL_search = 5*(dUdL_std/dUdL_resolution); // 5 dUdL std in each direction
   int L_hist_bins = 100; // 0-1 in lambda space
-  int L_search =  (int) .1*L_hist_bins; // search 20 percent of histogram lambda range
   float L_resolution = 1.0 / ((float)L_hist_bins);
-  float L_std = ((float)L_search)*L_resolution/4;
+  float L_std = .1;
+  int L_search = 5*(L_std/L_resolution); // 5 L std in each direction
   float* histogram_d; // 1000 x 100 = 1 million float = 4 -> stores sum of 1*weight*tempering pre-factor to gaussian
   int* histogram_index_d; // index into lambda's histogram
   float tempering = 2.0; // exp(-g(X,L)/tempering) = tempering weight
-  float weight = .05; // kcal/mol
+  float weight = 10.0; // kcal/mol
 
   // ABF - uniform binning - separate from histogram estimation
   bool meta = false;

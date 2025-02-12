@@ -98,7 +98,13 @@ class Run {
   cudaEvent_t communicate;
   cudaEvent_t *communicate_omp;
 
-  // OST streams
+  // ABF stream
+  cudaStream_t abfBias;
+  cudaEvent_t abfBiasComplete;
+  // Meta stream
+  cudaStream_t metaBias;
+  cudaEvent_t metaBiasComplete;
+  // OSS streams
   cudaEvent_t ossForceBegin;
   cudaStream_t ossBias;
   cudaEvent_t ossBiasComplete;
