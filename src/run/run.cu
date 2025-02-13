@@ -558,7 +558,7 @@ void test_OSS_conservation(System* system) {
   float random_hist[count];
   for (int i = 0; i < count; i++) {
     // Assign random number of samples between 0-100
-    random_hist[i] = 100*((float)rand())/RAND_MAX;
+    random_hist[i] = 10*((float)rand())/RAND_MAX;
   }
   cudaMemcpy(hist, random_hist, count*sizeof(float), cudaMemcpyHostToDevice);
 
@@ -575,6 +575,7 @@ void test_OSS_conservation(System* system) {
     print_dynamics_output(step,system);
     gpuCheck(cudaPeekAtLastError());
     system->state->recv_energy();
+    system->msld;
     printf("Equil Step: %d, Pot: %f, Kin: %f, Tot: %f\n",
       step,
       system->state->energy[eepotential],
@@ -628,7 +629,7 @@ void test_OSS_conservation(System* system) {
     for (int i = 1; i < nL; i++) {
       printf(" %f, ", dGdF[i]);
     }
-    printf("]\n");
+    printf("]\n\n");
   }
 }
 

@@ -1676,7 +1676,7 @@ void Potential::calc_force(int step,System *system) {
     cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
     // Calculate dGdF from histogram/ABF
-    //system->msld->getforce_hist(system,calcEnergy);
+    system->msld->getforce_hist(system,calcEnergy);
     if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
       system->msld->add_sample_hist(system);
     }

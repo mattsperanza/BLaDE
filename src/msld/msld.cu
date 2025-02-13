@@ -809,13 +809,12 @@ __global__ void add_sample_hist_kernel(
   if (i < nL) {
     float dUdL_min = dUdL_max - 2*dUdL_max; // symmetric
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
-    int X = (int) lambdas[i+1] * L_bins;
+    int X = ((int) lambdas[i+1]*100*L_bins)/10;
     // Get dU_msld
     real tmp = lambdaForce[i+1] - step_force[i] - dUdL_min;
-    tmp = tmp / (dUdL_min + dUdL_max);
-    int Y = (int) tmp * dUdL_bins;
-    // Shift over X lambda windows (dUdL_bins # in each), then up to the Y'th dUdL bin
-    int index = hist_indicies[i+1] + X*dUdL_bins + Y; // indexed so dUdL bins are continuous in mem
+    tmp = tmp / (2*dUdL_max);
+    int Y = ((int)tmp*dUdL_bins/(2.0*dUdL_max)*10)/10; // dist / bin width round to 2nd
+    int index = hist_indicies[i] + X*dUdL_bins + Y; // indexed so dUdL bins are continuous in mem
     // Ignore samples out of range (likely significant outliers)
     if (X >= 0 && X <= L_bins && Y >= 0 && Y <= dUdL_bins) {
       histogram[index] += weight * expf(-step_potential[i] / (tempering * kT));
@@ -921,37 +920,38 @@ __global__ void getforce_hist_kernel(
   if (i < nL) {
     float dUdL_min = dUdL_max - 2*dUdL_max;
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
-    int X = (int) lambdas[i+1] * L_bins;
-    real tmp = lambdaForce[i+1] - step_force[i] - dUdL_min;
-    tmp = tmp / (dUdL_min + dUdL_max); // Unit
-    int Y = (int) tmp * dUdL_bins;
+    int X = ((int) (lambdas[i+1]*100*L_bins))/100; // round to 3rd
+    real tmp = lambdaForce[i+1] - step_force[i] - dUdL_min; // distance from minimum
+    int Y = ((int)tmp*dUdL_bins/(2.0*dUdL_max)*10)/10; // dist / bin width round to 2nd
     // Shift over X lambda windows (dUdL_bins # in each), then up to the Y'th dUdL bin
     real bias = 0;
     real dUdL_force = 0;
     real L_force = 0;
-    for (int j = X-L_search; j < X+L_search; j++) {
+    for (int j = X-L_search; j <= X+L_search; j++) {
       int L_index = j;
       // Mirror lambda
-      if (L_index < 0) {
-        L_index = -L_index;
-      }
-      if (L_index >= L_bins) {
-        L_index = L_bins - (L_index - L_bins);
-      }
-      real L_center = L_index * (1/L_bins) + (1/L_bins);
+      int extra = L_index;
+      L_index = L_index <0 ? -L_index : L_index;
+      L_index = L_index >= L_bins ? L_bins - (L_index - L_bins) : L_index;
+      extra = extra - L_index;
+
+      // Min is zero -> extra accounts for mirrored bins being farther away
+      real L_center = ((real)L_index+extra)/L_bins;
       real L_distance = (lambdas[i+1] - L_center) / L_std;
-      real L_gaussian = expf(-((real).5)*L_distance*L_distance);
-      for (int k = Y-dUdL_search; k < k+dUdL_search; k++) {
+      real L_gaussian = expf(-.5*L_distance*L_distance);
+      for (int k = Y-dUdL_search; k <= Y+dUdL_search; k++) {
         int dUdL_index = k;
-        if (dUdL_index < 0 || dUdL_index >= dUdL_bins) {
+        if (dUdL_index < 0 || dUdL_index >= dUdL_bins) { // no mirror in this direction
           continue; // no bias exists outside of histogram
         }
-        real dUdL_center = -dUdL_max + dUdL_index*(((real)1.0)/dUdL_bins) + (((real)1.0)/dUdL_bins);
+        real dUdL_center = dUdL_min + ((real)dUdL_index*2*dUdL_max)/dUdL_bins;
         real dUdL_distance = (lambdaForce[i+1] - dUdL_center) / dUdL_std;
-        real dUdL_gaussian = expf(-((real).5)*dUdL_distance*dUdL_distance);
-        int index = hist_indicies[i+1] + L_index*dUdL_bins + dUdL_index; // indexed so dUdL bins are continuous in mem
+        real dUdL_gaussian = expf(-.5*dUdL_distance*dUdL_distance);
+
+        int index = hist_indicies[i] + L_index*dUdL_bins + dUdL_index; // indexed so dUdL bins are continuous in mem
         real weight = histogram[index];
         real tmp_bias = weight * L_gaussian * dUdL_gaussian;
+
         bias += tmp_bias;
         dUdL_force += -dUdL_distance/dUdL_std * tmp_bias;
         L_force += -L_distance/L_std * tmp_bias;
