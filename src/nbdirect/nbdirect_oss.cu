@@ -82,7 +82,6 @@ bool check_proximity(DomdecBlockVolume a,real3 b,real c2)
 }
 
 template <bool flagBox,bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
-// __global__ void getforce_nbdirect_kernel(int startBlock,int endBlock,int maxPartnersPerBlock,int *blockBounds,int *blockPartnerCount,struct DomdecBlockPartners *blockPartners,struct DomdecBlockVolume *blockVolume,struct NbondPotential *nbonds,int vdwParameterCount,struct VdwPotential *vdwParameters,int *blockExcls,struct Cutoffs cutoffs,real3 *position,real3 *force,real3 box,real *lambda,real *lambdaForce,real *energy)
 __global__ void getforce_nbdirect_oss_kernel(
   int startBlock,
   int endBlock,
@@ -149,9 +148,13 @@ __global__ void getforce_nbdirect_oss_kernel(
       xi=position[32*iBlock+iThread];
       bi=inp.siteBlock;
       li=1;
+      dGdF=0;
       if (bi) {
         li=lambda[0xFFFF & bi];
         dGdFi=dGdF[0xFFFF & bi];
+        if (isnan(dGdFi)) {
+          printf("dGdF is nan bi=%d, li=%f, 0xFFFF & bi: %d\n", bi, li, 0xFFFF&bi);
+        }
       }
     }
     // Check if bi has alchemical atoms via warp reduction
@@ -205,9 +208,13 @@ __global__ void getforce_nbdirect_oss_kernel(
         }
         bj=jnp.siteBlock;
         lj=1;
+        dGdFj=0;
         if (bj) {
           lj=lambda[0xFFFF & bj];
           dGdFj=dGdF[0xFFFF & bj];
+          if (isnan(dGdFj)) {
+            printf("dGdF is nan bj=%d, lj=%f, 0xFFFF & bj: %d\n", bj, lj, 0xFFFF&bj);
+          }
         }
       }
       // Sum warp bj's to check # alchemical atoms via warp reduction
@@ -247,7 +254,7 @@ __global__ void getforce_nbdirect_oss_kernel(
             dr=real3_sub(xi,xjtmp);
             r=real3_mag<real>(dr);
 
-            if (r<cutoffs.rCut) {
+            if (r<cutoffs.rCut && (bi || bjtmp)) {
               // Scaling
               real dlixlj_dli, dlixlj_dlj, dlixlj_dli_dlj;
               // for l_{m,i} and l_{n,j}
@@ -269,6 +276,22 @@ __global__ void getforce_nbdirect_oss_kernel(
                 dlixlj_dli = bi ? ljtmp : 0;
                 dlixlj_dlj = bjtmp ? li : 0;
                 dlixlj_dli_dlj = bi && bjtmp ? 1 : 0;
+              }
+              if (isnan(dGdFi)) {
+                printf("dGdFi is nan bi=%d, li=%f, 0xFFFF & bi: %d\n", bi, li, 0xFFFF&bi);
+                dGdFi = 0;
+              }
+              if (isinf(dGdFi)) {
+                printf("dGdFi is inf bi=%d, li=%f, 0xFFFF & bi: %d\n", bi, li, 0xFFFF&bi);
+                dGdFi = 0;
+              }
+              if (isnan(dGdFjtmp)) {
+                printf("dGdFjtmp is nan bjtmp=%d, ljtmp=%f, 0xFFFF & bjtmp: %d\n", bjtmp, ljtmp, 0xFFFF&bjtmp);
+                dGdFjtmp = 0;
+              }
+              if (isinf(dGdFjtmp)) {
+                printf("dGdFjtmp is inf bjtmp=%d, ljtmp=%f, 0xFFFF & bjtmp: %d\n", bjtmp, ljtmp, 0xFFFF&bjtmp);
+                dGdFjtmp = 0;
               }
 
               // Softcore OST
@@ -440,7 +463,7 @@ __global__ void getforce_nbdirect_oss_kernel(
               real d2U_drij_dlami = dU_drijp*d2rijp_drij_dlami + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami) * drijp_drij;
               real d2U_drij_dlamj = dU_drijp*d2rijp_drij_dlamj + (d2U_drijp_dlamj + d2U_drijp2*drijp_dlamj) * drijp_drij;
               // Interaction feels i, j, or both histograms
-              fij_ost = dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
+              fij_ost = dGdFi*d2U_drij_dlami + dGdFjtmp*d2U_drij_dlamj;
 
               // OST lambda force:
               real fli_ost = 0;
@@ -455,6 +478,10 @@ __global__ void getforce_nbdirect_oss_kernel(
               fljtmp_ost = dGdFi*d2U_dlami_dlamj + dGdFjtmp*d2U_dlamj2;
 
               // Accumulate ost forces
+              if (isnan(fij) || isnan(fli) || isnan(fljtmp)) {
+                printf("bi: %d, bjtmp: %d, li: %f, lj: %f, dGdFi: %f, dGdFj, %f, fij: %f, fli: %f, flj: %f, fij_ost: %f, fli_ost: %f, fljtmp_ost: %f\n",
+                  bi, bjtmp, li, ljtmp, dGdFi, dGdFjtmp, fij, fli, fljtmp, fij_ost, fli_ost, fljtmp_ost);
+              }
               fij += fij_ost;
               fli += fli_ost;
               fljtmp += fljtmp_ost;

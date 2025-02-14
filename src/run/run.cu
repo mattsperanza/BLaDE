@@ -427,10 +427,10 @@ void shift_kernel(real_x *x,real_x dx)
   }
 }
 
-__global__ void shift_lambda(real_x* lambda, real_x dl, int index) {
+__global__ void shift_lambda(real* position, real dl, int index) {
   int i=blockDim.x*blockIdx.x+threadIdx.x;
   if (i==0) {
-    lambda[index]+=dl;
+    position[index] += dl;
   }
 }
 
@@ -444,8 +444,8 @@ void Run::energy(char *line,char *token,System *system)
 }
 
 void test_OST(System *system) {
-  // TODO: Get this to work for float precision
-  real_x dl = .001;
+  // This is way too small with double precision
+  real dl = .0001;
   bool flags[eeend];
   for (int i = 0; i < eeend; i++) {
     flags[i] = system->run->calcTermFlag[i];
@@ -478,17 +478,18 @@ void test_OST(System *system) {
       // Numerical Force = dU(X, L+dl) - dU(X, L-dl) / 2*dl
       // L+dl
       real_f tmp_high[len];
-      shift_lambda<<<1, 1>>>(system->state->lambda_d, dl, j);
+      // lambda block at beginning of position buffer, everything else is index into this array
+      shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, dl, j);
       system->potential->calc_force(0, system);
       cudaMemcpy(tmp_high, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDeviceToHost);
       // L-dl
       real_f tmp_low[len];
-      shift_lambda<<<1, 1>>>(system->state->lambda_d, -2.0*dl, j);
+      shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, -2.0*dl, j);
       system->potential->calc_force(0, system);
       cudaMemcpy(tmp_low, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDeviceToHost);
       // Reset and diff
       real_f d2U_numeric[len];
-      shift_lambda<<<1, 1>>>(system->state->lambda_d, dl, j);
+      shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, dl, j);
       for (int k = 0; k < len; k++) {
         d2U_numeric[k] = (tmp_high[k] - tmp_low[k]) / (2.0*dl);
         num_sum += abs(d2U_numeric[k]);
@@ -547,6 +548,7 @@ void test_OST(System *system) {
 }
 
 void test_OSS_conservation(System* system) {
+  // Note switching between double and float precision causes "Internal overflow" error
   system->msld->abf = false;
   system->msld->meta = false;
   system->msld->update_fe_surface = false;
@@ -563,27 +565,75 @@ void test_OSS_conservation(System* system) {
   cudaMemcpy(hist, random_hist, count*sizeof(float), cudaMemcpyHostToDevice);
 
   // 10k steps of NVT equil with oss dynamics
+  system->run->freqNRG=1;
+  system->run->freqNPT = 0;// turn off pressure coupling
   system->state->leapParms1->dt = .002;
   system->state->leapParms1->gamma = 1;
   system->state->leapParms1->kT = kB*298;
-  printf("Running 10k steps with oss to equilibrate!\n");
+  printf("Running 1k steps with oss to equilibrate!\n");
   system->msld->oss = true;
   for (int step=0; step<1000; step++) {
     system->domdec->update_domdec(system,(step%system->domdec->freqDomdec)==0);
     system->potential->calc_force(step,system);
+    gpuCheck(cudaPeekAtLastError());
     system->state->update(step,system);
+    gpuCheck(cudaPeekAtLastError());
     print_dynamics_output(step,system);
     gpuCheck(cudaPeekAtLastError());
     system->state->recv_energy();
-    system->msld;
     printf("Equil Step: %d, Pot: %f, Kin: %f, Tot: %f\n",
       step,
       system->state->energy[eepotential],
       system->state->energy[eekinetic],
       system->state->energy[eetotal]);
+    // Print bias from histogram on each lambda
+    real bias = system->state->energy[eelambda];
+    int nL = system->state->lambdaCount;
+    real step_p[nL];
+    cudaMemcpy(step_p, system->msld->step_potential_d,(nL-1)*sizeof(real), cudaMemcpyDeviceToHost);
+    printf("Histogram Bias Tot: %f, step_pot: [ ", bias);
+    for (int i = 0; i < nL-1; i++) {
+      printf(" %f, ", step_p[i]);
+    }
+    printf("]\n");
+    // Print force chain term and lambda force
+    real dGdF[nL];
+    cudaMemcpy(dGdF, system->msld->dGdF_d,nL*sizeof(real), cudaMemcpyDeviceToHost);
+    real step_f[nL-1];
+    cudaMemcpy(step_f, system->msld->step_force_d,(nL-1)*sizeof(real), cudaMemcpyDeviceToHost);
+    real Fl[nL];
+    cudaMemcpy(Fl, system->state->lambdaForce_d, nL*sizeof(real), cudaMemcpyDeviceToHost);
+    real L[nL];
+    cudaMemcpy(L, system->state->lambda_fd, nL*sizeof(real), cudaMemcpyDeviceToHost);
+    printf("L: [ ");
+    for (int i = 0; i < nL; i++) {
+      printf(" %f, ", L[i]);
+    }
+    printf("]\n");
+    printf("dGdF: [ ");
+    for (int i = 0; i < nL; i++) {
+      printf(" %f, ", dGdF[i]);
+    }
+    printf("]\n");
+    printf("step_f: [ ");
+    for (int i = 0; i < nL-1; i++) {
+      printf(" %f, ", step_f[i]);
+    }
+    printf(" ] \n");
+    printf("F_l: [ ");
+    for (int i = 1; i < nL; i++) {
+      printf(" %f, ", Fl[i] - step_f[i-1]);
+    }
+    printf("]\n\n");
+
+    if (isnan(system->state->energy[eetotal])) {
+      printf("Something went wrong!!\n");
+      exit(-1);
+    }
   }
 
   // Turn on NVE
+  system->run->freqNPT = 0;// turn off pressure coupling
   system->state->leapParms1->gamma = 0;
   // 500k steps dynamics
   printf("Running 500k steps with oss to check energy conservation!\n");
@@ -591,9 +641,9 @@ void test_OSS_conservation(System* system) {
   for (int step=0; step<500000; step++) {
     system->domdec->update_domdec(system,(step%system->domdec->freqDomdec)==0);
     system->potential->calc_force(step,system);
+    gpuCheck(cudaPeekAtLastError());
     system->state->update(step,system);
     print_dynamics_output(step,system);
-    gpuCheck(cudaPeekAtLastError());
     system->state->recv_energy();
     // 1 kT = .5922 kcal/mol at 298K?
     real diff = system->state->energy[eetotal] - eStart;
@@ -625,7 +675,8 @@ void test_OSS_conservation(System* system) {
     for (int i = 0; i < nL-1; i++) {
       printf(" %f, ", step_f[i]);
     }
-    printf(" ]   dGdF: [ ");
+    printf(" ] \n");
+    printf("dGdF: [ ");
     for (int i = 1; i < nL; i++) {
       printf(" %f, ", dGdF[i]);
     }

@@ -677,6 +677,7 @@ void Msld::initialize(System *system)
   if (oss) {
     int nL = blockCount-1; // 0th lambda is environment
     cudaMalloc(&dGdF_d, blockCount*sizeof(real)); // use blockCount so that it is indexed same as lambda array
+    cudaMemset(dGdF_d, 0, blockCount*sizeof(real));
     cudaMalloc(&step_potential_d, nL*sizeof(real));
     cudaMalloc(&step_force_d, nL*sizeof(real));
 
@@ -927,6 +928,11 @@ __global__ void getforce_hist_kernel(
     real bias = 0;
     real dUdL_force = 0;
     real L_force = 0;
+    int id  = 3;
+    if (i == id) {
+      int i1 = i == nL-1 ? i : i+1;
+      //printf("hist_index[i]: %d, hist_index[i+1]: %d\n", hist_indicies[i], hist_indicies[i1]);
+    }
     for (int j = X-L_search; j <= X+L_search; j++) {
       int L_index = j;
       // Mirror lambda
@@ -941,6 +947,10 @@ __global__ void getforce_hist_kernel(
       real L_gaussian = expf(-.5*L_distance*L_distance);
       for (int k = Y-dUdL_search; k <= Y+dUdL_search; k++) {
         int dUdL_index = k;
+        int index = hist_indicies[i] + L_index*dUdL_bins + dUdL_index; // indexed so dUdL bins are continuous in mem
+        if (i==id) {
+          //printf("(id: %d, dUdL: %f) ", index, lambdaForce[i+1]);
+        }
         if (dUdL_index < 0 || dUdL_index >= dUdL_bins) { // no mirror in this direction
           continue; // no bias exists outside of histogram
         }
@@ -948,14 +958,19 @@ __global__ void getforce_hist_kernel(
         real dUdL_distance = (lambdaForce[i+1] - dUdL_center) / dUdL_std;
         real dUdL_gaussian = expf(-.5*dUdL_distance*dUdL_distance);
 
-        int index = hist_indicies[i] + L_index*dUdL_bins + dUdL_index; // indexed so dUdL bins are continuous in mem
         real weight = histogram[index];
         real tmp_bias = weight * L_gaussian * dUdL_gaussian;
 
         bias += tmp_bias;
         dUdL_force += -dUdL_distance/dUdL_std * tmp_bias;
         L_force += -L_distance/L_std * tmp_bias;
+        if (i == id) {
+          real ufrc = -dUdL_distance/dUdL_std * tmp_bias;
+          real lfrc = -L_distance/dUdL_std * tmp_bias;
+          //printf("(Z: %f) ", tmp_bias);
+        }
       }
+      //if (i==id){printf("\n");}
     }
     // ABF & meta race
     atomicAdd(&lambdaForce[i+1], L_force);
@@ -966,6 +981,9 @@ __global__ void getforce_hist_kernel(
     }
     // No race here
     dGdF[i+1] = dUdL_force;
+    if (isnan(dUdL_force) || isnan(L_force) || isnan(bias)) {
+      printf("dUdL: %f, L: %f, bias: %f\n", dUdL_force, L_force, bias);
+    }
   }
   if (energy) {
     __syncthreads();

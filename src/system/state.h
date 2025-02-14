@@ -171,6 +171,7 @@ class State {
   void check_box(System *system);
 
   // From update/update.cu
+  void check_nan(real* dev_arr, int len, int id);
   void set_fd(System *system);
   void update(int step,System *system);
   void kinetic_energy(System *system);

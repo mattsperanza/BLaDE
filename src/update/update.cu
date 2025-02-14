@@ -206,7 +206,24 @@ __global__ void update_OOhbpR(struct LeapState ls,struct LeapParms2 lp1,struct L
   }
 }
 
+__global__ void checkNan(real* arr, int len, int id)
+{
+  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  if (i == 0) {
+    // Force is dU/dx by convention in this program, not -dU/dx
+    bool found = false;
+    for (int j = 0; j < len; j++) {
+      if (isnan(arr[j]) && !found) {
+        printf("Nan detected in array i=%d, id=%d\n", i, id);
+        found = true;
+      }
+    }
+  }
+}
 
+void State::check_nan(real* dev_arr, int len, int id) {
+  checkNan<<<(leapState->N+BLUP-1)/BLUP,BLUP,0>>>(dev_arr, len, id);
+}
 
 void State::update(int step,System *system)
 {

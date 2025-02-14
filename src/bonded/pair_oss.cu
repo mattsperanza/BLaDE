@@ -54,15 +54,6 @@ static __forceinline__ __device__ float fasterfc(float a)
 }
 #endif
 
-// Not good ways to check type
-__device__ bool isNbEx(NbExPotential pp) {
-  return true;
-}
-
-__device__ bool isNbEx(Nb14Potential pp) {
-  return false;
-}
-
 template <bool flagBox, bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
 __global__ void getforce_exclusion_pair_kernel_oss(
     int pairCount,NbExPotential *pairs,Cutoffs cutoffs,

@@ -18,6 +18,7 @@
 #include "nbdirect/nbdirect.h"
 #include "restrain/restrain.h"
 #include "holonomic/virtual.h"
+#include "main/gpu_check.h"
 
 #ifdef USE_TEXTURE
 #include <string.h> // for memset
@@ -1579,7 +1580,6 @@ void Potential::calc_force(int step,System *system) {
   if (system->msld->oss && system->msld->update_fe_surface) { // Need energy to add sample for <dU/dL> weighting
     calcEnergy = calcEnergy || step % system->msld->sample_freq == 0;
   }
-  calcEnergy = true; // TODO: Remove once energy conserves
 #ifdef REPLICAEXCHANGE
   if (system->run->freqREx>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqREx==0));
@@ -1676,9 +1676,20 @@ void Potential::calc_force(int step,System *system) {
     cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
     // Calculate dGdF from histogram/ABF
+    // TODO: Figure out why dGdF is throwing nans
     system->msld->getforce_hist(system,calcEnergy);
+    system->state->check_nan(system->msld->dGdF_d, system->state->lambdaCount, 0);
+    real dGdF[system->state->lambdaCount];
+    cudaMemcpy(dGdF, system->msld->dGdF_d, system->state->lambdaCount*sizeof(real), cudaMemcpyDeviceToHost);
+    printf("Force dGdF: [ ");
+    for (int ii = 0; ii < system->state->lambdaCount; ii++) {
+      printf("%f, ", dGdF[ii]);
+    }
+    printf(" ] \n");
+    gpuCheck(cudaPeekAtLastError());
     if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
       system->msld->add_sample_hist(system);
+      gpuCheck(cudaPeekAtLastError());
     }
     cudaEventRecord(r->ossBiasComplete, r->ossBias);
     // Wait on calculation of dGdF then add OSS forces directly into force array
@@ -1686,25 +1697,45 @@ void Potential::calc_force(int step,System *system) {
     if (system->id == helper) {
       cudaStreamWaitEvent(r->ossBonded, r->ossForceBegin, 0);
       getforce_bond_oss(system);
+      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 1);
+      gpuCheck(cudaPeekAtLastError());
       getforce_angle_oss(system);
+      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 2);
+      gpuCheck(cudaPeekAtLastError());
       getforce_dihe_oss(system);
+      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 3);
+      gpuCheck(cudaPeekAtLastError());
       getforce_impr_oss(system);
+      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 4);
+      gpuCheck(cudaPeekAtLastError());
       getforce_cmap_oss(system);
+      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 5);
+      gpuCheck(cudaPeekAtLastError());
       getforce_nb14_oss(system);
+      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 6);
+      gpuCheck(cudaPeekAtLastError());
       getforce_nbex_oss(system);
+      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 7);
+      gpuCheck(cudaPeekAtLastError());
       cudaEventRecord(r->ossBondedComplete, r->ossBonded);
       cudaStreamWaitEvent(r->updateStream, r->ossBondedComplete, 0);
     }
     if (system->id>=0) {
       cudaStreamWaitEvent(r->ossDirect, r->ossForceBegin, 0);
       getforce_nbdirect_oss(system);
+      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 8);
+      gpuCheck(cudaPeekAtLastError());
       cudaEventRecord(r->ossDirectComplete, r->ossDirect);
       cudaStreamWaitEvent(r->updateStream, r->ossDirectComplete, 0);
     }
     if (system->id==0) {
       cudaStreamWaitEvent(r->ossRecip, r->ossForceBegin, 0);
       getforce_ewaldself_oss(system);
+      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 9);
+      gpuCheck(cudaPeekAtLastError());
       getforce_ewald_oss(system);
+      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 10);
+      gpuCheck(cudaPeekAtLastError());
       cudaEventRecord(r->ossRecipComplete, r->ossRecip);
       cudaStreamWaitEvent(r->updateStream, r->ossRecipComplete, 0);
     }
