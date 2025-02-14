@@ -1670,22 +1670,15 @@ void Potential::calc_force(int step,System *system) {
     // TODO: Meta-dynamics
   }
   if (system->msld->oss) {
+    system->state->check_nan(system->state->leapState->f, system->state->leapState->N, -1);
     // Wait on lambda force calc being complete
     cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->nbrecipComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
     // Calculate dGdF from histogram/ABF
-    // TODO: Figure out why dGdF is throwing nans
     system->msld->getforce_hist(system,calcEnergy);
     system->state->check_nan(system->msld->dGdF_d, system->state->lambdaCount, 0);
-    real dGdF[system->state->lambdaCount];
-    cudaMemcpy(dGdF, system->msld->dGdF_d, system->state->lambdaCount*sizeof(real), cudaMemcpyDeviceToHost);
-    printf("Force dGdF: [ ");
-    for (int ii = 0; ii < system->state->lambdaCount; ii++) {
-      printf("%f, ", dGdF[ii]);
-    }
-    printf(" ] \n");
     gpuCheck(cudaPeekAtLastError());
     if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
       system->msld->add_sample_hist(system);
@@ -1723,14 +1716,15 @@ void Potential::calc_force(int step,System *system) {
     if (system->id>=0) {
       cudaStreamWaitEvent(r->ossDirect, r->ossForceBegin, 0);
       getforce_nbdirect_oss(system);
-      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 8);
       gpuCheck(cudaPeekAtLastError());
+      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 8);
       cudaEventRecord(r->ossDirectComplete, r->ossDirect);
       cudaStreamWaitEvent(r->updateStream, r->ossDirectComplete, 0);
     }
     if (system->id==0) {
       cudaStreamWaitEvent(r->ossRecip, r->ossForceBegin, 0);
       getforce_ewaldself_oss(system);
+      gpuCheck(cudaPeekAtLastError());
       system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 9);
       gpuCheck(cudaPeekAtLastError());
       getforce_ewald_oss(system);

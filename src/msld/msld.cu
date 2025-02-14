@@ -755,7 +755,7 @@ __global__ void add_sample_abf_kernel(
     histogram_counts[hist_bin] += 1;
     real beta = 1 / kT;
     real bias = beta * potEnergy;
-    if (bias > offsets[hist_bin]) { // largest weight = 1
+    if (bias > offsets[hist_bin]) { // largest gaussian_weight = 1
       real correction = exp(offsets[hist_bin]-bias); // exp(U-old)*exp(old-new) = exp(U-new)
       offsets[hist_bin] = bias;
       weights[hist_bin] *= correction;
@@ -836,7 +836,7 @@ void Msld::add_sample_hist(System* system) {
 
   add_sample_hist_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->leapParms1->kT, blockCount-1, s->lambda_fd, s->lambdaForce_d, step_potential_d, step_force_d,
-    weight, tempering, histogram_d, histogram_index_d,
+    gaussian_weight, tempering, histogram_d, histogram_index_d,
     L_hist_bins, dUdL_bins, dUdL_max);
 }
 
@@ -923,6 +923,9 @@ __global__ void getforce_hist_kernel(
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
     int X = ((int) (lambdas[i+1]*100*L_bins))/100; // round to 3rd
     real tmp = lambdaForce[i+1] - step_force[i] - dUdL_min; // distance from minimum
+    if (isnan(tmp)) {
+      printf("lambda force is nan!!!\n");
+    }
     int Y = ((int)tmp*dUdL_bins/(2.0*dUdL_max)*10)/10; // dist / bin width round to 2nd
     // Shift over X lambda windows (dUdL_bins # in each), then up to the Y'th dUdL bin
     real bias = 0;
@@ -981,8 +984,11 @@ __global__ void getforce_hist_kernel(
     }
     // No race here
     dGdF[i+1] = dUdL_force;
+    if (i == 0) { // shouldn't have to do this
+      dGdF[0] = 0.0;
+    }
     if (isnan(dUdL_force) || isnan(L_force) || isnan(bias)) {
-      printf("dUdL: %f, L: %f, bias: %f\n", dUdL_force, L_force, bias);
+      printf("dUdL: %f, L: %f, bias: %f\n\n\n", dUdL_force, L_force, bias);
     }
   }
   if (energy) {

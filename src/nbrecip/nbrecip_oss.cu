@@ -16,7 +16,7 @@
 
 __global__ void getforce_ewaldself_kernel_oss(
   int atomCount,real *charge,real prefactor,
-  int *atomBlock,real *lambda,real_f *lambdaForce,
+  int *atomBlock,real_f *lambdaForce,
   real* dGdF)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -46,8 +46,7 @@ void getforce_ewaldself_oss(System *system)
 
   getforce_ewaldself_kernel_oss<<<(N+BLNB-1)/BLNB,BLNB,shMem,r->ossRecip>>>(
     N,p->charge_d,prefactor,m->atomBlock_d,
-    s->lambda_fd,s->lambdaForce_d,
-    m->dGdF_d);
+    s->lambdaForce_d, m->dGdF_d);
 }
 
 template <bool flagBox,int order,typename box_type>

@@ -148,13 +148,10 @@ __global__ void getforce_nbdirect_oss_kernel(
       xi=position[32*iBlock+iThread];
       bi=inp.siteBlock;
       li=1;
-      dGdF=0;
+      dGdFi=0;
       if (bi) {
         li=lambda[0xFFFF & bi];
         dGdFi=dGdF[0xFFFF & bi];
-        if (isnan(dGdFi)) {
-          printf("dGdF is nan bi=%d, li=%f, 0xFFFF & bi: %d\n", bi, li, 0xFFFF&bi);
-        }
       }
     }
     // Check if bi has alchemical atoms via warp reduction
@@ -212,9 +209,6 @@ __global__ void getforce_nbdirect_oss_kernel(
         if (bj) {
           lj=lambda[0xFFFF & bj];
           dGdFj=dGdF[0xFFFF & bj];
-          if (isnan(dGdFj)) {
-            printf("dGdF is nan bj=%d, lj=%f, 0xFFFF & bj: %d\n", bj, lj, 0xFFFF&bj);
-          }
         }
       }
       // Sum warp bj's to check # alchemical atoms via warp reduction

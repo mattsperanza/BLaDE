@@ -71,8 +71,8 @@ class Msld {
   // These params should be adjustable
   float dUdL_std = 16; // kcal/mol
   float L_std = .01; // not too high to cause too many reflections from mirror
-  float tempering = 2.0; // exp(-g(X,L)/tempering) = tempering weight
-  float weight = 1.0; // kcal/mol
+  float tempering = 2.0; // exp(-g(X,L)/tempering) = tempering gaussian_weight
+  float gaussian_weight = .05; // kcal/mol
 
   // Maybe change
   int L_hist_bins = 100;

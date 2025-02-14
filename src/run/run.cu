@@ -560,13 +560,13 @@ void test_OSS_conservation(System* system) {
   float random_hist[count];
   for (int i = 0; i < count; i++) {
     // Assign random number of samples between 0-100
-    random_hist[i] = 10*((float)rand())/RAND_MAX;
+    random_hist[i] = 100*((float)rand())/RAND_MAX;
+    random_hist[i] *= system->msld->gaussian_weight;
   }
   cudaMemcpy(hist, random_hist, count*sizeof(float), cudaMemcpyHostToDevice);
 
   // 10k steps of NVT equil with oss dynamics
   system->run->freqNRG=1;
-  system->run->freqNPT = 0;// turn off pressure coupling
   system->state->leapParms1->dt = .002;
   system->state->leapParms1->gamma = 1;
   system->state->leapParms1->kT = kB*298;
@@ -578,14 +578,17 @@ void test_OSS_conservation(System* system) {
     gpuCheck(cudaPeekAtLastError());
     system->state->update(step,system);
     gpuCheck(cudaPeekAtLastError());
-    print_dynamics_output(step,system);
-    gpuCheck(cudaPeekAtLastError());
     system->state->recv_energy();
     printf("Equil Step: %d, Pot: %f, Kin: %f, Tot: %f\n",
       step,
       system->state->energy[eepotential],
       system->state->energy[eekinetic],
       system->state->energy[eetotal]);
+
+    if (isnan(system->state->energy[eetotal])) {
+      printf("Something went wrong!!\n");
+      exit(-1);
+    }
     // Print bias from histogram on each lambda
     real bias = system->state->energy[eelambda];
     int nL = system->state->lambdaCount;
@@ -625,16 +628,11 @@ void test_OSS_conservation(System* system) {
       printf(" %f, ", Fl[i] - step_f[i-1]);
     }
     printf("]\n\n");
-
-    if (isnan(system->state->energy[eetotal])) {
-      printf("Something went wrong!!\n");
-      exit(-1);
-    }
   }
 
   // Turn on NVE
-  system->run->freqNPT = 0;// turn off pressure coupling
-  system->state->leapParms1->gamma = 0;
+  system->run->freqNPT = 0; // turn off pressure coupling
+  system->state->leapParms1->gamma = 0; // turn off langevin
   // 500k steps dynamics
   printf("Running 500k steps with oss to check energy conservation!\n");
   real eStart = system->state->energy[eetotal];
@@ -648,37 +646,45 @@ void test_OSS_conservation(System* system) {
     // 1 kT = .5922 kcal/mol at 298K?
     real diff = system->state->energy[eetotal] - eStart;
     real drift = abs(system->state->energy[eetotal] - eStart) * (1/.5922);
-    real drift_ns_dof = drift * (1/.5922) * (step / 1e6) / (system->state->atomCount*3 + system->state->lambdaCount - 2);
-    printf("Step: %d, Pot: %f, Kin: %f, Tot: %f, Start Tot: %f, Tot - Start (kcal/mol): %f, |Drift| (kT): %f, Drift/ns/dof: %f\n",
+    real drift_ns_dof = drift * (1/.5922) * (1.0 / step) / (system->state->atomCount*3 + system->state->lambdaCount - 2);
+    printf("Step: %d, Pot: %f, Kin: %f, Tot: %f, Start Tot: %f, Tot - Start (kcal/mol): %f, |Drift| (kT): %f, Drift/step/dof: %f\n",
       step,
       system->state->energy[eepotential],
       system->state->energy[eekinetic],
       system->state->energy[eetotal],
       eStart, diff,
       drift, drift_ns_dof);
-    // Print bias from histogram on each lambda
-    real bias = system->state->energy[eelambda];
-    int nL = system->state->lambdaCount;
-    real step_p[nL];
-    cudaMemcpy(step_p, system->msld->step_potential_d,(nL-1)*sizeof(real), cudaMemcpyDeviceToHost);
-    printf("Histogram Bias Tot: %f, step_pot: [ ", bias);
-    for (int i = 0; i < nL-1; i++) {
-      printf(" %f, ", step_p[i]);
+    if (isnan(system->state->energy[eetotal])) {
+      printf("Something went wrong!!\n");
+      exit(-1);
     }
-    printf("]\n");
     // Print force chain term and lambda force
     real dGdF[nL];
     cudaMemcpy(dGdF, system->msld->dGdF_d,nL*sizeof(real), cudaMemcpyDeviceToHost);
-    real step_f[nL];
+    real step_f[nL-1];
     cudaMemcpy(step_f, system->msld->step_force_d,(nL-1)*sizeof(real), cudaMemcpyDeviceToHost);
+    real Fl[nL];
+    cudaMemcpy(Fl, system->state->lambdaForce_d, nL*sizeof(real), cudaMemcpyDeviceToHost);
+    real L[nL];
+    cudaMemcpy(L, system->state->lambda_fd, nL*sizeof(real), cudaMemcpyDeviceToHost);
+    printf("L: [ ");
+    for (int i = 0; i < nL; i++) {
+      printf(" %f, ", L[i]);
+    }
+    printf("]\n");
+    printf("dGdF: [ ");
+    for (int i = 0; i < nL; i++) {
+      printf(" %f, ", dGdF[i]);
+    }
+    printf("]\n");
     printf("step_f: [ ");
     for (int i = 0; i < nL-1; i++) {
       printf(" %f, ", step_f[i]);
     }
     printf(" ] \n");
-    printf("dGdF: [ ");
+    printf("F_l: [ ");
     for (int i = 1; i < nL; i++) {
-      printf(" %f, ", dGdF[i]);
+      printf(" %f, ", Fl[i] - step_f[i-1]);
     }
     printf("]\n\n");
   }
