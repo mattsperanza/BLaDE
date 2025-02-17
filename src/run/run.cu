@@ -444,8 +444,8 @@ void Run::energy(char *line,char *token,System *system)
 }
 
 void test_OST(System *system) {
-  // This is way too small with double precision
-  real dl = .0001;
+  // This is way too small with float precision
+  real dl = 1e-5;
   bool flags[eeend];
   for (int i = 0; i < eeend; i++) {
     flags[i] = system->run->calcTermFlag[i];
@@ -454,7 +454,7 @@ void test_OST(System *system) {
   system->run->vfSwitch = true;
   system->msld->useSoftCore = true;
   system->msld->useSoftCore14 = true;
-  //system->msld->msldEwaldType = 1;
+  system->msld->msldEwaldType = 0;
   int len = system->state->lambdaCount+3*system->state->atomCount; // theta forces at end
   for (int i = 0; i < eeend; i++) {
     printf("Term %d Numerical Test: \n", i);
@@ -508,7 +508,7 @@ void test_OST(System *system) {
       // Check if they match
       for (int k = 0; k < len; k++) {
         real_f diff = abs(d2U_analytic[k] - d2U_numeric[k]);
-        real_f tol = 5e-1;
+        real_f tol = 1e-6;
         if (diff > tol) { // floating point ops (like expf) can cause float errors
           printf("Numerical derivatives test %d failed (tol = %f, dl = %f) at force array index %d for lambda %d! \n",
             i, tol, dl, k, j);
@@ -552,27 +552,27 @@ void test_OSS_conservation(System* system) {
   system->msld->abf = false;
   system->msld->meta = false;
   system->msld->update_fe_surface = false;
-  float* hist = system->msld->histogram_d;
+  real* hist = system->msld->histogram_d;
   int nL = system->state->lambdaCount-1; // no environment
   int width = system->msld->L_hist_bins;
   int hight = system->msld->dUdL_bins;
   int count = nL*width*hight;
-  float random_hist[count];
+  real random_hist[count];
   for (int i = 0; i < count; i++) {
-    // Assign random number of samples between 0-100
-    random_hist[i] = 100*((float)rand())/RAND_MAX;
+    // Assign random number of samples between 0-50
+    random_hist[i] = 50*((float)rand())/RAND_MAX;
     random_hist[i] *= system->msld->gaussian_weight;
   }
-  cudaMemcpy(hist, random_hist, count*sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(hist, random_hist, count*sizeof(real), cudaMemcpyHostToDevice);
 
   // 10k steps of NVT equil with oss dynamics
   system->run->freqNRG=1;
   system->state->leapParms1->dt = .002;
   system->state->leapParms1->gamma = 1;
   system->state->leapParms1->kT = kB*298;
-  printf("Running 1k steps with oss to equilibrate!\n");
+  printf("Running 10k steps with oss to equilibrate!\n");
   system->msld->oss = true;
-  for (int step=0; step<1000; step++) {
+  for (int step=0; step<10000; step++) {
     system->domdec->update_domdec(system,(step%system->domdec->freqDomdec)==0);
     system->potential->calc_force(step,system);
     gpuCheck(cudaPeekAtLastError());
@@ -602,10 +602,10 @@ void test_OSS_conservation(System* system) {
     // Print force chain term and lambda force
     real dGdF[nL];
     cudaMemcpy(dGdF, system->msld->dGdF_d,nL*sizeof(real), cudaMemcpyDeviceToHost);
-    real step_f[nL-1];
-    cudaMemcpy(step_f, system->msld->step_force_d,(nL-1)*sizeof(real), cudaMemcpyDeviceToHost);
     real Fl[nL];
     cudaMemcpy(Fl, system->state->lambdaForce_d, nL*sizeof(real), cudaMemcpyDeviceToHost);
+    real F_msld_l[nL];
+    cudaMemcpy(F_msld_l, system->msld->lf_tmp_d, nL*sizeof(real), cudaMemcpyDeviceToHost);
     real L[nL];
     cudaMemcpy(L, system->state->lambda_fd, nL*sizeof(real), cudaMemcpyDeviceToHost);
     printf("L: [ ");
@@ -618,14 +618,19 @@ void test_OSS_conservation(System* system) {
       printf(" %f, ", dGdF[i]);
     }
     printf("]\n");
-    printf("step_f: [ ");
-    for (int i = 0; i < nL-1; i++) {
-      printf(" %f, ", step_f[i]);
+    printf("MSLD Lambda Force: [ ");
+    for (int i = 0; i < nL; i++) {
+      printf(" %f, ", F_msld_l[i]);
     }
     printf(" ] \n");
-    printf("F_l: [ ");
-    for (int i = 1; i < nL; i++) {
-      printf(" %f, ", Fl[i] - step_f[i-1]);
+    printf("Histogram Force: [ ");
+    for (int i = 0; i < nL; i++) {
+      printf(" %f, ", Fl[i] - F_msld_l[i]);
+    }
+    printf(" ] \n");
+    printf("Tot Lambda Force: [ ");
+    for (int i = 0; i < nL; i++) {
+      printf(" %f, ", Fl[i]);
     }
     printf("]\n\n");
   }
@@ -658,13 +663,22 @@ void test_OSS_conservation(System* system) {
       printf("Something went wrong!!\n");
       exit(-1);
     }
+    real bias = system->state->energy[eelambda];
+    int nL = system->state->lambdaCount;
+    real step_p[nL];
+    cudaMemcpy(step_p, system->msld->step_potential_d,(nL-1)*sizeof(real), cudaMemcpyDeviceToHost);
+    printf("Histogram Bias Tot: %f, step_pot: [ ", bias);
+    for (int i = 0; i < nL-1; i++) {
+      printf(" %f, ", step_p[i]);
+    }
+    printf("]\n");
     // Print force chain term and lambda force
     real dGdF[nL];
     cudaMemcpy(dGdF, system->msld->dGdF_d,nL*sizeof(real), cudaMemcpyDeviceToHost);
-    real step_f[nL-1];
-    cudaMemcpy(step_f, system->msld->step_force_d,(nL-1)*sizeof(real), cudaMemcpyDeviceToHost);
     real Fl[nL];
     cudaMemcpy(Fl, system->state->lambdaForce_d, nL*sizeof(real), cudaMemcpyDeviceToHost);
+    real F_msld_l[nL];
+    cudaMemcpy(F_msld_l, system->msld->lf_tmp_d, nL*sizeof(real), cudaMemcpyDeviceToHost);
     real L[nL];
     cudaMemcpy(L, system->state->lambda_fd, nL*sizeof(real), cudaMemcpyDeviceToHost);
     printf("L: [ ");
@@ -677,14 +691,19 @@ void test_OSS_conservation(System* system) {
       printf(" %f, ", dGdF[i]);
     }
     printf("]\n");
-    printf("step_f: [ ");
-    for (int i = 0; i < nL-1; i++) {
-      printf(" %f, ", step_f[i]);
+    printf("MSLD Lambda Force: [ ");
+    for (int i = 0; i < nL; i++) {
+      printf(" %f, ", F_msld_l[i]);
     }
     printf(" ] \n");
-    printf("F_l: [ ");
-    for (int i = 1; i < nL; i++) {
-      printf(" %f, ", Fl[i] - step_f[i-1]);
+    printf("Histogram Force: [ ");
+    for (int i = 0; i < nL; i++) {
+      printf(" %f, ", Fl[i] - F_msld_l[i]);
+    }
+    printf(" ] \n");
+    printf("Tot Lambda Force: [ ");
+    for (int i = 0; i < nL; i++) {
+      printf(" %f, ", Fl[i]);
     }
     printf("]\n\n");
   }
@@ -721,7 +740,7 @@ void Run::test(char *line,char *token,System *system)
     ij0=system->state->lambdaCount;
     imax=system->state->atomCount;
     jmax=3;
-  } else if (testType=="oss") {
+  } else if (testType=="oss_force") {
     test_OST(system);
     return;
   } else if (testType=="oss_energy_cons") {

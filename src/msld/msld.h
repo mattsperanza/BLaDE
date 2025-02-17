@@ -60,29 +60,30 @@ class Msld {
   bool update_fe_surface = true; // add samples to abf/meta/oss
   int sample_freq = 10;
   real* dGdF_d;
+  real* lf_tmp_d;
   real* step_potential_d; // potential from histogram+abf at each lambda
   real* step_force_d; // force from bias
 
   // Histogram - uniform binning
   bool oss = true; // Perform Orthogonal Space Sampling force calculations
-  float* histogram_d; // 1000 x 100 = 1 million float = 4 -> stores sum of prefactors
+  real* histogram_d; // 1000 x 100 = 1 million float = 4 -> stores sum of prefactors
   int* histogram_index_d; // index into lambda's histogram
 
   // These params should be adjustable
-  float dUdL_std = 16; // kcal/mol
-  float L_std = .01; // not too high to cause too many reflections from mirror
-  float tempering = 2.0; // exp(-g(X,L)/tempering) = tempering gaussian_weight
-  float gaussian_weight = .05; // kcal/mol
+  real tempering = 2.0; // exp(-g(X,L)/tempering) = tempering gaussian_weight
+  real gaussian_weight = .05; // kcal/mol
 
   // Maybe change
   int L_hist_bins = 100;
   int dUdL_bins = 1000;
-  float dUdL_max = 1500;
-  float dUdL_min = -dUdL_max; // symmetric
+  real dUdL_max = 1500;
+  real dUdL_min = -dUdL_max; // symmetric
 
   // Don't change
-  float dUdL_resolution = 2.0*abs(dUdL_max)/dUdL_bins;
-  float L_resolution = 1.0/L_hist_bins;
+  real dUdL_resolution = 2.0*abs(dUdL_max)/dUdL_bins;
+  real L_resolution = 1.0/L_hist_bins;
+  real dUdL_std = 2*dUdL_resolution;// 2*bin_height
+  real L_std = 2*L_resolution; // 2*bin_width
   int dUdL_search = 5.0*(dUdL_std/dUdL_resolution); // ~5 dUdL std in each direction
   int L_search = 5.0*(L_std/L_resolution); // ~5 L std in each direction
 

@@ -1669,7 +1669,9 @@ void Potential::calc_force(int step,System *system) {
   if (system->msld->meta) {
     // TODO: Meta-dynamics
   }
+  cudaMemcpy(system->msld->lf_tmp_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDeviceToDevice);
   if (system->msld->oss) {
+    // Save prior forces
     system->state->check_nan(system->state->leapState->f, system->state->leapState->N, -1);
     // Wait on lambda force calc being complete
     cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
