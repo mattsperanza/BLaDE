@@ -73,7 +73,7 @@ class Msld {
   real tempering = 2.0; // exp(-g(X,L)/tempering) = tempering gaussian_weight
   real gaussian_weight = .05; // kcal/mol
 
-  // Maybe change
+  // Maybe change - would require rethinking of hist indexing
   int L_hist_bins = 100;
   int dUdL_bins = 1000;
   real dUdL_max = 1500;

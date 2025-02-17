@@ -1676,6 +1676,7 @@ void Potential::calc_force(int step,System *system) {
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
     // Calculate dGdF from histogram/ABF
     system->msld->getforce_hist(system,calcEnergy);
+    gpuCheck(cudaPeekAtLastError());
     system->state->check_nan(system->msld->dGdF_d, system->state->lambdaCount, 0);
     system->state->check_nan(system->state->forceBuffer_d, bufN, 1);
     gpuCheck(cudaPeekAtLastError());

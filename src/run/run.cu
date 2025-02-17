@@ -560,11 +560,13 @@ void test_OSS_conservation(System* system) {
   real random_hist[count];
   for (int i = 0; i < count; i++) {
     // Assign random number of samples between 0-50
-    random_hist[i] = 200*((float)rand())/RAND_MAX;
+    random_hist[i] = 100*((float)rand())/RAND_MAX;
     random_hist[i] *= system->msld->gaussian_weight;
   }
   cudaMemcpy(hist, random_hist, count*sizeof(real), cudaMemcpyHostToDevice);
 
+  //system->run->calcTermFlag[eenbdirect] = false;
+  //system->run->calcTermFlag[eenb14] = false;
   // 10k steps of NVT equil with oss dynamics
   system->run->freqNRG=1;
   system->state->leapParms1->dt = .002;

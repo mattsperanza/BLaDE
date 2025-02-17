@@ -3,6 +3,10 @@
 #include <cuda_runtime.h>
 
 #include "msld/msld.h"
+
+#include <math.h>
+#include <math.h>
+
 #include "system/system.h"
 #include "io/io.h"
 #include "main/gpu_check.h"
@@ -922,20 +926,22 @@ __global__ void getforce_hist_kernel(
   if (i < nL) {
     real dUdL_min = dUdL_max - 2*dUdL_max;
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
-    int X = ((int) (lambdas[i+1]*100*L_bins))/100; // round to 3rd
+    int X =  floor(lambdas[i+1]*100); // 0-.01, .01-.02
     real tmp = lambdaForce[i+1] - step_force[i] - dUdL_min; // distance from minimum
     int Y = ((int)tmp*dUdL_bins/(2.0*dUdL_max)*10)/10; // dist / bin width round to 2nd
     // Shift over X lambda windows (dUdL_bins # in each), then up to the Y'th dUdL bin
     real bias = 0;
     real dUdL_force = 0;
     real L_force = 0;
+    int index_min = hist_indicies[i];
+    int index_max = dUdL_bins*dUdL_max-1;
     for (int j = X-L_search; j <= X+L_search; j++) {
       int L_index = j;
-      real L_center = ((real)L_index)/L_bins;
+      real L_center = ((real)L_index)/L_bins - .5/L_bins;
 
       // Mirror lambda
-      L_index = L_index < 0 ? -L_index : L_index;
-      L_index = L_index >= L_bins ? L_bins - (L_index - L_bins) : L_index;
+      L_index = L_index < 0 ? -L_index-1 : L_index;
+      L_index = L_index >= L_bins ? L_bins - (L_index - (L_bins-1)) : L_index;
 
       real L_distance = (lambdas[i+1] - L_center) / L_std;
       real L_gaussian = exp(-.5*L_distance*L_distance);
@@ -945,11 +951,11 @@ __global__ void getforce_hist_kernel(
         if (dUdL_index < 0 || dUdL_index >= dUdL_bins) { // no mirror in this direction
           continue; // no bias exists outside of histogram
         }
-        real dUdL_center = dUdL_min + ((real)dUdL_index*2*dUdL_max)/dUdL_bins;
+        real dUdL_center = dUdL_min + ((real)dUdL_index*2*dUdL_max)/dUdL_bins + .5*2*dUdL_max/dUdL_bins;
         real dUdL_distance = (lambdaForce[i+1] - dUdL_center) / dUdL_std;
         real dUdL_gaussian = exp(-.5*dUdL_distance*dUdL_distance);
 
-        real weight = histogram[index];
+        real weight = index >= index_min && index <= index_max ? histogram[index] : 0;
         real tmp_bias = weight * L_gaussian * dUdL_gaussian;
 
         bias += tmp_bias;
@@ -968,9 +974,6 @@ __global__ void getforce_hist_kernel(
     dGdF[i+1] = dUdL_force;
     if (i == 0) { // shouldn't have to do this
       dGdF[0] = 0.0;
-    }
-    if (isnan(dUdL_force) || isnan(L_force) || isnan(bias)) {
-      printf("dUdL: %f, L: %f, bias: %f\n\n\n", dUdL_force, L_force, bias);
     }
   }
   if (energy) {
