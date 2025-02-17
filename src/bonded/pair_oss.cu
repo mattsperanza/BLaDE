@@ -149,10 +149,6 @@ __global__ void getforce_14pair_kernel_oss(
     dr=real3_subpbc<flagBox>(xi,xj,box);
     r=real3_mag<real>(dr);
 
-    // Everything below is basically (see lambda scaling for diff)
-    // a cut and paste from nbdirect_oss
-    // so I don't have to debug in 2 places
-    // Scaling
     b[0]=0xFFFF & pp.siteBlock[0];
     b[1]=0xFFFF & pp.siteBlock[1];
     if (b[0]){ // only perform if alchem atom present
@@ -165,7 +161,7 @@ __global__ void getforce_14pair_kernel_oss(
       real dGdFjtmp = dGdF[b[1]];
       real lixljtmp, dlixlj_dli, dlixlj_dlj, dlixlj_dli_dlj;
       if ((pp.siteBlock[0]&0xFFFF0000)==(pp.siteBlock[1]&0xFFFF0000)) { // same site (m == n)
-        printf("Unexpected scaling case occurred! Don't expect this to run! Contact devs!");
+        printf("Unexpected scaling case occurred! Didn't expect this to run! Contact devs!\n");
       }
       lixljtmp = li*ljtmp;
       dlixlj_dli = bi ? ljtmp : 0;
@@ -192,7 +188,6 @@ __global__ void getforce_14pair_kernel_oss(
         if (useSoftCore) {
           if (bi || bjtmp) { // if either is a site
             if (r<rSoft) {
-              // Original soft
               real rdivrs=r/rSoft;
               rEff=1-((real)0.5)*rdivrs;
               rEff=rEff*rdivrs*rdivrs*rdivrs+((real)0.5); // Soft-core: rEff = rL * (.5 + (r/rL)^3 - .5*(r/rL)^4)

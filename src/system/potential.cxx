@@ -3,6 +3,8 @@
 #include <stdlib.h>
 
 #include "system/potential.h"
+
+#include "coordinates.h"
 #include "system/system.h"
 #include "io/io.h"
 #include "system/parameters.h"
@@ -1635,15 +1637,8 @@ void Potential::calc_force(int step,System *system) {
     cudaStreamWaitEvent(r->updateStream,r->nbdirectComplete,0);
   }
 
-  if (system->idCount>1) {
-    system->state->gather_force(system,calcEnergy);
-    if (system->id==0) {
-      getforce_nbdirect_reduce(system,calcEnergy);
-    }
-  }
 
-  calc_virtual_force(system);
-
+  //calc_virtual_force(system);
   // cudaEventRecord(r->forceComplete,r->updateStream);
 
   // ABF, META, & OSS Calculations
@@ -1655,7 +1650,7 @@ void Potential::calc_force(int step,System *system) {
     // ABF & OSS update/calc energy&force w/ step_p, step_f, & lambdaF
   }
   // TODO: Make sure these three are race-condition safe
-  if (system->msld->abf) {
+  if (system->msld->abf) { // ABF should go first since we want bias that was used to sample this dU_msld
     // Wait on lambda force calc
     cudaStreamWaitEvent(r->abfBias, r->nbdirectComplete, 0);
     cudaStreamWaitEvent(r->abfBias, r->nbrecipComplete, 0);
@@ -1671,8 +1666,9 @@ void Potential::calc_force(int step,System *system) {
   }
   cudaMemcpy(system->msld->lf_tmp_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDeviceToDevice);
   if (system->msld->oss) {
+    int bufN = system->state->atomCount*3 + system->state->lambdaCount*2;
     // Save prior forces
-    system->state->check_nan(system->state->leapState->f, system->state->leapState->N, -1);
+    system->state->check_nan(system->state->forceBuffer_d, bufN, -1);
     // Wait on lambda force calc being complete
     cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->nbrecipComplete, 0);
@@ -1681,6 +1677,7 @@ void Potential::calc_force(int step,System *system) {
     // Calculate dGdF from histogram/ABF
     system->msld->getforce_hist(system,calcEnergy);
     system->state->check_nan(system->msld->dGdF_d, system->state->lambdaCount, 0);
+    system->state->check_nan(system->state->forceBuffer_d, bufN, 1);
     gpuCheck(cudaPeekAtLastError());
     if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
       system->msld->add_sample_hist(system);
@@ -1692,25 +1689,25 @@ void Potential::calc_force(int step,System *system) {
     if (system->id == helper) {
       cudaStreamWaitEvent(r->ossBonded, r->ossForceBegin, 0);
       getforce_bond_oss(system);
-      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 1);
+      system->state->check_nan(system->state->forceBuffer_d, bufN, 2);
       gpuCheck(cudaPeekAtLastError());
       getforce_angle_oss(system);
-      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 2);
+      system->state->check_nan(system->state->forceBuffer_d, bufN, 3);
       gpuCheck(cudaPeekAtLastError());
       getforce_dihe_oss(system);
-      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 3);
+      system->state->check_nan(system->state->forceBuffer_d, bufN, 4);
       gpuCheck(cudaPeekAtLastError());
       getforce_impr_oss(system);
-      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 4);
+      system->state->check_nan(system->state->forceBuffer_d, bufN, 5);
       gpuCheck(cudaPeekAtLastError());
       getforce_cmap_oss(system);
-      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 5);
+      system->state->check_nan(system->state->forceBuffer_d, bufN, 6);
       gpuCheck(cudaPeekAtLastError());
       getforce_nb14_oss(system);
-      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 6);
+      system->state->check_nan(system->state->forceBuffer_d, bufN, 7);
       gpuCheck(cudaPeekAtLastError());
       getforce_nbex_oss(system);
-      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 7);
+      system->state->check_nan(system->state->forceBuffer_d, bufN, 8);
       gpuCheck(cudaPeekAtLastError());
       cudaEventRecord(r->ossBondedComplete, r->ossBonded);
       cudaStreamWaitEvent(r->updateStream, r->ossBondedComplete, 0);
@@ -1719,7 +1716,7 @@ void Potential::calc_force(int step,System *system) {
       cudaStreamWaitEvent(r->ossDirect, r->ossForceBegin, 0);
       getforce_nbdirect_oss(system);
       gpuCheck(cudaPeekAtLastError());
-      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 8);
+      system->state->check_nan(system->state->forceBuffer_d, bufN, 9);
       cudaEventRecord(r->ossDirectComplete, r->ossDirect);
       cudaStreamWaitEvent(r->updateStream, r->ossDirectComplete, 0);
     }
@@ -1727,20 +1724,21 @@ void Potential::calc_force(int step,System *system) {
       cudaStreamWaitEvent(r->ossRecip, r->ossForceBegin, 0);
       getforce_ewaldself_oss(system);
       gpuCheck(cudaPeekAtLastError());
-      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 9);
+      system->state->check_nan(system->state->forceBuffer_d, bufN, 10);
       gpuCheck(cudaPeekAtLastError());
       getforce_ewald_oss(system);
-      system->state->check_nan(system->state->leapState->f, system->state->leapState->N, 10);
+      system->state->check_nan(system->state->forceBuffer_d, bufN, 11);
       gpuCheck(cudaPeekAtLastError());
       cudaEventRecord(r->ossRecipComplete, r->ossRecip);
       cudaStreamWaitEvent(r->updateStream, r->ossRecipComplete, 0);
     }
-    // Call gather_force & nbdirect_oss_force -> multi-gpu?
-    if (system->id>1) {
-      system->state->gather_force(system, false); // Do I need to call this?
-      if (system->id==0) {
-        getforce_nbdirect_oss_reduce(system);
-      }
+  }
+
+  calc_virtual_force(system);
+  if (system->idCount>1) {
+    system->state->gather_force(system,calcEnergy);
+    if (system->id==0) {
+      getforce_nbdirect_reduce(system,calcEnergy);
     }
   }
 }

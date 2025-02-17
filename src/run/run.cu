@@ -560,7 +560,7 @@ void test_OSS_conservation(System* system) {
   real random_hist[count];
   for (int i = 0; i < count; i++) {
     // Assign random number of samples between 0-50
-    random_hist[i] = 50*((float)rand())/RAND_MAX;
+    random_hist[i] = 200*((float)rand())/RAND_MAX;
     random_hist[i] *= system->msld->gaussian_weight;
   }
   cudaMemcpy(hist, random_hist, count*sizeof(real), cudaMemcpyHostToDevice);
@@ -748,7 +748,7 @@ void Run::test(char *line,char *token,System *system)
     return;
   }
   else {
-    fatal(__FILE__,__LINE__,"Error: test type %s does not match alchemical or spatial\n",testType.c_str());
+    fatal(__FILE__,__LINE__,"Error: test type %s does not match alchemical, spatial, oss_force, or oss_energy_cons \n",testType.c_str());
   }
 
   for (i=0; i<imax; i++) {

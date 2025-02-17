@@ -271,22 +271,6 @@ __global__ void getforce_nbdirect_oss_kernel(
                 dlixlj_dlj = bjtmp ? li : 0;
                 dlixlj_dli_dlj = bi && bjtmp ? 1 : 0;
               }
-              if (isnan(dGdFi)) {
-                printf("dGdFi is nan bi=%d, li=%f, 0xFFFF & bi: %d\n", bi, li, 0xFFFF&bi);
-                dGdFi = 0;
-              }
-              if (isinf(dGdFi)) {
-                printf("dGdFi is inf bi=%d, li=%f, 0xFFFF & bi: %d\n", bi, li, 0xFFFF&bi);
-                dGdFi = 0;
-              }
-              if (isnan(dGdFjtmp)) {
-                printf("dGdFjtmp is nan bjtmp=%d, ljtmp=%f, 0xFFFF & bjtmp: %d\n", bjtmp, ljtmp, 0xFFFF&bjtmp);
-                dGdFjtmp = 0;
-              }
-              if (isinf(dGdFjtmp)) {
-                printf("dGdFjtmp is inf bjtmp=%d, ljtmp=%f, 0xFFFF & bjtmp: %d\n", bjtmp, ljtmp, 0xFFFF&bjtmp);
-                dGdFjtmp = 0;
-              }
 
               // Softcore OST
               rEff=r;
@@ -472,10 +456,6 @@ __global__ void getforce_nbdirect_oss_kernel(
               fljtmp_ost = dGdFi*d2U_dlami_dlamj + dGdFjtmp*d2U_dlamj2;
 
               // Accumulate ost forces
-              if (isnan(fij) || isnan(fli) || isnan(fljtmp)) {
-                printf("bi: %d, bjtmp: %d, li: %f, lj: %f, dGdFi: %f, dGdFj, %f, fij: %f, fli: %f, flj: %f, fij_ost: %f, fli_ost: %f, fljtmp_ost: %f\n",
-                  bi, bjtmp, li, ljtmp, dGdFi, dGdFjtmp, fij, fli, fljtmp, fij_ost, fli_ost, fljtmp_ost);
-              }
               fij += fij_ost;
               fli += fli_ost;
               fljtmp += fljtmp_ost;

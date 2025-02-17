@@ -96,6 +96,7 @@ class Domdec {
   void assign_blocks(System *system);
   void pack_positions(System *system);
   void unpack_forces(System *system);
+  void unpack_forces_oss(System *system);
   // From domdec/cull.cu
   void cull_blocks(System *system);
   // From domdec/assign_excl.cu

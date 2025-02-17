@@ -453,3 +453,12 @@ void Domdec::unpack_forces(System *system)
     unpack_forces_kernel<<<(32*N+BLUP-1)/BLUP,BLUP,0,r->nbdirectStream>>>(N,blockBounds_d,localToGlobal_d,(real3_f*)system->state->force_d,localForce_d);
   }
 }
+
+void Domdec::unpack_forces_oss(System *system)
+{
+  Run *r=system->run;
+  int N=blockCount[idCount];
+  if (id>=0) {
+    unpack_forces_kernel<<<(32*N+BLUP-1)/BLUP,BLUP,0,r->ossDirect>>>(N,blockBounds_d,localToGlobal_d,(real3_f*)system->state->force_d,localForce_d);
+  }
+}
