@@ -1666,9 +1666,6 @@ void Potential::calc_force(int step,System *system) {
   }
   cudaMemcpy(system->msld->lf_tmp_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDeviceToDevice);
   if (system->msld->oss) {
-    int bufN = system->state->atomCount*3 + system->state->lambdaCount*2;
-    // Save prior forces
-    system->state->check_nan(system->state->forceBuffer_d, bufN, -1);
     // Wait on lambda force calc being complete
     cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->nbrecipComplete, 0);
@@ -1677,8 +1674,6 @@ void Potential::calc_force(int step,System *system) {
     // Calculate dGdF from histogram/ABF
     system->msld->getforce_hist(system,calcEnergy);
     gpuCheck(cudaPeekAtLastError());
-    system->state->check_nan(system->msld->dGdF_d, system->state->lambdaCount, 0);
-    system->state->check_nan(system->state->forceBuffer_d, bufN, 1);
     gpuCheck(cudaPeekAtLastError());
     if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
       system->msld->add_sample_hist(system);
@@ -1690,46 +1685,25 @@ void Potential::calc_force(int step,System *system) {
     if (system->id == helper) {
       cudaStreamWaitEvent(r->ossBonded, r->ossForceBegin, 0);
       getforce_bond_oss(system);
-      system->state->check_nan(system->state->forceBuffer_d, bufN, 2);
-      gpuCheck(cudaPeekAtLastError());
       getforce_angle_oss(system);
-      system->state->check_nan(system->state->forceBuffer_d, bufN, 3);
-      gpuCheck(cudaPeekAtLastError());
       getforce_dihe_oss(system);
-      system->state->check_nan(system->state->forceBuffer_d, bufN, 4);
-      gpuCheck(cudaPeekAtLastError());
       getforce_impr_oss(system);
-      system->state->check_nan(system->state->forceBuffer_d, bufN, 5);
-      gpuCheck(cudaPeekAtLastError());
       getforce_cmap_oss(system);
-      system->state->check_nan(system->state->forceBuffer_d, bufN, 6);
-      gpuCheck(cudaPeekAtLastError());
       getforce_nb14_oss(system);
-      system->state->check_nan(system->state->forceBuffer_d, bufN, 7);
-      gpuCheck(cudaPeekAtLastError());
       getforce_nbex_oss(system);
-      system->state->check_nan(system->state->forceBuffer_d, bufN, 8);
-      gpuCheck(cudaPeekAtLastError());
       cudaEventRecord(r->ossBondedComplete, r->ossBonded);
       cudaStreamWaitEvent(r->updateStream, r->ossBondedComplete, 0);
     }
     if (system->id>=0) {
       cudaStreamWaitEvent(r->ossDirect, r->ossForceBegin, 0);
       getforce_nbdirect_oss(system);
-      gpuCheck(cudaPeekAtLastError());
-      system->state->check_nan(system->state->forceBuffer_d, bufN, 9);
       cudaEventRecord(r->ossDirectComplete, r->ossDirect);
       cudaStreamWaitEvent(r->updateStream, r->ossDirectComplete, 0);
     }
     if (system->id==0) {
       cudaStreamWaitEvent(r->ossRecip, r->ossForceBegin, 0);
       getforce_ewaldself_oss(system);
-      gpuCheck(cudaPeekAtLastError());
-      system->state->check_nan(system->state->forceBuffer_d, bufN, 10);
-      gpuCheck(cudaPeekAtLastError());
       getforce_ewald_oss(system);
-      system->state->check_nan(system->state->forceBuffer_d, bufN, 11);
-      gpuCheck(cudaPeekAtLastError());
       cudaEventRecord(r->ossRecipComplete, r->ossRecip);
       cudaStreamWaitEvent(r->updateStream, r->ossRecipComplete, 0);
     }
