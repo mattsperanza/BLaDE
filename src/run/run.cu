@@ -558,23 +558,16 @@ void test_OSS_conservation(System* system) {
   int hight = system->msld->dUdL_bins;
   int count = nL*width*hight;
   real random_hist[count];
+
+  // Assign random number of samples between 0-50
   for (int i = 0; i < count; i++) {
-    // Assign random number of samples between 0-50
-    random_hist[i] = 20*((float)rand())/RAND_MAX;
+    random_hist[i] = 50*((float)rand())/RAND_MAX;
     random_hist[i] *= system->msld->gaussian_weight;
   }
   cudaMemcpy(hist, random_hist, count*sizeof(real), cudaMemcpyHostToDevice);
 
-  //system->run->calcTermFlag[eenbdirect] = false;
-  //system->run->calcTermFlag[eenb14] = false;
-  // 10k steps of NVT equil with oss dynamics
-  system->run->shakeTolerance = 1e-1;
-  system->run->freqNRG=1;
-  system->state->leapParms1->dt = .002;
-  system->state->leapParms1->gamma = 1;
-  system->state->leapParms1->kT = kB*298;
+  // NPT/NVT for 10k steps
   printf("Running 10k steps with oss to equilibrate!\n");
-  system->msld->oss = true;
   for (int step=0; step<10000; step++) {
     system->domdec->update_domdec(system,(step%system->domdec->freqDomdec)==0);
     system->potential->calc_force(step,system);
@@ -638,11 +631,10 @@ void test_OSS_conservation(System* system) {
     printf("]\n\n");
   }
 
-  // Turn on NVE
+  // Turn on NVE for 500k w/ oss
+  printf("Running 500k steps with oss to check energy conservation!\n");
   system->run->freqNPT = 0; // turn off pressure coupling
   system->state->leapParms1->gamma = 0; // turn off langevin
-  // 500k steps dynamics
-  printf("Running 500k steps with oss to check energy conservation!\n");
   real eStart = system->state->energy[eetotal];
   for (int step=0; step<500000; step++) {
     system->domdec->update_domdec(system,(step%system->domdec->freqDomdec)==0);

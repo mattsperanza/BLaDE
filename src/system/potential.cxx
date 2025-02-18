@@ -1673,11 +1673,8 @@ void Potential::calc_force(int step,System *system) {
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
     // Calculate dGdF from histogram/ABF
     system->msld->getforce_hist(system,calcEnergy);
-    gpuCheck(cudaPeekAtLastError());
-    gpuCheck(cudaPeekAtLastError());
     if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
       system->msld->add_sample_hist(system);
-      gpuCheck(cudaPeekAtLastError());
     }
     cudaEventRecord(r->ossBiasComplete, r->ossBias);
     // Wait on calculation of dGdF then add OSS forces directly into force array
