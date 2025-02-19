@@ -1661,14 +1661,14 @@ void Potential::calc_force(int step,System *system) {
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
     // Calculate dGdF from histogram/ABF
     system->msld->getforce_hist(system,calcEnergy);
+    gpuCheck(cudaPeekAtLastError());
     if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
       system->msld->add_sample_hist(system);
     }
     cudaEventRecord(r->ossBiasComplete, r->ossBias);
     // Wait on calculation of dGdF then add OSS forces directly into force array
-    cudaEventRecord(r->ossForceBegin, r->ossBias);
     if (system->id == helper) {
-      cudaStreamWaitEvent(r->ossBonded, r->ossForceBegin, 0);
+      cudaStreamWaitEvent(r->ossBonded, r->ossBiasComplete, 0);
       getforce_bond_oss(system);
       getforce_angle_oss(system);
       getforce_dihe_oss(system);
@@ -1680,15 +1680,17 @@ void Potential::calc_force(int step,System *system) {
       cudaStreamWaitEvent(r->updateStream, r->ossBondedComplete, 0);
     }
     if (system->id>=0) {
-      cudaStreamWaitEvent(r->ossDirect, r->ossForceBegin, 0);
+      cudaStreamWaitEvent(r->ossDirect, r->ossBiasComplete, 0);
       getforce_nbdirect_oss(system);
+      gpuCheck(cudaPeekAtLastError());
       cudaEventRecord(r->ossDirectComplete, r->ossDirect);
       cudaStreamWaitEvent(r->updateStream, r->ossDirectComplete, 0);
     }
     if (system->id==0) {
-      cudaStreamWaitEvent(r->ossRecip, r->ossForceBegin, 0);
+      cudaStreamWaitEvent(r->ossRecip, r->ossBiasComplete, 0);
       getforce_ewaldself_oss(system);
       getforce_ewald_oss(system);
+      gpuCheck(cudaPeekAtLastError());
       cudaEventRecord(r->ossRecipComplete, r->ossRecip);
       cudaStreamWaitEvent(r->updateStream, r->ossRecipComplete, 0);
     }
@@ -1699,8 +1701,10 @@ void Potential::calc_force(int step,System *system) {
     cudaStreamWaitEvent(r->abfBias, r->ossBiasComplete, 0);
     cudaStreamWaitEvent(r->abfBias, r->metaBiasComplete, 0);
     system->msld->getforce_abf(system, calcEnergy);
+    gpuCheck(cudaPeekAtLastError());
     if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
       system->msld->add_sample_abf(system);
+      gpuCheck(cudaPeekAtLastError());
     }
   }
 

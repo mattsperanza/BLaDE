@@ -71,20 +71,20 @@ class Msld {
   int* histogram_index_d; // index into lambda's histogram
 
   // These params should be adjustable
-  real tempering = 10.0; // exp(-g(X,L)/tempering) = tempering gaussian_weight
+  real tempering = 20.0; // exp(-g(X,L)/tempering) = tempering gaussian_weight
   real gaussian_weight = .05; // kcal/mol
 
-  // Maybe change - would require rethinking of hist indexing
-  int L_hist_bins = 100;
+  // Maybe change - would require rethinking of hist indexing?
+  int L_hist_centers = 101;
   int dUdL_bins = 1000;
   real dUdL_max = 1500;
   real dUdL_min = -dUdL_max; // symmetric
 
   // Don't change
   real dUdL_resolution = 2.0*abs(dUdL_max)/dUdL_bins;
-  real L_resolution = 1.0/L_hist_bins;
-  real dUdL_std = 2*dUdL_resolution;// 2*bin_height
-  real L_std = 2*L_resolution; // 2*bin_width
+  real L_resolution = 1.0/L_hist_centers;
+  real dUdL_std = 3*dUdL_resolution;// 2*bin_height
+  real L_std = 3*L_resolution; // 2*bin_width
   int dUdL_search = 5.0*(dUdL_std/dUdL_resolution); // ~5 dUdL std in each direction
   int L_search = 5.0*(L_std/L_resolution); // ~5 L std in each direction
 
@@ -92,8 +92,8 @@ class Msld {
 
   // ABF - uniform binning - separate from histogram estimation
   bool abf = false;
-  int nFull = 0;
-  int L_abf_bins = 30;
+  int nFull = 200;
+  int L_abf_centers = 101; // this is also the max index
   int* abf_index_d; // index into abf histogram
   real* lambda_counts_d; // counts in bin -> also used for 1D meta
   real* ensemble_dUdL_d;

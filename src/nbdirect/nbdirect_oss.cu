@@ -515,6 +515,7 @@ __global__ void getforce_nbdirect_oss_kernel(
 template <bool flagBox,bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
 void getforce_nbdirect_ossTTTT(System *system,box_type box)
 {
+  // TODO: Comment out these lines prior to using streams
   system->domdec->pack_positions(system);
   system->domdec->recull_blocks(system);
 
@@ -540,7 +541,7 @@ void getforce_nbdirect_ossTTTT(System *system,box_type box)
     system->msld->dGdF_d);
 
   // Note this should be done once per force calculation and is potentially done here instead of in reg nbdirect
-  system->domdec->unpack_forces(system);
+  system->domdec->unpack_forces_oss(system);
 }
 
 template <bool flagBox,bool useSoftCore,bool usevdWSwitch,typename box_type>
