@@ -230,7 +230,11 @@ void State::update(int step,System *system)
   Run *r=system->run;
 
   if (system->run->freqNPT>0 && (system->run->step%system->run->freqNPT)==0) {
+    // TODO: Figure out a better way of doing this
+    bool tmp = system->msld->update_fe_surface;
+    system->msld->update_fe_surface = false;
     pressure_coupling(system);
+    system->msld->update_fe_surface = tmp;
   }
 
 #ifdef REPLICAEXCHANGE
@@ -276,15 +280,7 @@ void State::update(int step,System *system)
   // holonomic_backup_position(leapState,positionCons_d,r->updateStream); // done in VVhbpR
   // update_R<<<(leapState->N+BLUP-1)/BLUP,BLUP,0,r->updateStream>>>(*leapState,*leapParms2,*lambdaLeapParms2); // done in VVhbpR
   // Position Constraint
-  set_fd(system);
-  check_nan(system->state->positionBuffer_fd, system->state->atomCount*3, -2);
-  check_nan(system->state->leapState->v, system->state->atomCount*3, -3);
-  check_nan(system->state->forceBuffer_d, system->state->atomCount*3, -4);
-  check_nan(system->state->leapState->f, system->state->atomCount*3, -5);
   holonomic_position(system);
-  set_fd(system);
-  check_nan(system->state->leapState->v, system->state->atomCount*3, -6);
-  check_nan(system->state->positionBuffer_fd, system->state->atomCount*3, -7);
   // Apply random drift
   // update_OO<<<(leapState->N+BLUP-1)/BLUP,BLUP,0,r->updateStream>>>(*leapState,*leapParms2,*lambdaLeapParms2);
   // holonomic_velocity(system); // superfluous, I think

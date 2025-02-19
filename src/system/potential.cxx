@@ -1638,33 +1638,21 @@ void Potential::calc_force(int step,System *system) {
   }
 
 
-  //calc_virtual_force(system);
   // cudaEventRecord(r->forceComplete,r->updateStream);
 
   // ABF, META, & OSS Calculations
+  // Save dU_msld + ALF biases
+  cudaMemcpy(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDeviceToDevice);
   if (system->msld->oss || system->msld->abf || system->msld->meta) {
-    // TODO: make this async safe
-    // TODO: add msld bias & force into respective
+    // TODO: make this async safe -> add alf bias & force into respective local
     cudaMemset(system->msld->step_potential_d, 0, (system->state->lambdaCount-1)*sizeof(real));
     cudaMemset(system->msld->step_force_d, 0, (system->state->lambdaCount-1)*sizeof(real));
     // ABF & OSS update/calc energy&force w/ step_p, step_f, & lambdaF
   }
   // TODO: Make sure these three are race-condition safe
-  if (system->msld->abf) { // ABF should go first since we want bias that was used to sample this dU_msld
-    // Wait on lambda force calc
-    cudaStreamWaitEvent(r->abfBias, r->nbdirectComplete, 0);
-    cudaStreamWaitEvent(r->abfBias, r->nbrecipComplete, 0);
-    cudaStreamWaitEvent(r->abfBias, r->biaspotComplete, 0); // this is why we need to add into step_potential/force above
-    cudaStreamWaitEvent(r->abfBias, r->bondedComplete, 0);
-    system->msld->getforce_abf(system, calcEnergy);
-    if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
-      system->msld->add_sample_abf(system);
-    }
-  }
   if (system->msld->meta) {
     // TODO: Meta-dynamics
   }
-  cudaMemcpy(system->msld->lf_tmp_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDeviceToDevice);
   if (system->msld->oss) {
     // Wait on lambda force calc being complete
     cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
@@ -1703,6 +1691,16 @@ void Potential::calc_force(int step,System *system) {
       getforce_ewald_oss(system);
       cudaEventRecord(r->ossRecipComplete, r->ossRecip);
       cudaStreamWaitEvent(r->updateStream, r->ossRecipComplete, 0);
+    }
+  }
+  // Need to wait for what step_potential is to properly weight sample - add alf bias?
+  if (system->msld->abf) { 
+    // Wait on lambda force calc
+    cudaStreamWaitEvent(r->abfBias, r->ossBiasComplete, 0);
+    cudaStreamWaitEvent(r->abfBias, r->metaBiasComplete, 0);
+    system->msld->getforce_abf(system, calcEnergy);
+    if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
+      system->msld->add_sample_abf(system);
     }
   }
 

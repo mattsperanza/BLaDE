@@ -55,22 +55,23 @@ class Msld {
   struct VariableBias *variableBias;
   struct VariableBias *variableBias_d;
 
-  // Orthogonal Space Sampling Variables
+  // FE Estimation Variables -> need to be on/off before msld::init is called since no other init_XXX method call exists
   // Mem not allocated if not set since histogram so large
   bool update_fe_surface = true; // add samples to abf/meta/oss
   int sample_freq = 10;
   real* dGdF_d;
-  real* lf_tmp_d;
+  real* dU_msld_d;
   real* step_potential_d; // potential from histogram+abf at each lambda
   real* step_force_d; // force from bias
 
   // Histogram - uniform binning
-  bool oss = true; // Perform Orthogonal Space Sampling force calculations
+  bool oss = false; // Perform Orthogonal Space Sampling force calculations
   real* histogram_d; // 1000 x 100 = 1 million float = 4 -> stores sum of prefactors
+  real* hist_potential_d; // gi(Li, FL)
   int* histogram_index_d; // index into lambda's histogram
 
   // These params should be adjustable
-  real tempering = 2.0; // exp(-g(X,L)/tempering) = tempering gaussian_weight
+  real tempering = 10.0; // exp(-g(X,L)/tempering) = tempering gaussian_weight
   real gaussian_weight = .05; // kcal/mol
 
   // Maybe change - would require rethinking of hist indexing
@@ -87,11 +88,12 @@ class Msld {
   int dUdL_search = 5.0*(dUdL_std/dUdL_resolution); // ~5 dUdL std in each direction
   int L_search = 5.0*(L_std/L_resolution); // ~5 L std in each direction
 
-  // ABF - uniform binning - separate from histogram estimation
   bool meta = false;
-  bool abf = true;
+
+  // ABF - uniform binning - separate from histogram estimation
+  bool abf = false;
   int nFull = 0;
-  int L_abf_bins = 200;
+  int L_abf_bins = 30;
   int* abf_index_d; // index into abf histogram
   real* lambda_counts_d; // counts in bin -> also used for 1D meta
   real* ensemble_dUdL_d;
@@ -165,10 +167,16 @@ class Msld {
   void getforce_atomRestraints(System *system,bool calcEnergy);
   void getforce_chargeRestraints(System *system,bool calcEnergy);
 
-  void add_sample_hist(System *system);
+  // On the fly enhanced sampling
+  void init_meta(System* system);
+
+  void init_abf(System* system);
   void add_sample_abf(System *system);
-  void getforce_hist(System *system, bool calcEnergy);
   void getforce_abf(System *system, bool calcEnergy);
+
+  void init_oss(System* system);
+  void add_sample_hist(System *system);
+  void getforce_hist(System *system, bool calcEnergy);
 };
 
 void parse_msld(char *line,System *system);
