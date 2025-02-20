@@ -1604,6 +1604,7 @@ void Potential::calc_force(int step,System *system) {
     getforce_cmap(system,calcEnergy);
     getforce_nb14(system,calcEnergy);
     getforce_nbex(system,calcEnergy);
+    gpuCheck(cudaPeekAtLastError());
     cudaEventRecord(r->bondedComplete,r->bondedStream);
     cudaStreamWaitEvent(r->updateStream,r->bondedComplete,0);
   }
@@ -1611,7 +1612,9 @@ void Potential::calc_force(int step,System *system) {
   if (system->id==0) {
     cudaStreamWaitEvent(r->nbrecipStream,r->forceBegin,0);
     getforce_ewaldself(system,calcEnergy);
+    gpuCheck(cudaPeekAtLastError());
     getforce_ewald(system,calcEnergy);
+    gpuCheck(cudaPeekAtLastError());
     system->rngGPU->rand_normal(s->leapState->N,s->leapState->random,r->nbrecipStream);
     cudaEventRecord(r->nbrecipComplete,r->nbrecipStream);
     cudaStreamWaitEvent(r->updateStream,r->nbrecipComplete,0);
@@ -1624,8 +1627,10 @@ void Potential::calc_force(int step,System *system) {
     system->msld->getforce_thetaBias(system,calcEnergy);
     system->msld->getforce_atomRestraints(system,calcEnergy);
     system->msld->getforce_chargeRestraints(system,calcEnergy);
+    gpuCheck(cudaPeekAtLastError());
     getforce_noe(system,calcEnergy);
     getforce_harm(system,calcEnergy);
+    gpuCheck(cudaPeekAtLastError());
     cudaEventRecord(r->biaspotComplete,r->biaspotStream);
     cudaStreamWaitEvent(r->updateStream,r->biaspotComplete,0);
   }
@@ -1633,6 +1638,7 @@ void Potential::calc_force(int step,System *system) {
   if (system->domdec->id>=0) {
     cudaStreamWaitEvent(r->nbdirectStream,r->forceBegin,0);
     getforce_nbdirect(system,calcEnergy);
+    gpuCheck(cudaPeekAtLastError());
     cudaEventRecord(r->nbdirectComplete,r->nbdirectStream);
     cudaStreamWaitEvent(r->updateStream,r->nbdirectComplete,0);
   }
@@ -1642,11 +1648,14 @@ void Potential::calc_force(int step,System *system) {
 
   // ABF, META, & OSS Calculations
   // Save dU_msld + ALF biases
+  gpuCheck(cudaPeekAtLastError());
   cudaMemcpy(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDeviceToDevice);
   if (system->msld->oss || system->msld->abf || system->msld->meta) {
     // TODO: make this async safe -> add alf bias & force into respective local
+    gpuCheck(cudaPeekAtLastError());
     cudaMemset(system->msld->step_potential_d, 0.0, (system->state->lambdaCount-1)*sizeof(real));
     cudaMemset(system->msld->step_force_d, 0.0, (system->state->lambdaCount-1)*sizeof(real));
+    gpuCheck(cudaPeekAtLastError());
     // ABF & OSS update/calc energy&force w/ step_p, step_f, & lambdaF
   }
   // TODO: Make sure these three are race-condition safe

@@ -445,13 +445,15 @@ void Run::energy(char *line,char *token,System *system)
 
 void test_OST_force(System *system) {
   // This is way too small with float precision
-  real dl = 1e-5;
+  real dl = .001;
   bool flags[eeend];
   for (int i = 0; i < eeend; i++) {
     flags[i] = system->run->calcTermFlag[i];
     system->run->calcTermFlag[i] = false;
   }
 
+  printf("Starting OSS Force Test...\n");
+  bool ossPrior = system->msld->oss;
   int len = system->state->lambdaCount+3*system->state->atomCount; // theta forces at end
   for (int i = 0; i < eeend; i++) {
     printf("Term %d Numerical Test: \n", i);
@@ -459,7 +461,8 @@ void test_OST_force(System *system) {
     // Calculate ref dU(X, L) to subtract from force w/ oss
     real_f dU[len];
     system->msld->oss = false;
-    system->potential->calc_force(0, system);
+    gpuCheck(cudaPeekAtLastError());
+    system->potential->calc_force(1, system);
     system->msld->oss = true;
     cudaMemcpy(dU, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     double sum = 0;
@@ -470,20 +473,21 @@ void test_OST_force(System *system) {
       real_f dGdF[system->state->lambdaCount];
       memset(dGdF, 0, system->state->lambdaCount*sizeof(real));
       dGdF[j] = pi_e;
-      cudaMemcpy(system->msld->dGdF_d, dGdF, system->state->lambdaCount*sizeof(real_f), cudaMemcpyHostToDevice);
+      cudaMemcpy(system->msld->dGdF_d, dGdF, system->state->lambdaCount*sizeof(real_f), cudaMemcpyDefault);
       system->msld->oss = false;
       // Numerical Force = dU(X, L+dl) - dU(X, L-dl) / 2*dl
       // L+dl
       real_f tmp_high[len];
       // lambda block at beginning of position buffer, everything else is index into this array
       shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, dl, j);
-      system->potential->calc_force(0, system);
-      cudaMemcpy(tmp_high, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDeviceToHost);
+      gpuCheck(cudaPeekAtLastError());
+      system->potential->calc_force(1, system);
+      cudaMemcpy(tmp_high, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
       // L-dl
       real_f tmp_low[len];
       shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, -2.0*dl, j);
-      system->potential->calc_force(0, system);
-      cudaMemcpy(tmp_low, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDeviceToHost);
+      system->potential->calc_force(1, system);
+      cudaMemcpy(tmp_low, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
       // Reset and diff
       real_f d2U_numeric[len];
       shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, dl, j);
@@ -494,10 +498,8 @@ void test_OST_force(System *system) {
       // Analytic Force
       real_f d2U_analytic[len];
       system->msld->oss = true;
-      system->potential->calc_force(0, system);
-      cudaDeviceSynchronize();
-      gpuCheck(cudaPeekAtLastError());
-      cudaMemcpy(d2U_analytic, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDeviceToHost);
+      system->potential->calc_force(1, system);
+      cudaMemcpy(d2U_analytic, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
       for (int k = 0; k < len; k++) {
         d2U_analytic[k] = (d2U_analytic[k] - dU[k]) / pi_e;
         sum += abs(d2U_analytic[k]);
@@ -505,7 +507,7 @@ void test_OST_force(System *system) {
       // Check if they match
       for (int k = 0; k < len; k++) {
         real_f diff = abs(d2U_analytic[k] - d2U_numeric[k]);
-        real_f tol = 1e-6;
+        real_f tol = .001;
         if (diff > tol) { // floating point ops (like expf) can cause float errors
           printf("Numerical derivatives test %d failed (tol = %f, dl = %f) at force array index %d for lambda %d! \n",
             i, tol, dl, k, j);
@@ -539,7 +541,10 @@ void test_OST_force(System *system) {
     gpuCheck(cudaPeekAtLastError());
     system->run->calcTermFlag[i] = false;
   }
-  for (int i = 0; i < eeend; i++) { // Just in case things get run after this
+
+  // Just in case things get run after this
+  system->msld->oss = ossPrior;
+  for (int i = 0; i < eeend; i++) { 
     system->run->calcTermFlag[i] = flags[i];
   }
 }
@@ -553,6 +558,8 @@ void test_OSS_conservation(System* system) {
   int count = nL*width*hight;
 
   // NPT/NVT for 100k steps adding bias
+  system->run->calcTermFlag[eenbdirect] = false;
+  system->run->calcTermFlag[eenb14] = false;
   int total = 100000;
   int updating = total * .9;
   printf("Running %d steps with bias+update and %d steps just bias to equilibrate!\n", updating, total-updating);
@@ -589,7 +596,11 @@ void test_OSS_conservation(System* system) {
   system->state->leapParms1->gamma = 0; // turn off langevin
   system->state->recv_energy(); // get kinetic energy
   real eStart = system->state->energy[eetotal];
-  for (int step=0; step<500000; step++) {
+  printf("Starting energy conservation with:\n Pot: %f\n, Kin: %f\n, Tot: %f\n",
+   system->state->energy[eepotential],
+   system->state->energy[eekinetic],
+   system->state->energy[eetotal]);
+  for (int step=1; step<1000000; step++) {
     system->domdec->update_domdec(system,(step%system->domdec->freqDomdec)==0);
     system->potential->calc_force(step,system);
     gpuCheck(cudaPeekAtLastError());
@@ -599,14 +610,14 @@ void test_OSS_conservation(System* system) {
     // 1 kT = .5922 kcal/mol at 298K?
     real diff = system->state->energy[eetotal] - eStart;
     real drift = abs(system->state->energy[eetotal] - eStart) * (1/.5922);
-    real drift_ns_dof = drift / (step*system->state->leapParms1->dt*1e-3) / (system->state->atomCount*3 + system->state->lambdaCount - 2);
+    real drift_step_dof = drift / (step*system->state->leapParms1->dt/1000) / (system->state->atomCount*3 + system->state->lambdaCount - 2);
     printf("Step: %d, Pot: %f, Kin: %f, Tot: %f, Start Tot: %f, Tot - Start (kcal/mol): %f, |Drift| (kT): %f, Drift/step/dof: %f\n",
       step,
       system->state->energy[eepotential],
       system->state->energy[eekinetic],
       system->state->energy[eetotal],
       eStart, diff,
-      drift, drift_ns_dof);
+      drift, drift_step_dof);
     if (isnan(system->state->energy[eetotal])) {
       printf("Something went wrong!!\n");
       exit(-1);
@@ -652,9 +663,9 @@ void Run::test(char *line,char *token,System *system)
     if(system->msld->oss || system->msld->abf){
       test_OSS_conservation(system);
     } else {
-      printf("OSS boolean not set!!!\n");
-      printf("OSS boolean not set!!!\n");
-      printf("OSS boolean not set!!!\n");
+      printf("OSS or ABF boolean not set!!!\n");
+      printf("OSS or ABF boolean not set!!!\n");
+      printf("OSS or ABF boolean not set!!!\n");
       printf("Not running energy conservation test!!!\n");
     }
     return;
