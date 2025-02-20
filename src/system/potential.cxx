@@ -1579,7 +1579,7 @@ void Potential::calc_force(int step,System *system) {
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
-  if (system->msld->oss && system->msld->update_fe_surface) { // Need energy to add sample for <dU/dL> weighting
+  if ((system->msld->oss || system->msld->abf) && system->msld->update_fe_surface) { // Need energy to add sample for <dU/dL> weighting
     calcEnergy = calcEnergy || step % system->msld->sample_freq == 0;
   }
 #ifdef REPLICAEXCHANGE
@@ -1645,8 +1645,8 @@ void Potential::calc_force(int step,System *system) {
   cudaMemcpy(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDeviceToDevice);
   if (system->msld->oss || system->msld->abf || system->msld->meta) {
     // TODO: make this async safe -> add alf bias & force into respective local
-    cudaMemset(system->msld->step_potential_d, 0, (system->state->lambdaCount-1)*sizeof(real));
-    cudaMemset(system->msld->step_force_d, 0, (system->state->lambdaCount-1)*sizeof(real));
+    cudaMemset(system->msld->step_potential_d, 0.0, (system->state->lambdaCount-1)*sizeof(real));
+    cudaMemset(system->msld->step_force_d, 0.0, (system->state->lambdaCount-1)*sizeof(real));
     // ABF & OSS update/calc energy&force w/ step_p, step_f, & lambdaF
   }
   // TODO: Make sure these three are race-condition safe
@@ -1660,10 +1660,12 @@ void Potential::calc_force(int step,System *system) {
     cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
     // Calculate dGdF from histogram/ABF
+    gpuCheck(cudaPeekAtLastError());
     system->msld->getforce_hist(system,calcEnergy);
     gpuCheck(cudaPeekAtLastError());
     if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
       system->msld->add_sample_hist(system);
+      gpuCheck(cudaPeekAtLastError());
     }
     cudaEventRecord(r->ossBiasComplete, r->ossBias);
     // Wait on calculation of dGdF then add OSS forces directly into force array
@@ -1676,6 +1678,7 @@ void Potential::calc_force(int step,System *system) {
       getforce_cmap_oss(system);
       getforce_nb14_oss(system);
       getforce_nbex_oss(system);
+      gpuCheck(cudaPeekAtLastError());
       cudaEventRecord(r->ossBondedComplete, r->ossBonded);
       cudaStreamWaitEvent(r->updateStream, r->ossBondedComplete, 0);
     }

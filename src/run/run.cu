@@ -443,7 +443,7 @@ void Run::energy(char *line,char *token,System *system)
   dynamics_finalize(system);
 }
 
-void test_OST(System *system) {
+void test_OST_force(System *system) {
   // This is way too small with float precision
   real dl = 1e-5;
   bool flags[eeend];
@@ -451,10 +451,7 @@ void test_OST(System *system) {
     flags[i] = system->run->calcTermFlag[i];
     system->run->calcTermFlag[i] = false;
   }
-  system->run->vfSwitch = true;
-  system->msld->useSoftCore = true;
-  system->msld->useSoftCore14 = true;
-  system->msld->msldEwaldType = 0;
+
   int len = system->state->lambdaCount+3*system->state->atomCount; // theta forces at end
   for (int i = 0; i < eeend; i++) {
     printf("Term %d Numerical Test: \n", i);
@@ -556,22 +553,41 @@ void test_OSS_conservation(System* system) {
   int count = nL*width*hight;
 
   // NPT/NVT for 100k steps adding bias
+  int total = 100000;
+  int updating = total * .9;
+  printf("Running %d steps with bias+update and %d steps just bias to equilibrate!\n", updating, total-updating);
   system->run->freqNRG = 1;
-  printf("Running 100k steps with oss+abf to equilibrate!\n");
-  for (int step=0; step<100000; step++) { 
+  for (int step=0; step<total; step++) { 
     system->run->step = step;
     system->domdec->update_domdec(system,(step%system->domdec->freqDomdec)==0);
     system->potential->calc_force(step,system);
     gpuCheck(cudaPeekAtLastError());
     system->state->update(step,system);
     gpuCheck(cudaPeekAtLastError());
+
+    if(step == (int) (total*.9)){
+      printf("\n\n\nTurning off FE estimation updating!\n\n\n");
+      system->msld->update_fe_surface = false;
+    }
+    if(step % 1000 == 0){
+      system->state->recv_energy();
+      printf("Step: %d, Pot: %f, Kin: %f, Tot: %f\n",
+        step,
+        system->state->energy[eepotential],
+        system->state->energy[eekinetic],
+        system->state->energy[eetotal]);
+      if (isnan(system->state->energy[eetotal])) {
+        printf("Something went wrong!!\n");
+        exit(-1);
+      }
+    }
   }
 
   // Turn on NVE for 500k w/ oss & abf update off
-  system->msld->update_fe_surface = false; // system is nearly equilibrated already
   printf("Running 500k steps with oss to check energy conservation!\n");
   system->run->freqNPT = 0; // turn off pressure coupling
   system->state->leapParms1->gamma = 0; // turn off langevin
+  system->state->recv_energy(); // get kinetic energy
   real eStart = system->state->energy[eetotal];
   for (int step=0; step<500000; step++) {
     system->domdec->update_domdec(system,(step%system->domdec->freqDomdec)==0);
@@ -583,7 +599,7 @@ void test_OSS_conservation(System* system) {
     // 1 kT = .5922 kcal/mol at 298K?
     real diff = system->state->energy[eetotal] - eStart;
     real drift = abs(system->state->energy[eetotal] - eStart) * (1/.5922);
-    real drift_ns_dof = drift * (1/.5922) * (1.0 / step) / (system->state->atomCount*3 + system->state->lambdaCount - 2);
+    real drift_ns_dof = drift / (step*system->state->leapParms1->dt*1e-3) / (system->state->atomCount*3 + system->state->lambdaCount - 2);
     printf("Step: %d, Pot: %f, Kin: %f, Tot: %f, Start Tot: %f, Tot - Start (kcal/mol): %f, |Drift| (kT): %f, Drift/step/dof: %f\n",
       step,
       system->state->energy[eepotential],
@@ -595,49 +611,6 @@ void test_OSS_conservation(System* system) {
       printf("Something went wrong!!\n");
       exit(-1);
     }
-    real bias = system->state->energy[eelambda];
-    int nL = system->state->lambdaCount;
-    real step_p[nL];
-    cudaMemcpy(step_p, system->msld->step_potential_d,(nL-1)*sizeof(real), cudaMemcpyDeviceToHost);
-    printf("Histogram Bias Tot: %f, step_pot: [ ", bias);
-    for (int i = 0; i < nL-1; i++) {
-      printf(" %f, ", step_p[i]);
-    }
-    printf("]\n");
-    // Print force chain term and lambda force
-    real dGdF[nL];
-    cudaMemcpy(dGdF, system->msld->dGdF_d,nL*sizeof(real), cudaMemcpyDeviceToHost);
-    real Fl[nL];
-    cudaMemcpy(Fl, system->state->lambdaForce_d, nL*sizeof(real), cudaMemcpyDeviceToHost);
-    real F_msld_l[nL];
-    cudaMemcpy(F_msld_l, system->msld->dU_msld_d, nL*sizeof(real), cudaMemcpyDeviceToHost);
-    real L[nL];
-    cudaMemcpy(L, system->state->lambda_fd, nL*sizeof(real), cudaMemcpyDeviceToHost);
-    printf("L: [ ");
-    for (int i = 0; i < nL; i++) {
-      printf(" %f, ", L[i]);
-    }
-    printf("]\n");
-    printf("dGdF: [ ");
-    for (int i = 0; i < nL; i++) {
-      printf(" %f, ", dGdF[i]);
-    }
-    printf("]\n");
-    printf("MSLD Lambda Force: [ ");
-    for (int i = 0; i < nL; i++) {
-      printf(" %f, ", F_msld_l[i]);
-    }
-    printf(" ] \n");
-    printf("Histogram Force: [ ");
-    for (int i = 0; i < nL; i++) {
-      printf(" %f, ", Fl[i] - F_msld_l[i]);
-    }
-    printf(" ] \n");
-    printf("Tot Lambda Force: [ ");
-    for (int i = 0; i < nL; i++) {
-      printf(" %f, ", Fl[i]);
-    }
-    printf("]\n\n");
   }
 }
 
@@ -673,10 +646,10 @@ void Run::test(char *line,char *token,System *system)
     imax=system->state->atomCount;
     jmax=3;
   } else if (testType=="oss_force") {
-    test_OST(system);
+    test_OST_force(system);
     return;
   } else if (testType=="oss_energy_cons") {
-    if(system->msld->oss){
+    if(system->msld->oss || system->msld->abf){
       test_OSS_conservation(system);
     } else {
       printf("OSS boolean not set!!!\n");
