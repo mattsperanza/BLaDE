@@ -724,6 +724,23 @@ void Msld::initialize(System *system)
   }
 }
 
+/** 
+ * Histogram defined to have elements for the first and last elements at max and min respectively. Width of the
+ * first and last bins are half length. num_bins-1 whole bins fit in the [min, max) range. Uniform histogram.
+ * Element is relative to min.
+ * 
+ * 
+ * Ex. Lambda bins: [0, .005), [.005, .015), ..., [.985, .995), [.995, 1.0) -> range [0,1), 101 bins
+ *  Lambda Centers: [   0   ], [   .010   ], ..., [   .990   ], [   1.0   ]
+ *    Lambda Index: [   0   ], [     1    ], ..., [    99    ], [   100   ]
+*/
+static __forceinline__ __device__ int get_histogram_index(real val, int num_bins, real max, real min){
+  real tmp = val - min;
+  real range = max - min;
+  real resolution = range / (num_bins-1);
+  return round(tmp/resolution);
+}
+
 void Msld::init_meta(System* system){
 
 }
@@ -731,46 +748,53 @@ void Msld::init_meta(System* system){
 void Msld::init_abf(System* system){
   int nL = blockCount-1; // 0th lambda is environment
     int index[nL];
-    int n_edges = L_abf_centers;
+    int n_edges = L_abf_bins;
     for (int i = 0; i < nL; i++) {
       index[i] = i*n_edges;
     }
     cudaMalloc(&abf_index_d, nL*sizeof(int));
     cudaMemcpy(abf_index_d, index, nL*sizeof(int), cudaMemcpyHostToDevice);
     cudaMalloc(&lambda_counts_d, nL*n_edges*sizeof(real));
+    cudaMemset(lambda_counts_d, 0, nL*n_edges*sizeof(real));
     cudaMalloc(&offsets_d, nL*n_edges*sizeof(real));
+    cudaMemset(offsets_d, 0, nL*n_edges*sizeof(real));
     cudaMalloc(&ensemble_dUdL_d, nL*n_edges*sizeof(real));
+    cudaMemset(ensemble_dUdL_d, 0, nL*n_edges*sizeof(real));
     cudaMalloc(&ensemble_dUdL2_d, nL*n_edges*sizeof(real));
+    cudaMemset(ensemble_dUdL2_d, 0, nL*n_edges*sizeof(real));
     cudaMalloc(&weights_d, nL*n_edges*sizeof(real));
+    cudaMemset(weights_d, 0, nL*n_edges*sizeof(real));
     cudaMalloc(&weighted_dUdL_d, nL*n_edges*sizeof(real));
+    cudaMemset(weighted_dUdL_d, 0, nL*n_edges*sizeof(real));
     cudaMalloc(&weighted_dUdL2_d, nL*n_edges*sizeof(real));
-    cudaMalloc(&integral_components_d, nL*n_edges*sizeof(real));
+    cudaMemset(weighted_dUdL2_d, 0, nL*n_edges*sizeof(real));
     cudaMalloc(&average_dUdL_d, nL*n_edges*sizeof(real));
+    cudaMemset(average_dUdL_d, 0, nL*n_edges*sizeof(real));
     cudaMalloc(&variance_d, nL*n_edges*sizeof(real));
+    cudaMemset(variance_d, 0, nL*n_edges*sizeof(real));
 }
 
 __global__ void add_sample_abf_kernel(
   real kT, real nFull, int nL,
   real* lambdas, real* dU_msld, real* step_potential,
-  real* histogram_counts, int* hist_indices, int total_bins, real* offsets,
+  real* histogram_counts, int* hist_indices, 
+  int num_bins, real L_max, real L_min, real* offsets,
   real* weights, real* weighted_dU_dL, real* weighted_dUdL2,
-  real* ensemble_dUdL, real* average_dUdL, real* ensemble_dUdL2, real* variance,
-  real* integral_components
-  ) {
+  real* ensemble_dUdL, real* average_dUdL, real* ensemble_dUdL2, real* variance) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if(i<nL) {
     real potEnergy = 0;
     for (int j = 0; j < nL; j++) { // add option to what is felt?
-      potEnergy += step_potential[j]; // needs to have all other biases included
+      potEnergy += step_potential[j]; // bias added to potential
     }
     real lambda = lambdas[i+1];
-    int bin = round(lambda*(total_bins-1)); // lambda / resolution
+    int bin = get_histogram_index(lambda, num_bins, L_max, L_min); 
     int hist_bin = bin + hist_indices[i];
     real dUdL = dU_msld[i+1]; // lambdaForce before biasing forces
     average_dUdL[hist_bin] = (average_dUdL[hist_bin] * histogram_counts[hist_bin] + dUdL) / (histogram_counts[hist_bin] + 1);
     histogram_counts[hist_bin] += 1;
     real beta = 1 / kT;
-    real bias = beta * potEnergy;
+    real bias = -beta * potEnergy;
     if (bias > offsets[hist_bin]) { // largest boltzmann weight = 1
       real correction = exp(offsets[hist_bin]-bias); // exp(U-old)*exp(old-new) = exp(U-new)
       offsets[hist_bin] = bias;
@@ -788,12 +812,6 @@ __global__ void add_sample_abf_kernel(
       ensemble_dUdL[hist_bin] = histogram_counts[hist_bin] / nFull * ensemble_dUdL[hist_bin];
     }
     variance[hist_bin] = ensemble_dUdL2[hist_bin] - pow(ensemble_dUdL[hist_bin], 2);
-    // Integral components
-    real lower_dUdL = ensemble_dUdL[hist_bin];
-    int id = bin >= total_bins ? hist_bin : hist_bin + 1;
-    real upper_dUdL = ensemble_dUdL[id];
-    real width = bin != 0 && bin != total_bins ? 1.0 / total_bins : .5 / total_bins;
-    integral_components[hist_bin] = (lower_dUdL + upper_dUdL)/2 * width;
   }
 }
 
@@ -811,20 +829,18 @@ void Msld::add_sample_abf(System* system){
   add_sample_abf_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->leapParms1->kT, nFull, blockCount-1,
     s->lambda_fd, dU_msld_d, step_potential_d,
-    lambda_counts_d, abf_index_d, L_abf_centers, offsets_d,
-    weights_d, weighted_dUdL_d, weighted_dUdL2_d,
-    ensemble_dUdL_d, average_dUdL_d, ensemble_dUdL2_d, variance_d,
-    integral_components_d);
+    lambda_counts_d, abf_index_d, L_abf_bins, L_max, L_min,
+    offsets_d, weights_d, weighted_dUdL_d, weighted_dUdL2_d,
+    ensemble_dUdL_d, average_dUdL_d, ensemble_dUdL2_d, variance_d);
 
   // Logging for testing
   // Copy to host and print out info
-  int len = (blockCount-1)*L_abf_centers;
-  real counts[len], ensdUdL[len], ave_dUdL[len], int_comp[len], weights[len], offsets[len];
+  int len = (blockCount-1)*L_abf_bins;
+  real counts[len], ensdUdL[len], ave_dUdL[len], weights[len], offsets[len];
   int indices[blockCount-1];
   cudaMemcpy(counts, lambda_counts_d, len*sizeof(real), cudaMemcpyDeviceToHost);
   cudaMemcpy(ensdUdL, ensemble_dUdL_d, len*sizeof(real), cudaMemcpyDeviceToHost);
   cudaMemcpy(ave_dUdL, average_dUdL_d, len*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(int_comp, integral_components_d, len*sizeof(real), cudaMemcpyDeviceToHost);
   cudaMemcpy(weights, weights_d, len*sizeof(real), cudaMemcpyDeviceToHost);
   cudaMemcpy(offsets, offsets_d, len*sizeof(real), cudaMemcpyDeviceToHost);
   cudaMemcpy(indices, abf_index_d, (blockCount-1)*sizeof(int), cudaMemcpyDeviceToHost);
@@ -839,32 +855,33 @@ void Msld::add_sample_abf(System* system){
         printf("Site %d, Sub %d\n", i, k);
         printf("Lambda: %f \n", s->lambda[count+1]);
         printf("Histogram: [ %f, ", counts[start]);
-        for (int j = 1; j < L_abf_centers; j++) {
+        for (int j = 1; j < L_abf_bins; j++) {
           printf("%f, ", counts[start+j]);
         }
         printf("]\n");
         printf("Weights: [ %f, ", weights[indices[count]]);
-        for (int j = 1; j < L_abf_centers; j++) {
+        for (int j = 1; j < L_abf_bins; j++) {
           printf("%f, ", weights[start+j]);
         }
         printf("]\n");
         printf("<dU/dL>: [ %f, ", ensdUdL[start]);
-        for (int j = 1; j < L_abf_centers; j++) {
+        for (int j = 1; j < L_abf_bins; j++) {
           printf("%f, ", ensdUdL[start+j]);
         }
         printf("]\n");
         printf("E[dU/dL]: [ %f, ", ave_dUdL[start]);
-        for (int j = 1; j < L_abf_centers; j++) {
+        for (int j = 1; j < L_abf_bins; j++) {
           printf("%f, ", ave_dUdL[start+j]);
         }
         printf("]\n");
-        real sum = 0;
+        real sum = .5*(ensdUdL[start] + ensdUdL[start+1])*(.5/(L_abf_bins-1));
         printf("dG 0->i: [ %f, ", sum); // This is our FES
-        for (int j = 1; j < L_abf_centers; j++) {
-          sum += int_comp[start+j];
+        for (int j = 1; j < L_abf_bins-2; j++) {
+          sum += (ensdUdL[start+j] + ensdUdL[start+j+1])*(.5/(L_abf_bins-1));
           printf("%f, ", sum);
         }
-        printf("]\n");
+        sum += .5*(ensdUdL[start+L_abf_bins-2] + ensdUdL[start+L_abf_bins-1])*(.5/(L_abf_bins-1));
+        printf("%f ]\n", sum);
         if (k == 0) {
           relative = sum;
         }
@@ -880,7 +897,7 @@ void Msld::add_sample_abf(System* system){
         sum += ni_to_nj;
 
         // dG WT->j = -kT ln(Zj(1)/ZWT(1))
-        int bins = system->msld->L_abf_centers;
+        int bins = system->msld->L_abf_bins;
         wWT = weights[bins];
         offWT = offsets[bins];
         wj = weights[indices[count] + bins];
@@ -898,10 +915,9 @@ void Msld::add_sample_abf(System* system){
 // This is done on GPU just to avoid moving data back and forth
 __global__ void getforce_abf_kernel(
   real* lambdas, real* lambdaForce, real* step_potential, real* step_force,
-  int* abf_hist_indices, int total_centers,
-  real* ensemble_dUdL, real* average_dUdL, real* integral_components,
-  real_e *energy,
-  int nL)
+  int* abf_hist_indices, int num_bins, real L_max, real L_min,
+  real* ensemble_dUdL, real* average_dUdL,
+  real_e *energy, int nL)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   extern __shared__ real sEnergy[];
@@ -910,26 +926,41 @@ __global__ void getforce_abf_kernel(
 
   if (i < nL) {
     real lambda = lambdas[i+1]; // always < 1.0
-    real res = 1.0/(total_centers-1); // first and last are half bins
-    int bin = round(lambda/res); // l / res -> [0, .5*res], [.5*res, 1.5*res], ...
+    int bin = get_histogram_index(lambda, num_bins, L_max, L_min);
     int histBin = bin + abf_hist_indices[i];
     // Lerp implementation of ABF 
-    real low_edge = bin*res; 
-    real high_edge = low_edge + res;
-    real dUdL_low = ensemble_dUdL[histBin];
-    real dUdL_high = ensemble_dUdL[histBin+1];
-    real interp = (lambda - low_edge)/(high_edge - low_edge);
-    dUdL_abf = (1 - interp)*dUdL_low + interp*dUdL_high;
+    real res = 1.0/(num_bins-1); // first and last are half bins so -1 total bins in range [L_max, L_min)
+    real center = bin*res;
+    real dUdL = ensemble_dUdL[histBin];
+    real dist = lambda-center;
+    real partner_center, partner_dUdL, interp;
+    if(dist > 0){ // lambda in upper half of bin -> never true for bin=num_bins-1
+      partner_center = center + res;
+      partner_dUdL = ensemble_dUdL[histBin+1];
+      interp = dist / res;
+      dUdL_abf = (1 - interp)*dUdL + interp*partner_dUdL;
+    } else {
+      partner_center = center - res;
+      partner_dUdL = ensemble_dUdL[histBin-1];
+      interp = (lambda - partner_center) / res;
+      dUdL_abf = (1 - interp)*partner_dUdL + interp*dUdL;
+    }
     dUdL_abf = -dUdL_abf; // we add -'ve of <dU/dL>
     atomicAdd(&lambdaForce[i+1], dUdL_abf);
     atomicAdd(&step_force[i], dUdL_abf);
     if (energy) {
-      for (int j = 0; j < bin-1; j++) { // integrate up to the bin prior to this one
-        lEnergy += integral_components[j+abf_hist_indices[i]];
+      int start = abf_hist_indices[i];
+      for (int j = 0; j < bin - 1; j++) { 
+        real factor = j == 0 ? .5 : 1;
+        lEnergy += factor*(ensemble_dUdL[start+j] + ensemble_dUdL[start+j+1])*(.5/(num_bins-1));
       }
-      lEnergy += (dUdL_low + dUdL_abf)/2* (lambda - low_edge);
+      if(dist > 0){
+        lEnergy += (ensemble_dUdL[histBin] + dUdL_abf)*(.5/(num_bins-1));
+      } else {
+        lEnergy += (ensemble_dUdL[histBin-1] + dUdL_abf)*(.5/(num_bins-1));
+      }
       lEnergy = -lEnergy; // We add -<dU/dL> to the force
-      atomicAdd(&step_potential[i],lEnergy);
+      //atomicAdd(&step_potential[i],lEnergy); // don't include abf bias in abf <dU/dL> calculation
     }
   }
 
@@ -957,8 +988,8 @@ void Msld::getforce_abf(System *system, bool calcEnergy) {
 
   getforce_abf_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->lambda_fd, s->lambdaForce_d, step_potential_d, step_force_d,
-    abf_index_d, L_abf_centers,
-    ensemble_dUdL_d, average_dUdL_d, integral_components_d,
+    abf_index_d, L_abf_bins, L_max, L_min,
+    ensemble_dUdL_d, average_dUdL_d,
     pEnergy, blockCount-1);
 }
 
@@ -967,11 +998,12 @@ void Msld::init_oss(System* system){
   int nL = blockCount-1; // 0th lambda is environment
     int index[nL];
     for (int i = 0; i < nL; i++) {
-      index[i] = i*L_hist_centers*dUdL_bins;
+      index[i] = i*L_hist_bins*dUdL_bins;
     }
     cudaMalloc(&histogram_index_d, nL*sizeof(int)); // index into lambda's histogram
     cudaMemcpy(histogram_index_d, index, nL*sizeof(int), cudaMemcpyHostToDevice);
-    cudaMalloc(&histogram_d, nL*L_hist_centers*dUdL_bins*sizeof(real)); // ~4/8 Mb per histogram
+    cudaMalloc(&histogram_d, nL*L_hist_bins*dUdL_bins*sizeof(real)); // ~4/8 Mb per histogram
+    cudaMemset(histogram_d, 0, nL*L_hist_bins*dUdL_bins*sizeof(real));
     cudaMalloc(&hist_potential_d, (blockCount-1)*sizeof(real)); // use blockCount so that it is indexed same as lambda array
     cudaMemset(hist_potential_d, 0, (blockCount-1)*sizeof(real));
 
@@ -982,18 +1014,16 @@ void Msld::init_oss(System* system){
 __global__ void add_sample_hist_kernel(
   real kT, int nL, real* lambdas, real* dU_msld, real* hist_potential,
   real weight, real tempering, real* histogram, int* hist_indicies,
-  int L_bins, int dUdL_bins, float dUdL_max
+  int L_bins, real L_max, real L_min, 
+  int dUdL_bins, real dUdL_max, real dUdL_min
 ) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
-    real dUdL_min = dUdL_max - 2*dUdL_max; // symmetric
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
-    int X =  round(lambdas[i+1]*L_bins); // 0-.01, .01-.02
-    real tmp = dU_msld[i+1] - dUdL_min; // distance from minimum
-    int Y = ((int)tmp*dUdL_bins/(2.0*dUdL_max)*10)/10; // dist / bin width round to 2nd
-    int index = hist_indicies[i] + X*dUdL_bins + Y; // indexed so dUdL bins are continuous in mem
+    int X =  get_histogram_index(lambdas[i+1], L_bins, L_max, L_min);
+    int Y = get_histogram_index(dU_msld[i+1], dUdL_bins, dUdL_max, dUdL_min);
+    int index = hist_indicies[i] + X*dUdL_bins + Y; 
     if (X >= 0 && X < L_bins && Y >= 0 && Y < dUdL_bins) {
-      // Temper based on potential from this histogram
       histogram[index] += weight*exp(-hist_potential[i] / (tempering * kT));
     }
   }
@@ -1013,34 +1043,32 @@ void Msld::add_sample_hist(System* system) {
   add_sample_hist_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->leapParms1->kT, blockCount-1, s->lambda_fd, dU_msld_d, hist_potential_d,
     gaussian_weight, tempering, histogram_d, histogram_index_d,
-    L_hist_centers-1, dUdL_bins, dUdL_max);
+    L_hist_bins, L_max, L_min, dUdL_bins, dUdL_max, dUdL_min);
 }
 
 __global__ void getforce_hist_kernel(
   int nL, real* lambdas, real* lambdaForce, real* dU_msld, 
   real* step_potential, real* hist_potential, real* step_force,
-  int* hist_indicies, real* histogram, real dUdL_max,
-  int dUdL_bins, int dUdL_search, int L_bins, int L_search,
-  real dUdL_std, real L_std, real* dGdF,
-  real_e* energy
+  int* hist_indicies, real* histogram, 
+  int dUdL_bins, real dUdL_max, real dUdL_min, int dUdL_search, 
+  int L_bins, real L_max, real L_min, int L_search,
+  real dUdL_std, real L_std, 
+  real* dGdF, real_e* energy
 ) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   extern __shared__ real sEnergy[];
   real lEnergy=0;
   if (i < nL) {
     hist_potential[i] = 0; // reset from last eval
-    real dUdL_min = dUdL_max - 2*dUdL_max;
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
-    int X =  round(lambdas[i+1]*L_bins); // [0,.005), [.005-.0015), ... [.985, .995), [.995, 1)
-    real tmp = dU_msld[i+1] - dUdL_min; // distance from minimum
-    int Y = ((int)tmp*dUdL_bins/(2.0*dUdL_max)*10)/10; // dist / bin width round to 2nd
-    // Shift over X lambda windows (dUdL_bins # in each), then up to the Y'th dUdL bin
+    int X = get_histogram_index(lambdas[i+1], L_bins, L_max, L_min);
+    int Y = get_histogram_index(dU_msld[i+1], dUdL_bins, dUdL_max, dUdL_min);
     real bias = 0;
     real dUdL_force = 0;
     real L_force = 0;
     int index_min = hist_indicies[i];
-    int index_max = index_min + (L_bins+1)*dUdL_bins-1;
-    int id = 0;
+    int index_max = index_min + L_bins*dUdL_bins - 1;
+    int id = 5;
     bool print = false;
     if(i == id && print){
       int i1 = i == nL-1 ? i : i+1;
@@ -1049,37 +1077,45 @@ __global__ void getforce_hist_kernel(
     }
     for (int j = X-L_search; j <= X+L_search; j++) {
       int L_index = j;
-      real L_center = ((real)L_index)/L_bins;
+      real L_resolution = (L_max-L_min)/(L_bins-1.0);
+      real L_center = L_index*L_resolution;
 
       // Mirror lambda -> idea from ForceFieldX: https://doi.org/10.1063/5.0214652
-      real factor = L_index == 0 || L_index == L_bins ? 2 : 1;
       L_index = L_index < 0 ? -L_index : L_index;
-      L_index = L_index > L_bins ? L_bins - (L_index - L_bins) : L_index;
+      L_index = L_index > L_bins-1 ? L_index - 2*(L_index-(L_bins-1)) : L_index;
+      real factor = L_index == 0 || L_index == L_bins-1 ? 2 : 1;
 
       real L_distance = (lambdas[i+1] - L_center) / L_std;
       real L_gaussian = exp(-.5*L_distance*L_distance);
       for (int k = Y-dUdL_search; k <= Y+dUdL_search; k++) {
         int dUdL_index = k;
+        if (dUdL_index < 0) { continue; }
+        if (dUdL_index >= dUdL_bins) { break; }
+
+        real dUdL_resolution = (dUdL_max-dUdL_min)/(dUdL_bins-1.0);
+        real dUdL_center = dUdL_min + dUdL_index*dUdL_resolution;
+        real dUdL_distance = (dU_msld[i+1] - dUdL_center) / dUdL_std;
+        real dUdL_gaussian = exp(-.5*dUdL_distance*dUdL_distance);
+
         int index = hist_indicies[i] + L_index*dUdL_bins + dUdL_index; // indexed so dUdL bins are continuous in mem
-        if (dUdL_index < 0 || dUdL_index >= dUdL_bins) { // no mirror in this direction
-          continue; // no bias exists outside of histogram
-        }
         if(index < index_min || index > index_max){
           printf("Something wrong!!! i: %d, X: %d, Y: %d, index: %d, L: %f, dUdL: %f\n",
              i, L_index, dUdL_index, index, lambdas[i+1], dU_msld[i+1]);
           continue;
         }
-        real dUdL_center = dUdL_min + ((real)dUdL_index*2*dUdL_max)/dUdL_bins + .5*2*dUdL_max/dUdL_bins;
-        real dUdL_distance = (dU_msld[i+1] - dUdL_center) / dUdL_std;
-        real dUdL_gaussian = exp(-.5*dUdL_distance*dUdL_distance);
-
         real weight = histogram[index];
-        real tmp_bias = factor * weight * L_gaussian * dUdL_gaussian;
 
+        real tmp_bias = factor * weight * L_gaussian * dUdL_gaussian;
         bias += tmp_bias;
         dUdL_force += -dUdL_distance/dUdL_std * tmp_bias;
         L_force += -L_distance/L_std * tmp_bias;
+
+        if(i == id && print){
+          printf(" (index: %3d, X: %3d -> %3f, Y: %3d -> %3f, Z: %3f, fac: %3f)", 
+            index, L_index, L_center, dUdL_index, dUdL_center, tmp_bias, factor); 
+          }
       }
+      if(i == id && print){ printf("\n"); }
     }
     // ABF & meta race
     atomicAdd(&lambdaForce[i+1], L_force);
@@ -1114,14 +1150,15 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
     stream=system->run->ossBias;
   }
 
-  // Currently set up to do one thread per lambda, each thread loops over (dUdL_search+1)*(L_search+1) bins
+  // Currently set up to do one thread per lambda, each thread loops over (2*dUdL_search+1)*(2*L_search+1) bins
   getforce_hist_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->lambdaCount-1, s->lambda_fd, s->lambdaForce_d, dU_msld_d, 
     step_potential_d, hist_potential_d, step_force_d,
-    histogram_index_d, histogram_d, dUdL_max,
-    dUdL_bins, dUdL_search, L_hist_centers, L_search,
-    dUdL_std, L_std, dGdF_d, pEnergy
-  );
+    histogram_index_d, histogram_d, 
+    dUdL_bins, dUdL_max, dUdL_min, dUdL_search, 
+    L_hist_bins, L_max, L_min, L_search,
+    dUdL_std, L_std, 
+    dGdF_d, pEnergy);
 }
 
 __global__ void calc_lambda_from_theta_kernel(real_x *lambda,real_x *theta,int siteCount,int *siteBound,real fnex)

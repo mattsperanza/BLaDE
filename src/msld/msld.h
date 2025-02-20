@@ -61,39 +61,41 @@ class Msld {
   int sample_freq = 10;
   real* dGdF_d;
   real* dU_msld_d;
+  real* hist_potential_d; // potential from metadynamics
   real* step_potential_d; // potential from histogram+abf at each lambda
   real* step_force_d; // force from bias
+  // Just in case we get ideas for later
+  real L_max = 1.0;
+  real L_min = 0.0;
 
   // Histogram - uniform binning
   bool oss = false; // Perform Orthogonal Space Sampling force calculations
   real* histogram_d; // 1000 x 100 = 1 million float = 4 -> stores sum of prefactors
-  real* hist_potential_d; // gi(Li, FL)
   int* histogram_index_d; // index into lambda's histogram
 
-  // These params should be adjustable
+  // Can change
   real tempering = 20.0; // exp(-g(X,L)/tempering) = tempering gaussian_weight
   real gaussian_weight = .05; // kcal/mol
-
-  // Maybe change - would require rethinking of hist indexing?
-  int L_hist_centers = 101;
-  int dUdL_bins = 1000;
+  int L_hist_bins = 101; // # of whole bins that fit in range [L_min, L_max]
+  int dUdL_bins = 1001; // # of whole bins that fit in range [dUdL_min, dUdL_max]
   real dUdL_max = 1500;
-  real dUdL_min = -dUdL_max; // symmetric
+  real dUdL_min = -dUdL_max; // symmetric energy range
 
   // Don't change
-  real dUdL_resolution = 2.0*abs(dUdL_max)/dUdL_bins;
-  real L_resolution = 1.0/L_hist_centers;
-  real dUdL_std = 3*dUdL_resolution;// 2*bin_height
-  real L_std = 3*L_resolution; // 2*bin_width
-  int dUdL_search = 5.0*(dUdL_std/dUdL_resolution); // ~5 dUdL std in each direction
+  real L_resolution = (abs(L_max)+abs(L_min))/L_hist_bins;
+  real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
+  real L_std = 3.0*L_resolution; // 2/3 times the resolution
+  real dUdL_std = 3.0*dUdL_resolution;
   int L_search = 5.0*(L_std/L_resolution); // ~5 L std in each direction
+  int dUdL_search = 5.0*(dUdL_std/dUdL_resolution); // ~5 dUdL std in each direction
 
+  // Meta - uniform binning
   bool meta = false;
 
   // ABF - uniform binning - separate from histogram estimation
   bool abf = false;
-  int nFull = 200;
-  int L_abf_centers = 101; // this is also the max index
+  int nFull = 0;
+  int L_abf_bins = 101; // this is also the max index
   int* abf_index_d; // index into abf histogram
   real* lambda_counts_d; // counts in bin -> also used for 1D meta
   real* ensemble_dUdL_d;
@@ -102,7 +104,6 @@ class Msld {
   real* weighted_dUdL_d;
   real* weighted_dUdL2_d;
   real* offsets_d;
-  real* integral_components_d;
   real* average_dUdL_d;
   real* variance_d;
 
