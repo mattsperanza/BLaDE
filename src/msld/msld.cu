@@ -757,7 +757,7 @@ void Msld::init_abf(System* system){
     cudaMalloc(&lambda_counts_d, nL*n_edges*sizeof(real));
     cudaMemset(lambda_counts_d, 0, nL*n_edges*sizeof(real));
     cudaMalloc(&offsets_d, nL*n_edges*sizeof(real));
-    cudaMemset(offsets_d, 0, nL*n_edges*sizeof(real));
+    cudaMemset(offsets_d, 0, nL*n_edges*sizeof(real)); // bias always > offset at beginning
     cudaMalloc(&ensemble_dUdL_d, nL*n_edges*sizeof(real));
     cudaMemset(ensemble_dUdL_d, 0, nL*n_edges*sizeof(real));
     cudaMalloc(&ensemble_dUdL2_d, nL*n_edges*sizeof(real));
@@ -785,7 +785,7 @@ __global__ void add_sample_abf_kernel(
   if(i<nL) {
     real potEnergy = 0;
     for (int j = 0; j < nL; j++) { // add option to what is felt?
-      potEnergy += step_potential[j]; // bias added to potential
+      potEnergy += step_potential[j]; // bias added to potential not including ABF
     }
     real lambda = lambdas[i+1];
     int bin = get_histogram_index(lambda, num_bins, L_max, L_min); 
@@ -794,7 +794,7 @@ __global__ void add_sample_abf_kernel(
     average_dUdL[hist_bin] = (average_dUdL[hist_bin] * histogram_counts[hist_bin] + dUdL) / (histogram_counts[hist_bin] + 1);
     histogram_counts[hist_bin] += 1;
     real beta = 1 / kT;
-    real bias = -beta * potEnergy;
+    real bias = beta * potEnergy; // U_ost; U_ost > 0
     if (bias > offsets[hist_bin]) { // largest boltzmann weight = 1
       real correction = exp(offsets[hist_bin]-bias); // exp(U-old)*exp(old-new) = exp(U-new)
       offsets[hist_bin] = bias;
@@ -806,8 +806,14 @@ __global__ void add_sample_abf_kernel(
     weighted_dU_dL[hist_bin] += dUdL * exp(bias - offsets[hist_bin]);
     weighted_dUdL2[hist_bin] += dUdL*dUdL * exp(bias - offsets[hist_bin]);
     // The offset we defined cancels in this calculation - (exp(offset)*exp(U-offset))/(exp(offset)*sum(exp(U-offset)))
+    // sum(Fl*exp(g(L, dU))) / sum(exp(g(L, dU))
     ensemble_dUdL[hist_bin] = weighted_dU_dL[hist_bin] / weights[hist_bin];
     ensemble_dUdL2[hist_bin] = weighted_dUdL2[hist_bin] / weights[hist_bin];
+    if (isnan(ensemble_dUdL[hist_bin]) || isnan(weights[hist_bin])) {
+      printf("Something wrong in add_sample_abf!!!\n");
+      printf("i: %d, L: %f, dUdL: %f, bias: %f, weights[%d]: %f, offsets[hist_bin]: %f, ensemble_dUdL[hist_bins]: %f, count[hist_bins]: %f\n",
+        i, lambda, dUdL, bias, hist_bin, weights[hist_bin], offsets[hist_bin], ensemble_dUdL[hist_bin], histogram_counts[hist_bin]);
+    }
     if (histogram_counts[hist_bin] < nFull) {
       ensemble_dUdL[hist_bin] = histogram_counts[hist_bin] / nFull * ensemble_dUdL[hist_bin];
     }
@@ -838,13 +844,13 @@ void Msld::add_sample_abf(System* system){
   int len = (blockCount-1)*L_abf_bins;
   real counts[len], ensdUdL[len], ave_dUdL[len], weights[len], offsets[len];
   int indices[blockCount-1];
-  cudaMemcpy(counts, lambda_counts_d, len*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(ensdUdL, ensemble_dUdL_d, len*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(ave_dUdL, average_dUdL_d, len*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(weights, weights_d, len*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(offsets, offsets_d, len*sizeof(real), cudaMemcpyDeviceToHost);
-  cudaMemcpy(indices, abf_index_d, (blockCount-1)*sizeof(int), cudaMemcpyDeviceToHost);
   if (system->run->step % 10000 == 0){
+    cudaMemcpy(counts, lambda_counts_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+    cudaMemcpy(ensdUdL, ensemble_dUdL_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+    cudaMemcpy(ave_dUdL, average_dUdL_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+    cudaMemcpy(weights, weights_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+    cudaMemcpy(offsets, offsets_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+    cudaMemcpy(indices, abf_index_d, (blockCount-1)*sizeof(int), cudaMemcpyDeviceToHost);
     int count = 0;
     system->state->recv_lambda();
     printf("Step: %ld\n", system->run->step);
@@ -854,23 +860,23 @@ void Msld::add_sample_abf(System* system){
         int start= indices[count];
         printf("Site %d, Sub %d\n", i, k);
         printf("Lambda: %f \n", s->lambda[count+1]);
-        printf("Histogram: [ %f, ", counts[start]);
-        for (int j = 1; j < L_abf_bins; j++) {
+        printf("Histogram: [ ");
+        for (int j = 0; j < L_abf_bins; j++) {
           printf("%f, ", counts[start+j]);
         }
         printf("]\n");
-        printf("Weights: [ %f, ", weights[indices[count]]);
-        for (int j = 1; j < L_abf_bins; j++) {
+        printf("Weights: [ ");
+        for (int j = 0; j < L_abf_bins; j++) {
           printf("%f, ", weights[start+j]);
         }
         printf("]\n");
-        printf("<dU/dL>: [ %f, ", ensdUdL[start]);
-        for (int j = 1; j < L_abf_bins; j++) {
+        printf("<dU/dL>: [ ");
+        for (int j = 0; j < L_abf_bins; j++) {
           printf("%f, ", ensdUdL[start+j]);
         }
         printf("]\n");
-        printf("E[dU/dL]: [ %f, ", ave_dUdL[start]);
-        for (int j = 1; j < L_abf_bins; j++) {
+        printf("E[dU/dL]: [");
+        for (int j = 0; j < L_abf_bins; j++) {
           printf("%f, ", ave_dUdL[start+j]);
         }
         printf("]\n");
@@ -962,6 +968,11 @@ __global__ void getforce_abf_kernel(
       lEnergy = -lEnergy; // We add -<dU/dL> to the force
       //atomicAdd(&step_potential[i],lEnergy); // don't include abf bias in abf <dU/dL> calculation
     }
+    if (isnan(dUdL_abf) || isnan(lEnergy)) {
+      printf("Somethings wrong in get_force_abf kernel!!\n");
+      printf("i: %d, Lambda: %f, dUdL_abf: %f, lEnergy: %f\n",
+        i, lambda, dUdL_abf, lEnergy);
+    }
   }
 
   if (energy) {
@@ -977,10 +988,10 @@ void Msld::getforce_abf(System *system, bool calcEnergy) {
   real_e *pEnergy = NULL;
   int shMem = 0;
 
-  if (r->calcTermFlag[eelambda] == false) return;
+  if (r->calcTermFlag[eebias] == false) return;
   if (calcEnergy) {
     shMem = BLMS*sizeof(real)/32;
-    pEnergy=s->energy_d+eelambda;
+    pEnergy=s->energy_d+eebias;
   }
   if (system->run) {
     stream=system->run->abfBias;
@@ -1148,9 +1159,9 @@ __global__ void getforce_hist_kernel(
         dUdL_force += -dUdL_distance/dUdL_std * tmp_bias;
         L_force += -L_distance/L_std * tmp_bias;
 
-        if(i == id && print){
-          printf(" (index: %3d, X: %3d -> %3f, Y: %3d -> %3f, Z: %3f, fac: %3f)", 
-            index, L_index, L_center, dUdL_index, dUdL_center, tmp_bias, factor); 
+        if(i == id && print || isnan(tmp_bias)){
+          printf(" (i: %d, index: %3d, X: %3d -> %3f, Y: %3d -> %3f, Z: %3f, fac: %3f)",
+            i, index, L_index, L_center, dUdL_index, dUdL_center, tmp_bias, factor);
           }
       }
       if(i == id && print){ printf("\n"); }
@@ -1179,10 +1190,10 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
   real_e *pEnergy = NULL;
   int shMem = 0;
 
-  if (r->calcTermFlag[eelambda] == false) return;
+  if (r->calcTermFlag[eebias] == false) return;
   if (calcEnergy) {
     shMem = BLMS*sizeof(real)/32;
-    pEnergy=s->energy_d+eelambda;
+    pEnergy=s->energy_d+eebias;
   }
   if (system->run) {
     stream=system->run->ossBias;
@@ -1210,8 +1221,6 @@ __global__ void getpotential_hist_kernel(
   real* potential_grid
 ) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
-  extern __shared__ real sEnergy[];
-  real lEnergy=0;
   if (i < nL) {
     for (int ii = 0; ii < L_bins; ii++){
       int X = ii;

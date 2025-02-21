@@ -1593,6 +1593,7 @@ void Potential::calc_force(int step,System *system) {
   // s->set_fd(system); // should have already been called
   reset_force(system,calcEnergy);
 
+  gpuCheck(cudaPeekAtLastError());
   cudaEventRecord(r->forceBegin,r->updateStream);
 
   if (system->id==helper) {

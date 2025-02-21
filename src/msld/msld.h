@@ -58,7 +58,7 @@ class Msld {
   // FE Estimation Variables -> need to be on/off before msld::init is called since no other init_XXX method call exists
   // Mem not allocated if not set since histogram so large
   bool update_fe_surface = true; // add samples to abf/meta/oss
-  int sample_freq = 10;
+  int sample_freq = 5;
   real* dGdF_d;
   real* dU_msld_d;
   real* hist_potential_d; // potential from metadynamics
@@ -74,7 +74,7 @@ class Msld {
   int* histogram_index_d; // index into lambda's histogram
 
   // Can change
-  real tempering = 20.0; // exp(-g(X,L)/tempering) = tempering gaussian_weight
+  real tempering = 8.0; // exp(-g(X,L)/tempering) = tempering gaussian_weight
   real gaussian_weight = .05; // kcal/mol
   int L_hist_bins = 101; // # of whole bins that fit in range [L_min, L_max]
   int dUdL_bins = 1001; // # of whole bins that fit in range [dUdL_min, dUdL_max]
@@ -84,10 +84,10 @@ class Msld {
   // Don't change
   real L_resolution = (abs(L_max)+abs(L_min))/L_hist_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
-  real L_std = 3.0*L_resolution; // 2/3 times the resolution
-  real dUdL_std = 3.0*dUdL_resolution;
-  int L_search = 5.0*(L_std/L_resolution); // ~5 L std in each direction
-  int dUdL_search = 5.0*(dUdL_std/dUdL_resolution); // ~5 dUdL std in each direction
+  real L_std = 2.0*L_resolution; // 2/3 times the resolution
+  real dUdL_std = 5.0*dUdL_resolution;
+  int L_search = 4.0*(L_std/L_resolution); // ~5 L std in each direction
+  int dUdL_search = 4.0*(dUdL_std/dUdL_resolution); // ~5 dUdL std in each direction
 
   // Meta - uniform binning
   bool meta = false;
