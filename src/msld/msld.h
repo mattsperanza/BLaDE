@@ -173,10 +173,12 @@ class Msld {
 
   void init_abf(System* system);
   void add_sample_abf(System *system);
+  void getpotential_abf(System* system, real* potential_grid);
   void getforce_abf(System *system, bool calcEnergy);
 
   void init_oss(System* system);
   void add_sample_hist(System *system);
+  void getpotential_hist(System* system, real* potential_grid);
   void getforce_hist(System *system, bool calcEnergy);
 };
 

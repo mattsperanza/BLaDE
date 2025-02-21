@@ -994,6 +994,44 @@ void Msld::getforce_abf(System *system, bool calcEnergy) {
 }
 
 
+__global__ void getpotential_abf_kernel(
+  real* lambdas, real* lambdaForce, real* step_potential, real* step_force,
+  int* abf_hist_indices, int num_bins, real L_max, real L_min,
+  real* ensemble_dUdL, real* average_dUdL,
+  real_e *energy, int nL, real* potential_grid){
+
+    int i=blockIdx.x*blockDim.x+threadIdx.x;
+
+    real lEnergy = 0;
+    if (i < nL) {
+      int start = abf_hist_indices[i];
+      potential_grid[start] = lEnergy;
+      for (int j = 0; j < num_bins-1; j++) { 
+        real factor = j == 0 || j == num_bins-1 ? .5 : 1;
+        lEnergy += factor*(ensemble_dUdL[start+j] + ensemble_dUdL[start+j+1])*(.5/(num_bins-1));
+        potential_grid[start+j+1] = lEnergy;
+      }
+    }
+  }
+
+/**
+ * In-place fill of the potential of ABF at every point in lambda space
+ * represented.
+ * 
+ * Expects a device pointer to a grid with same dimensions as the abf grid.
+ */
+void Msld::getpotential_abf(System *system, real* potential_grid){
+
+  // Default stream
+  real_e* pEnergy =  NULL;
+  State* s = system->state;
+  getpotential_abf_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS>>>(
+    s->lambda_fd, s->lambdaForce_d, step_potential_d, step_force_d,
+    abf_index_d, L_abf_bins, L_max, L_min,
+    ensemble_dUdL_d, average_dUdL_d,
+    pEnergy, blockCount-1, potential_grid);
+}
+
 void Msld::init_oss(System* system){
   int nL = blockCount-1; // 0th lambda is environment
     int index[nL];
@@ -1013,7 +1051,7 @@ void Msld::init_oss(System* system){
 
 __global__ void add_sample_hist_kernel(
   real kT, int nL, real* lambdas, real* dU_msld, real* hist_potential,
-  real weight, real tempering, real* histogram, int* hist_indicies,
+  real weight, real tempering, real* histogram, int* hist_indices,
   int L_bins, real L_max, real L_min, 
   int dUdL_bins, real dUdL_max, real dUdL_min
 ) {
@@ -1022,7 +1060,7 @@ __global__ void add_sample_hist_kernel(
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
     int X =  get_histogram_index(lambdas[i+1], L_bins, L_max, L_min);
     int Y = get_histogram_index(dU_msld[i+1], dUdL_bins, dUdL_max, dUdL_min);
-    int index = hist_indicies[i] + X*dUdL_bins + Y; 
+    int index = hist_indices[i] + X*dUdL_bins + Y; 
     if (X >= 0 && X < L_bins && Y >= 0 && Y < dUdL_bins) {
       histogram[index] += weight*exp(-hist_potential[i] / (tempering * kT));
     }
@@ -1049,7 +1087,7 @@ void Msld::add_sample_hist(System* system) {
 __global__ void getforce_hist_kernel(
   int nL, real* lambdas, real* lambdaForce, real* dU_msld, 
   real* step_potential, real* hist_potential, real* step_force,
-  int* hist_indicies, real* histogram, 
+  int* hist_indices, real* histogram, 
   int dUdL_bins, real dUdL_max, real dUdL_min, int dUdL_search, 
   int L_bins, real L_max, real L_min, int L_search,
   real dUdL_std, real L_std, 
@@ -1066,14 +1104,14 @@ __global__ void getforce_hist_kernel(
     real bias = 0;
     real dUdL_force = 0;
     real L_force = 0;
-    int index_min = hist_indicies[i];
+    int index_min = hist_indices[i];
     int index_max = index_min + L_bins*dUdL_bins - 1;
     int id = 5;
     bool print = false;
     if(i == id && print){
       int i1 = i == nL-1 ? i : i+1;
       printf("Lambda: %f -> %d, dUdL: %f -> %d, hist_index[i]: %d, hist_index[i+1]: %d, index_min: %d, index_max: %d\n", 
-        lambdas[i+1], X, dU_msld[i+1], Y, hist_indicies[i], hist_indicies[i+1], index_min, index_max);
+        lambdas[i+1], X, dU_msld[i+1], Y, hist_indices[i], hist_indices[i+1], index_min, index_max);
     }
     for (int j = X-L_search; j <= X+L_search; j++) {
       int L_index = j;
@@ -1097,7 +1135,7 @@ __global__ void getforce_hist_kernel(
         real dUdL_distance = (dU_msld[i+1] - dUdL_center) / dUdL_std;
         real dUdL_gaussian = exp(-.5*dUdL_distance*dUdL_distance);
 
-        int index = hist_indicies[i] + L_index*dUdL_bins + dUdL_index; // indexed so dUdL bins are continuous in mem
+        int index = hist_indices[i] + L_index*dUdL_bins + dUdL_index; // indexed so dUdL bins are continuous in mem
         if(index < index_min || index > index_max){
           printf("Something wrong!!! i: %d, X: %d, Y: %d, index: %d, L: %f, dUdL: %f\n",
              i, L_index, dUdL_index, index, lambdas[i+1], dU_msld[i+1]);
@@ -1152,13 +1190,90 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
 
   // Currently set up to do one thread per lambda, each thread loops over (2*dUdL_search+1)*(2*L_search+1) bins
   getforce_hist_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
-    s->lambdaCount-1, s->lambda_fd, s->lambdaForce_d, dU_msld_d, 
+    blockCount-1, s->lambda_fd, s->lambdaForce_d, dU_msld_d, 
     step_potential_d, hist_potential_d, step_force_d,
     histogram_index_d, histogram_d, 
     dUdL_bins, dUdL_max, dUdL_min, dUdL_search, 
     L_hist_bins, L_max, L_min, L_search,
     dUdL_std, L_std, 
     dGdF_d, pEnergy);
+}
+
+__global__ void getpotential_hist_kernel(
+  int nL, real* lambdas, real* lambdaForce, real* dU_msld, 
+  real* step_potential, real* hist_potential, real* step_force,
+  int* hist_indices, real* histogram, 
+  int dUdL_bins, real dUdL_max, real dUdL_min, int dUdL_search, 
+  int L_bins, real L_max, real L_min, int L_search,
+  real dUdL_std, real L_std, 
+  real* dGdF, real_e* energy,
+  real* potential_grid
+) {
+  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  extern __shared__ real sEnergy[];
+  real lEnergy=0;
+  if (i < nL) {
+    for (int ii = 0; ii < L_bins; ii++){
+      int X = ii;
+      for(int jj = 0; jj < dUdL_bins; jj++){
+        int Y = jj;
+        real bias = 0.0;
+
+        // Evaluate potential at (X,Y)
+        for (int j = X-L_search; j <= X+L_search; j++) {
+          int L_index = j;
+          real L_resolution = (L_max-L_min)/(L_bins-1.0);
+          real L_center = L_index*L_resolution;
+    
+          L_index = L_index < 0 ? -L_index : L_index;
+          L_index = L_index > L_bins-1 ? L_index - 2*(L_index-(L_bins-1)) : L_index;
+          real factor = L_index == 0 || L_index == L_bins-1 ? 2 : 1;
+    
+          real L_distance = (lambdas[i+1] - L_center) / L_std;
+          real L_gaussian = exp(-.5*L_distance*L_distance);
+          for (int k = Y-dUdL_search; k <= Y+dUdL_search; k++) {
+            int dUdL_index = k;
+    
+            real dUdL_resolution = (dUdL_max-dUdL_min)/(dUdL_bins-1.0);
+            real dUdL_center = dUdL_min + dUdL_index*dUdL_resolution;
+            real dUdL_distance = (dU_msld[i+1] - dUdL_center) / dUdL_std;
+            real dUdL_gaussian = exp(-.5*dUdL_distance*dUdL_distance);
+    
+            int index = hist_indices[i] + L_index*dUdL_bins + dUdL_index; // indexed so dUdL bins are continuous in mem
+            real weight = histogram[index];
+    
+            real tmp_bias = factor * weight * L_gaussian * dUdL_gaussian;
+            bias += tmp_bias;
+          }
+        }
+
+        int index = hist_indices[i] + X*dUdL_bins + Y;
+        potential_grid[index] = bias;
+      }
+    }
+  }
+}
+
+/**
+ * In-place fill of the potential of the histogram at every point on the grid
+ * for every lambda.
+ *  
+ * Expects a device pointer to a grid with same dimensions as the histogram.
+ */
+void Msld::getpotential_hist(System *system, real* potential_grid){
+
+  real_e* pEnergy =  NULL;
+  State* s = system->state;
+  getpotential_hist_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS>>>(
+    blockCount-1, s->lambda_fd, s->lambdaForce_d, dU_msld_d, 
+    step_potential_d, hist_potential_d, step_force_d,
+    histogram_index_d, histogram_d, 
+    dUdL_bins, dUdL_max, dUdL_min, dUdL_search, 
+    L_hist_bins, L_max, L_min, L_search,
+    dUdL_std, L_std, 
+    dGdF_d, pEnergy,
+    potential_grid
+  );
 }
 
 __global__ void calc_lambda_from_theta_kernel(real_x *lambda,real_x *theta,int siteCount,int *siteBound,real fnex)

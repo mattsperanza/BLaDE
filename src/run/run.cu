@@ -16,6 +16,11 @@
 #include "domdec/domdec.h"
 #include "main/gpu_check.h"
 
+#include <iostream>    // For std::cout, std::cerr
+#include <fstream>     // For std::ofstream
+#include <unistd.h>    // For getcwd
+
+
 #ifdef REPLICAEXCHANGE
 #include <mpi.h>
 #endif
@@ -549,6 +554,78 @@ void test_OST_force(System *system) {
   }
 }
 
+void write_bias_potentials(System* system, std::string file_name) {
+  // Print path to file
+  char cwd[1024];
+  if (getcwd(cwd, sizeof(cwd)) != nullptr) {
+      std::cout << "Writing bias potentials to: " << cwd << "/" << file_name << std::endl;
+  }
+
+  std::ofstream file(file_name);
+  if (!file) {
+      std::cerr << "Error: Unable to open file " << file_name << " for writing." << std::endl;
+      return;
+  }
+
+  int nL = system->state->lambdaCount - 1;
+  file << "# Num_Lambdas: " << nL << "\n";
+
+  if (system->msld->abf) {
+      int bins = system->msld->L_abf_bins;
+      real* abf_potential_d;
+      real* abf_potential = (real*)malloc(bins * nL * sizeof(real));
+      
+      cudaMalloc(&abf_potential_d, bins * nL * sizeof(real));
+      system->msld->getpotential_abf(system, abf_potential_d);
+      cudaMemcpy(abf_potential, abf_potential_d, bins * nL * sizeof(real), cudaMemcpyDeviceToHost);
+
+      file << "# ABF Potential\n";
+      for (int i = 0; i < nL; i++) {
+          file << "# Lambda " << i << " Bins " << bins << "\n";
+          for (int j = 0; j < bins; j++) {
+              file << i << ", " << j << ", " << abf_potential[i * bins + j] << "\n";
+          }
+      }
+
+      free(abf_potential);
+      cudaFree(abf_potential_d);
+  }
+
+  if (system->msld->oss) {
+      int L_bins = system->msld->L_hist_bins;
+      real L_max = system->msld->L_max;
+      real L_min = system->msld->L_min;
+      int dUdL_bins = system->msld->dUdL_bins;
+      real dUdL_max = system->msld->dUdL_max;
+      real dUdL_min = system->msld->dUdL_min;
+
+      real* hist_potential_d;
+      real* hist_potential = (real*)malloc(L_bins * dUdL_bins * nL * sizeof(real));
+      
+      cudaMalloc(&hist_potential_d, L_bins * dUdL_bins * nL * sizeof(real));
+      system->msld->getpotential_hist(system, hist_potential_d);
+      cudaMemcpy(hist_potential, hist_potential_d, L_bins * dUdL_bins * nL * sizeof(real), cudaMemcpyDeviceToHost);
+
+      file << "# Histogram Potential\n";
+      for (int i = 0; i < nL; i++) {
+          file << "# Lambda " << i << " L_bins: " << L_bins << "L_range: [" << L_min << ", " << L_max << "] " 
+               << " dUdL_bins " << dUdL_bins << "dUdL_range: [" << dUdL_min << ", " << dUdL_max << "] " << "\n";
+          for (int j = 0; j < L_bins; j++) {
+              for (int k = 0; k < dUdL_bins; k++) {
+                  int idx = i * L_bins * dUdL_bins + j * dUdL_bins + k;
+                  file << i << ", " << j << ", " << k << ", " << hist_potential[idx] << "\n";
+              }
+          }
+      }
+
+      free(hist_potential);
+      cudaFree(hist_potential_d);
+  }
+
+  file.close();
+  std::cout << "Finished writing bias potentials." << std::endl;
+}
+
 void test_OSS_conservation(System* system) {
   // Note switching between double and float precision causes "Internal overflow" error
   real* hist = system->msld->histogram_d;
@@ -558,10 +635,8 @@ void test_OSS_conservation(System* system) {
   int count = nL*width*hight;
 
   // NPT/NVT for 100k steps adding bias
-  system->run->calcTermFlag[eenbdirect] = false;
-  system->run->calcTermFlag[eenb14] = false;
-  int total = 100000;
-  int updating = total * .9;
+  int total = 10000;
+  int updating = total * 1.0;
   printf("Running %d steps with bias+update and %d steps just bias to equilibrate!\n", updating, total-updating);
   system->run->freqNRG = 1;
   for (int step=0; step<total; step++) { 
@@ -590,12 +665,16 @@ void test_OSS_conservation(System* system) {
     }
   }
 
+  // Output Histogram data to histograms.txt
+  write_bias_potentials(system, "histograms.txt");
+
   // Turn on NVE for 500k w/ oss & abf update off
   printf("Running 500k steps with oss to check energy conservation!\n");
   system->run->freqNPT = 0; // turn off pressure coupling
   system->state->leapParms1->gamma = 0; // turn off langevin
   system->state->recv_energy(); // get kinetic energy
   real eStart = system->state->energy[eetotal];
+  system->msld->update_fe_surface = false;
   printf("Starting energy conservation with:\n Pot: %f\n, Kin: %f\n, Tot: %f\n",
    system->state->energy[eepotential],
    system->state->energy[eekinetic],
