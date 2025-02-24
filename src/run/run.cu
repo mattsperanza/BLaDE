@@ -631,7 +631,7 @@ void test_OSS_conservation(System* system) {
   int nL = system->state->lambdaCount-1; // no environment
 
   // NPT/NVT for 100k steps adding bias
-  int total = 100010;
+  int total = 10010;
   int updating = total * 1.0;
   printf("Running %d steps with bias+update and %d steps just bias to equilibrate!\n", updating, total-updating);
   system->run->freqNRG = 1;

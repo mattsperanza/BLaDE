@@ -58,7 +58,7 @@ class Msld {
   // FE Estimation Variables -> need to be on/off before msld::init is called since no other init_XXX method call exists
   // Mem not allocated if not set since histogram so large
   bool update_fe_surface = true; // add samples to abf/meta/oss
-  int sample_freq = 5;
+  int sample_freq = 10;
   real* dGdF_d;
   real* dU_msld_d;
   real* hist_potential_d; // potential from metadynamics
@@ -79,8 +79,8 @@ class Msld {
   // Meta options
   bool temper = false;
   bool decouple = false; // Parallel bias meta-dynamics
-  real min_bias = 2.0; // Amount of bias to add before starting tempering in kcal/mol
-  real tempering = 8.0; // exp(-min(0,min_bias - minL(maxFl(g(L, dU))))/tempering) 
+  real min_bias = 2.0; // Amount of bias stored in histogram to add before starting tempering in kcal/mol
+  real tempering = 8.0; // exp(-g(L, dU))/tempering)
   real gaussian_weight = .01; // kcal/mol
 
   // Don't change?

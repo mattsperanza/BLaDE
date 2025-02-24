@@ -421,14 +421,18 @@ void parse_msld(char *line,System *system)
     system->msld->temper=io_nextb(line);
   } else if (strcmp(token, "temper_amount") == 0) {
     system->msld->tempering=io_nextf(line);
+  } else if (strcmp(token, "min_bias") == 0){
+    system->msld->min_bias=io_nextf(line);
   } else if (strcmp(token, "decouple") == 0){
     system->msld->decouple=io_nextb(line);
   } else if (strcmp(token, "abf") == 0){
     system->msld->abf=io_nextb(line);
   } else if (strcmp(token, "meta") == 0){
     system->msld->meta=io_nextb(line);
-  } else if (strcmp(token, "update_fe") == 0){
+  } else if (strcmp(token, "update_fe") == 0) {
     system->msld->update_fe_surface=io_nextb(line);
+  } else if (strcmp(token, "sample_freq") == 0){
+    system->msld->sample_freq=io_nexti(line);
   } else {
     fatal(__FILE__,__LINE__,"Unrecognized selection token: %s\n",token);
   }
@@ -863,12 +867,14 @@ void Msld::add_sample_abf(System* system){
     int count = 0;
     system->state->recv_lambda();
     printf("Step: %ld\n", system->run->step);
+    real fractionPhysical = 0.0;
     for (int i = 0; i < siteCount-1; i++) {
       real relative = 0;
       for (int k = 0; k < blocksPerSite[i+1]; k++) {
         int start= indices[count];
         printf("Site %d, Sub %d\n", i, k);
         printf("Lambda: %f \n", s->lambda[count+1]);
+        fractionPhysical += counts[system->msld->L_abf_bins-1];
         printf("Histogram: [ ");
         for (int j = 0; j < L_abf_bins; j++) {
           printf("%f, ", counts[start+j]);
@@ -912,7 +918,7 @@ void Msld::add_sample_abf(System* system){
         sum += ni_to_nj;
 
         // dG WT->j = -kT ln(Zj(1)/ZWT(1))
-        int bins = system->msld->L_abf_bins;
+        int bins = system->msld->L_abf_bins-1; // index to last bin
         wWT = weights[bins];
         offWT = offsets[bins];
         wj = weights[indices[count] + bins];
@@ -923,6 +929,12 @@ void Msld::add_sample_abf(System* system){
         count++;
       }
     }
+    real totalSamples = 0;
+    for (int i = 0; i < L_abf_bins; i++) {
+      totalSamples += counts[i];
+    }
+    fractionPhysical /= totalSamples;
+    printf("Fraction Physical: %f", fractionPhysical);
     printf("\n\n");
   }
 }
