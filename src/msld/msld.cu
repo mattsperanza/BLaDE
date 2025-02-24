@@ -4,6 +4,7 @@
 
 #include "msld/msld.h"
 
+#include <cfloat>
 #include <math.h>
 #include <math.h>
 
@@ -412,8 +413,16 @@ void parse_msld(char *line,System *system)
 // NYI - charge restraints, put Q in initialize
   } else if (strcmp(token,"print")==0) {
     system->selections->dump();
-  } else if (strcmp(token, "oss") == 0){
+  } else if (strcmp(token, "oss") == 0) {
     system->msld->oss=io_nextb(line);
+  } else if (strcmp(token, "bias_mag") == 0) {
+    system->msld->gaussian_weight=io_nextf(line);
+  } else if (strcmp(token, "temper") == 0) {
+    system->msld->temper=io_nextb(line);
+  } else if (strcmp(token, "temper_amount") == 0) {
+    system->msld->tempering=io_nextf(line);
+  } else if (strcmp(token, "decouple") == 0){
+    system->msld->decouple=io_nextb(line);
   } else if (strcmp(token, "abf") == 0){
     system->msld->abf=io_nextb(line);
   } else if (strcmp(token, "meta") == 0){
@@ -794,8 +803,8 @@ __global__ void add_sample_abf_kernel(
     average_dUdL[hist_bin] = (average_dUdL[hist_bin] * histogram_counts[hist_bin] + dUdL) / (histogram_counts[hist_bin] + 1);
     histogram_counts[hist_bin] += 1;
     real beta = 1 / kT;
-    real bias = beta * potEnergy; // U_ost; U_ost > 0
-    if (bias > offsets[hist_bin]) { // largest boltzmann weight = 1
+    real bias = beta * potEnergy;
+    if (bias >= offsets[hist_bin]) { // largest boltzmann weight = 1
       real correction = exp(offsets[hist_bin]-bias); // exp(U-old)*exp(old-new) = exp(U-new)
       offsets[hist_bin] = bias;
       weights[hist_bin] *= correction;
@@ -805,11 +814,11 @@ __global__ void add_sample_abf_kernel(
     weights[hist_bin] += exp(bias - offsets[hist_bin]);
     weighted_dU_dL[hist_bin] += dUdL * exp(bias - offsets[hist_bin]);
     weighted_dUdL2[hist_bin] += dUdL*dUdL * exp(bias - offsets[hist_bin]);
-    // The offset we defined cancels in this calculation - (exp(offset)*exp(U-offset))/(exp(offset)*sum(exp(U-offset)))
+    // The offset we defined cancels in this calculation
     // sum(Fl*exp(g(L, dU))) / sum(exp(g(L, dU))
     ensemble_dUdL[hist_bin] = weighted_dU_dL[hist_bin] / weights[hist_bin];
     ensemble_dUdL2[hist_bin] = weighted_dUdL2[hist_bin] / weights[hist_bin];
-    if (isnan(ensemble_dUdL[hist_bin]) || isnan(weights[hist_bin])) {
+    if (isnan(ensemble_dUdL[hist_bin]) || isnan(weights[hist_bin]) || isinf(ensemble_dUdL[hist_bin])) {
       printf("Something wrong in add_sample_abf!!!\n");
       printf("i: %d, L: %f, dUdL: %f, bias: %f, weights[%d]: %f, offsets[hist_bin]: %f, ensemble_dUdL[hist_bins]: %f, count[hist_bins]: %f\n",
         i, lambda, dUdL, bias, hist_bin, weights[hist_bin], offsets[hist_bin], ensemble_dUdL[hist_bin], histogram_counts[hist_bin]);
@@ -1062,18 +1071,27 @@ void Msld::init_oss(System* system){
 
 __global__ void add_sample_hist_kernel(
   real kT, int nL, real* lambdas, real* dU_msld, real* hist_potential,
-  real weight, real tempering, real* histogram, int* hist_indices,
+  real weight, real tempering, real temper_min,
+  real* histogram, int* hist_indices,
   int L_bins, real L_max, real L_min, 
-  int dUdL_bins, real dUdL_max, real dUdL_min
+  int dUdL_bins, real dUdL_max, real dUdL_min,
+  bool temper, bool decouple
 ) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
     int X =  get_histogram_index(lambdas[i+1], L_bins, L_max, L_min);
     int Y = get_histogram_index(dU_msld[i+1], dUdL_bins, dUdL_max, dUdL_min);
-    int index = hist_indices[i] + X*dUdL_bins + Y; 
+    int index = hist_indices[i] + X*dUdL_bins + Y;
+    real sum = 0.0;
+    for (int j = 0; j < nL; j++) {
+      sum += exp(-hist_potential[j] / kT);
+    }
+    real factorDecouple = decouple ? exp(-hist_potential[i] / kT) / sum : 1.0;
+    // TODO: make tempering based off Mike's tempering
+    real factorTemper = temper ? exp(-hist_potential[i] / (tempering*kT)) : 1.0;
     if (X >= 0 && X < L_bins && Y >= 0 && Y < dUdL_bins) {
-      histogram[index] += weight*exp(-hist_potential[i] / (tempering * kT));
+      histogram[index] += weight * factorDecouple * factorTemper;
     }
   }
 };
@@ -1091,8 +1109,9 @@ void Msld::add_sample_hist(System* system) {
 
   add_sample_hist_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->leapParms1->kT, blockCount-1, s->lambda_fd, dU_msld_d, hist_potential_d,
-    gaussian_weight, tempering, histogram_d, histogram_index_d,
-    L_hist_bins, L_max, L_min, dUdL_bins, dUdL_max, dUdL_min);
+    gaussian_weight, tempering, min_bias, histogram_d, histogram_index_d,
+    L_hist_bins, L_max, L_min, dUdL_bins, dUdL_max, dUdL_min,
+    temper, decouple);
 }
 
 __global__ void getforce_hist_kernel(
@@ -1122,18 +1141,15 @@ __global__ void getforce_hist_kernel(
     if(i == id && print){
       int i1 = i == nL-1 ? i : i+1;
       printf("Lambda: %f -> %d, dUdL: %f -> %d, hist_index[i]: %d, hist_index[i+1]: %d, index_min: %d, index_max: %d\n", 
-        lambdas[i+1], X, dU_msld[i+1], Y, hist_indices[i], hist_indices[i+1], index_min, index_max);
+        lambdas[i+1], X, dU_msld[i+1], Y, hist_indices[i], hist_indices[i1], index_min, index_max);
     }
     for (int j = X-L_search; j <= X+L_search; j++) {
       int L_index = j;
+      if(L_index < 0) {continue;}
+      if(L_index >= L_bins){break;}
+
       real L_resolution = (L_max-L_min)/(L_bins-1.0);
       real L_center = L_index*L_resolution;
-
-      // Mirror lambda -> idea from ForceFieldX: https://doi.org/10.1063/5.0214652
-      L_index = L_index < 0 ? -L_index : L_index;
-      L_index = L_index > L_bins-1 ? L_index - 2*(L_index-(L_bins-1)) : L_index;
-      real factor = L_index == 0 || L_index == L_bins-1 ? 2 : 1;
-
       real L_distance = (lambdas[i+1] - L_center) / L_std;
       real L_gaussian = exp(-.5*L_distance*L_distance);
       for (int k = Y-dUdL_search; k <= Y+dUdL_search; k++) {
@@ -1147,22 +1163,17 @@ __global__ void getforce_hist_kernel(
         real dUdL_gaussian = exp(-.5*dUdL_distance*dUdL_distance);
 
         int index = hist_indices[i] + L_index*dUdL_bins + dUdL_index; // indexed so dUdL bins are continuous in mem
-        if(index < index_min || index > index_max){
-          printf("Something wrong!!! i: %d, X: %d, Y: %d, index: %d, L: %f, dUdL: %f\n",
-             i, L_index, dUdL_index, index, lambdas[i+1], dU_msld[i+1]);
-          continue;
-        }
         real weight = histogram[index];
 
-        real tmp_bias = factor * weight * L_gaussian * dUdL_gaussian;
+        real tmp_bias = weight * L_gaussian * dUdL_gaussian;
         bias += tmp_bias;
         dUdL_force += -dUdL_distance/dUdL_std * tmp_bias;
         L_force += -L_distance/L_std * tmp_bias;
 
-        if(i == id && print || isnan(tmp_bias)){
-          printf(" (i: %d, index: %3d, X: %3d -> %3f, Y: %3d -> %3f, Z: %3f, fac: %3f)",
-            i, index, L_index, L_center, dUdL_index, dUdL_center, tmp_bias, factor);
-          }
+        if(i == id && print || isnan(tmp_bias) || isinf(tmp_bias)){
+          printf("i: %d, L: %f, dUdL: %f, index: %3d, histogram[index]: %f, X: %3d -> %3f, Y: %3d -> %3f, Z: %3f \n",
+            i, lambdas[i+1], dU_msld[i+1], index, histogram[index], L_index, L_center, dUdL_index, dUdL_center, tmp_bias);
+        }
       }
       if(i == id && print){ printf("\n"); }
     }
@@ -1211,21 +1222,22 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
 }
 
 __global__ void getpotential_hist_kernel(
-  int nL, real* lambdas, real* lambdaForce, real* dU_msld, 
-  real* step_potential, real* hist_potential, real* step_force,
-  int* hist_indices, real* histogram, 
+  int nL, int* hist_indices, real* histogram,
   int dUdL_bins, real dUdL_max, real dUdL_min, int dUdL_search, 
   int L_bins, real L_max, real L_min, int L_search,
   real dUdL_std, real L_std, 
-  real* dGdF, real_e* energy,
   real* potential_grid
 ) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
     for (int ii = 0; ii < L_bins; ii++){
       int X = ii;
+      real X_res = (L_max - L_min) / (L_bins-1.0);
+      real X_center = X*X_res;
       for(int jj = 0; jj < dUdL_bins; jj++){
         int Y = jj;
+        real Y_res = (dUdL_max - dUdL_min) / (dUdL_bins-1.0);
+        real Y_center = dUdL_min + Y*Y_res;
         real bias = 0.0;
 
         // Evaluate potential at (X,Y)
@@ -1233,25 +1245,27 @@ __global__ void getpotential_hist_kernel(
           int L_index = j;
           real L_resolution = (L_max-L_min)/(L_bins-1.0);
           real L_center = L_index*L_resolution;
-    
-          L_index = L_index < 0 ? -L_index : L_index;
-          L_index = L_index > L_bins-1 ? L_index - 2*(L_index-(L_bins-1)) : L_index;
-          real factor = L_index == 0 || L_index == L_bins-1 ? 2 : 1;
-    
-          real L_distance = (lambdas[i+1] - L_center) / L_std;
+
+          if (L_index < 0) {continue;}
+          if (L_index >= L_bins) {break;}
+
+          real L_distance = (X_center - L_center) / L_std;
           real L_gaussian = exp(-.5*L_distance*L_distance);
           for (int k = Y-dUdL_search; k <= Y+dUdL_search; k++) {
             int dUdL_index = k;
-    
+
+            if (dUdL_index < 0) {continue;}
+            if (dUdL_index >= dUdL_bins) {break;}
+
             real dUdL_resolution = (dUdL_max-dUdL_min)/(dUdL_bins-1.0);
             real dUdL_center = dUdL_min + dUdL_index*dUdL_resolution;
-            real dUdL_distance = (dU_msld[i+1] - dUdL_center) / dUdL_std;
+            real dUdL_distance = (Y_center - dUdL_center) / dUdL_std;
             real dUdL_gaussian = exp(-.5*dUdL_distance*dUdL_distance);
     
             int index = hist_indices[i] + L_index*dUdL_bins + dUdL_index; // indexed so dUdL bins are continuous in mem
             real weight = histogram[index];
     
-            real tmp_bias = factor * weight * L_gaussian * dUdL_gaussian;
+            real tmp_bias = weight * L_gaussian * dUdL_gaussian;
             bias += tmp_bias;
           }
         }
@@ -1270,19 +1284,12 @@ __global__ void getpotential_hist_kernel(
  * Expects a device pointer to a grid with same dimensions as the histogram.
  */
 void Msld::getpotential_hist(System *system, real* potential_grid){
-
-  real_e* pEnergy =  NULL;
-  State* s = system->state;
   getpotential_hist_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS>>>(
-    blockCount-1, s->lambda_fd, s->lambdaForce_d, dU_msld_d, 
-    step_potential_d, hist_potential_d, step_force_d,
-    histogram_index_d, histogram_d, 
+    blockCount-1, histogram_index_d, histogram_d,
     dUdL_bins, dUdL_max, dUdL_min, dUdL_search, 
     L_hist_bins, L_max, L_min, L_search,
     dUdL_std, L_std, 
-    dGdF_d, pEnergy,
-    potential_grid
-  );
+    potential_grid);
 }
 
 __global__ void calc_lambda_from_theta_kernel(real_x *lambda,real_x *theta,int siteCount,int *siteBound,real fnex)

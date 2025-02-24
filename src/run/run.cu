@@ -628,10 +628,7 @@ void write_bias_potentials(System* system, std::string file_name) {
 }
 
 void test_OSS_conservation(System* system) {
-  // Note switching between double and float precision causes "Internal overflow" error
   int nL = system->state->lambdaCount-1; // no environment
-  int width = system->msld->L_hist_bins;
-  int hight = system->msld->dUdL_bins;
 
   // NPT/NVT for 100k steps adding bias
   int total = 100010;
@@ -650,30 +647,26 @@ void test_OSS_conservation(System* system) {
       printf("\n\n\nTurning off FE estimation updating!\n\n\n");
       system->msld->update_fe_surface = false;
     }
-    if(step % 1 == 0){
-      system->state->recv_energy();
-      printf("Step: %d, Pot: %f, Kin: %f, Tot: %f\n",
-        step,
-        system->state->energy[eepotential],
-        system->state->energy[eekinetic],
-        system->state->energy[eetotal]);
-      real dUdL[nL+1];
+    system->state->recv_energy();
+    if (isnan(system->state->energy[eetotal]) || isinf(system->state->energy[eetotal])) {
+      printf("Something went wrong!!\n");
+      printf("Energies: \n");
+      for (int i = 0; i < eetotal; i++) {
+        printf("Term %d: %f\n", i, system->state->energy[i]);
+      }
+      exit(-1);
+    }
+
+    if(step % 1000 == 0){
+      printf("Step: %d, Pot: %f, Kin: %f, Tot: %f\n",step,system->state->energy[eepotential],system->state->energy[eekinetic],system->state->energy[eetotal]);
+      real dUdL[nL+1], dU_msld[nL+1];
       cudaMemcpy(dUdL, system->state->lambdaForce_d, (nL+1)*sizeof(real), cudaMemcpyDefault);
-      real dU_msld[nL+1];
       cudaMemcpy(dU_msld, system->msld->dU_msld_d, (nL+1)*sizeof(real), cudaMemcpyDefault);
       printf("Lambda Force: [ ");
       for (int i = 0; i < nL+1; i++) {
         printf("%f -> %f, ", dU_msld[i], dUdL[i]);
       }
       printf(" ]\n");
-      if (isnan(system->state->energy[eetotal])) {
-        printf("Something went wrong!!\n");
-        printf("Energies: \n");
-        for (int i = 0; i < eetotal; i++) {
-          printf("Term %d: %f\n", i, system->state->energy[i]);
-        }
-        exit(-1);
-      }
     }
   }
 
@@ -709,8 +702,12 @@ void test_OSS_conservation(System* system) {
       system->state->energy[eetotal],
       eStart, diff,
       drift, drift_step_dof);
-    if (isnan(system->state->energy[eetotal])) {
+    if (isnan(system->state->energy[eetotal]) || isinf(system->state->energy[eetotal])) {
       printf("Something went wrong!!\n");
+      printf("Energies: \n");
+      for (int i = 0; i < eetotal; i++) {
+        printf("Term %d: %f\n", i, system->state->energy[i]);
+      }
       exit(-1);
     }
   }

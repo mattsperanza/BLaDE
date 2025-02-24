@@ -68,33 +68,36 @@ class Msld {
   real L_max = 1.0;
   real L_min = 0.0;
 
-  // Histogram - uniform binning
+  // Meta - uniform binning - use abf histogram?
+  bool meta = false;
+
+  // Histogram (2D meta) - uniform binning
   bool oss = false; // Perform Orthogonal Space Sampling force calculations
   real* histogram_d; // 1000 x 100 = 1 million float = 4 -> stores sum of prefactors
   int* histogram_index_d; // index into lambda's histogram
 
-  // Can change
-  real tempering = 8.0; // exp(-g(X,L)/tempering) = tempering gaussian_weight
-  real gaussian_weight = .05; // kcal/mol
+  // Meta options
+  bool temper = false;
+  bool decouple = false; // Parallel bias meta-dynamics
+  real min_bias = 2.0; // Amount of bias to add before starting tempering in kcal/mol
+  real tempering = 8.0; // exp(-min(0,min_bias - minL(maxFl(g(L, dU))))/tempering) 
+  real gaussian_weight = .01; // kcal/mol
+
+  // Don't change?
   int L_hist_bins = 101; // # of whole bins that fit in range [L_min, L_max]
   int dUdL_bins = 1001; // # of whole bins that fit in range [dUdL_min, dUdL_max]
   real dUdL_max = 1500;
   real dUdL_min = -dUdL_max; // symmetric energy range
-
-  // Don't change
   real L_resolution = (abs(L_max)+abs(L_min))/L_hist_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
-  real L_std = 2.0*L_resolution; // 2/3 times the resolution
+  real L_std = 3.0*L_resolution; // 2/3 times the resolution
   real dUdL_std = 5.0*dUdL_resolution;
-  int L_search = 4.0*(L_std/L_resolution); // ~5 L std in each direction
-  int dUdL_search = 4.0*(dUdL_std/dUdL_resolution); // ~5 dUdL std in each direction
-
-  // Meta - uniform binning
-  bool meta = false;
+  int L_search = 5.0*(L_std/L_resolution); // ~5 L std in each direction
+  int dUdL_search = 5.0*(dUdL_std/dUdL_resolution); // ~5 dUdL std in each direction
 
   // ABF - uniform binning - separate from histogram estimation
   bool abf = false;
-  int nFull = 0;
+  int nFull = 100;
   int L_abf_bins = 101; // this is also the max index
   int* abf_index_d; // index into abf histogram
   real* lambda_counts_d; // counts in bin -> also used for 1D meta
