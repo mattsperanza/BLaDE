@@ -13,6 +13,11 @@
 
 // parse_whatever
 #include "io/io.h"
+
+#include <fstream>
+#include <iostream>
+#include <ostream>
+
 #include "io/variables.h"
 #include "system/parameters.h"
 #include "system/structure.h"
@@ -418,6 +423,79 @@ void write_checkpoint_file(const char *fnm,System *system)
 
     fclose(fp);
   }
+}
+
+// Written by ChatGPT so expect errors
+void write_histogram_file(System* system, std::string file_name) {
+  // Print path to file
+  char cwd[1024];
+  if (getcwd(cwd, sizeof(cwd)) != nullptr) {
+    std::cout << "Writing bias potentials to: " << cwd << "/" << file_name << std::endl;
+  }
+
+  std::ofstream file(file_name);
+  if (!file) {
+    std::cerr << "Error: Unable to open file " << file_name << " for writing." << std::endl;
+    return;
+  }
+
+  int nL = system->state->lambdaCount - 1;
+  file << "# Num_Lambdas: " << nL << "\n";
+
+  if (system->msld->abf) {
+    printf("Writing ABF to file!\n");
+    int bins = system->msld->L_abf_bins;
+    real* abf_potential_d;
+    real* abf_potential = (real*)malloc(bins * nL * sizeof(real));
+
+    cudaMemcpy(abf_potential, system->msld->ensemble_dUdL_d, bins * nL * sizeof(real), cudaMemcpyDeviceToHost);
+
+    file << "# ABF <dU/dL>\n";
+    for (int i = 0; i < nL; i++) {
+      file << "# Lambda " << i << " Bins " << bins << "\n";
+      for (int j = 0; j < bins; j++) {
+          file << i << ", " << j << ", " << abf_potential[i * bins + j] << "\n";
+      }
+    }
+
+    free(abf_potential);
+    cudaFree(abf_potential_d);
+  }
+
+  if (system->msld->oss) {
+    printf("Writing histogram to file!\n");
+    int L_bins = system->msld->L_oss_bins;
+    real L_max = system->msld->L_max;
+    real L_min = system->msld->L_min;
+    int dUdL_bins = system->msld->dUdL_bins;
+    real dUdL_max = system->msld->dUdL_max;
+    real dUdL_min = system->msld->dUdL_min;
+
+    real* hist_potential_d;
+    real* hist_potential = (real*)malloc(L_bins * dUdL_bins * nL * sizeof(real));
+
+    cudaMalloc(&hist_potential_d, L_bins * dUdL_bins * nL * sizeof(real));
+    system->msld->getpotential_hist(system, hist_potential_d);
+    cudaMemcpy(hist_potential, hist_potential_d, L_bins * dUdL_bins * nL * sizeof(real), cudaMemcpyDeviceToHost);
+
+    file << "# Histogram Potential\n";
+    for (int i = 0; i < nL; i++) {
+      file << "# Lambda " << i << " L_bins: " << L_bins << " L_range: [" << L_min << ", " << L_max << "]"
+         << " dUdL_bins: " << dUdL_bins << " dUdL_range: [" << dUdL_min << ", " << dUdL_max << "] " << "\n";
+      for (int j = 0; j < L_bins; j++) {
+        for (int k = 0; k < dUdL_bins; k++) {
+          int idx = i * L_bins * dUdL_bins + j * dUdL_bins + k;
+          file << i << ", " << j << ", " << k << ", " << hist_potential[idx] << "\n";
+        }
+      }
+    }
+
+    free(hist_potential);
+    cudaFree(hist_potential_d);
+  }
+
+  file.close();
+  std::cout << "Finished writing bias potentials." << std::endl;
 }
 
 void read_checkpoint_file(const char *fnm,System *system)

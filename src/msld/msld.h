@@ -70,11 +70,15 @@ class Msld {
 
   // Meta - uniform binning - use abf histogram?
   bool meta = false;
+  int L_meta_bins = 101;
+  real* meta_histogram_d;
+  int* meta_index_d;
 
   // Histogram (2D meta) - uniform binning
   bool oss = false; // Perform Orthogonal Space Sampling force calculations
-  real* histogram_d; // 1000 x 100 = 1 million float = 4 -> stores sum of prefactors
-  int* histogram_index_d; // index into lambda's histogram
+  int L_oss_bins = 101; // # of whole bins that fit in range [L_min, L_max]
+  real* oss_histogram_d; // 1000 x 100 = 1 million float = 4 -> stores sum of prefactors
+  int* oss_index_d; // index into lambda's histogram
 
   // Meta options
   bool temper = false;
@@ -84,11 +88,10 @@ class Msld {
   real gaussian_weight = .01; // kcal/mol
 
   // Don't change?
-  int L_hist_bins = 101; // # of whole bins that fit in range [L_min, L_max]
   int dUdL_bins = 1001; // # of whole bins that fit in range [dUdL_min, dUdL_max]
   real dUdL_max = 1500;
   real dUdL_min = -dUdL_max; // symmetric energy range
-  real L_resolution = (abs(L_max)+abs(L_min))/L_hist_bins;
+  real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
   real L_std = 3.0*L_resolution; // 2/3 times the resolution
   real dUdL_std = 5.0*dUdL_resolution;
@@ -100,7 +103,7 @@ class Msld {
   int nFull = 100;
   int L_abf_bins = 101; // this is also the max index
   int* abf_index_d; // index into abf histogram
-  real* lambda_counts_d; // counts in bin -> also used for 1D meta
+  real* abf_histogram_d; // counts in bin -> also used for 1D meta
   real* ensemble_dUdL_d;
   real* ensemble_dUdL2_d;
   real* weights_d;
@@ -173,6 +176,8 @@ class Msld {
 
   // On the fly enhanced sampling
   void init_meta(System* system);
+  void add_sample_meta(System *system);
+  void get_force_meta(System* system, bool calcEnergy);
 
   void init_abf(System* system);
   void add_sample_abf(System *system);

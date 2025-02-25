@@ -1659,9 +1659,14 @@ void Potential::calc_force(int step,System *system) {
     gpuCheck(cudaPeekAtLastError());
     // ABF & OSS update/calc energy&force w/ step_p, step_f, & lambdaF
   }
-  // TODO: Make sure these three are race-condition safe
   if (system->msld->meta) {
-    // TODO: Meta-dynamics
+    gpuCheck(cudaPeekAtLastError());
+    system->msld->get_force_meta(system, calcEnergy);
+    gpuCheck(cudaPeekAtLastError());
+    if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
+      system->msld->add_sample_meta(system);
+      gpuCheck(cudaPeekAtLastError());
+    }
   }
   if (system->msld->oss) {
     // Wait on lambda force calc being complete
@@ -1708,7 +1713,7 @@ void Potential::calc_force(int step,System *system) {
       cudaStreamWaitEvent(r->updateStream, r->ossRecipComplete, 0);
     }
   }
-  // Need to wait for what step_potential is to properly weight sample - add alf bias?
+  // Need to wait for what hist_potential is to properly weight sample - add alf bias?
   if (system->msld->abf) { 
     // Wait on lambda force calc
     cudaStreamWaitEvent(r->abfBias, r->ossBiasComplete, 0);
