@@ -1283,6 +1283,7 @@ __global__ void getforce_hist_kernel(
       printf("Lambda: %f -> %d, dUdL: %f -> %d, hist_index[i]: %d, hist_index[i+1]: %d, index_min: %d, index_max: %d\n", 
         lambdas[i+1], X, dU_msld[i+1], Y, hist_indices[i], hist_indices[i1], index_min, index_max);
     }
+    // Meta-dynamics
     for (int j = X-L_search; j <= X+L_search; j++) {
       int L_index = j;
       real mirrorFactor = L_index == 0 ? 2.0 : 1.0;
@@ -1317,6 +1318,12 @@ __global__ void getforce_hist_kernel(
         }
       }
       if(i == id && print){ printf("\n"); }
+    }
+    if (dU_msld[i+1] > dUdL_max || dU_msld[i+1] < dUdL_min) { // Harmonic restraint to remain inside [dUdL_min, dUdL_max]
+      real k = .01; // 100 kcal force over -> 1 (force unit)
+      real dUdL0 = dU_msld[i+1] > dUdL_max ? dUdL_max : dUdL_min;
+      bias += k/2.0*pow(dU_msld[i+1] - dUdL0, 2);
+      dUdL_force += k*(dU_msld[i+1] - dUdL0);
     }
     // ABF & meta race
     atomicAdd(&lambdaForce[i+1], L_force);

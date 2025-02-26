@@ -569,7 +569,7 @@ void test_OSS_conservation(System* system) {
   int nL = system->state->lambdaCount-1; // no environment
 
   // NPT/NVT for 100k steps adding bias
-  int total = 100010;
+  int total = 1000010;
   int updating = total * .5;
   printf("Running %d steps with bias+update and %d steps just bias to equilibrate!\n", updating, total-updating);
   system->run->freqNRG = 1;
@@ -595,7 +595,7 @@ void test_OSS_conservation(System* system) {
       exit(-1);
     }
 
-    if(step % 1 == 0){
+    if(step % 1000 == 0){
       printf("Step: %d, Pot: %f, Kin: %f, Tot: %f\n",step,system->state->energy[eepotential],system->state->energy[eekinetic],system->state->energy[eetotal]);
       real dUdL[nL+1], dU_msld[nL+1];
       cudaMemcpy(dUdL, system->state->lambdaForce_d, (nL+1)*sizeof(real), cudaMemcpyDefault);
