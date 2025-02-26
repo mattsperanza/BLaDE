@@ -1167,9 +1167,8 @@ void Potential::initialize(System *system)
     cufftMakePlan3d(ossPlanFFTPME, gridDimPME[0], gridDimPME[1], gridDimPME[2], MYCUFFT_R2C, &bufferSizeFFTPME);
     cufftSetStream(ossPlanFFTPME, system->run->ossRecip);
     cufftCreate(&ossPlanIFFTPME);
-    cufftMakePlan3d(ossPlanIFFTPME, gridDimPME[0], gridDimPME[1], gridDimPME[2], MYCUFFT_R2C, &bufferSizeIFFTPME);
+    cufftMakePlan3d(ossPlanIFFTPME, gridDimPME[0], gridDimPME[1], gridDimPME[2], MYCUFFT_C2R, &bufferSizeIFFTPME);
     cufftSetStream(ossPlanIFFTPME, system->run->ossRecip);
-
   }
 
   // Count each nonbonded type
@@ -1579,7 +1578,7 @@ void Potential::calc_force(int step,System *system) {
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
-  if ((system->msld->oss || system->msld->abf) && system->msld->update_fe_surface) { // Need energy to add sample for <dU/dL> weighting
+  if ((system->msld->oss || system->msld->abf || system->msld->meta) && system->msld->update_fe_surface) { // Need energy to add sample for <dU/dL> weighting
     calcEnergy = calcEnergy || step % system->msld->sample_freq == 0;
   }
 #ifdef REPLICAEXCHANGE
@@ -1647,19 +1646,12 @@ void Potential::calc_force(int step,System *system) {
 
   // cudaEventRecord(r->forceComplete,r->updateStream);
 
-  // ABF, META, & OSS Calculations
-  // Save dU_msld + ALF biases
+  // ABF, META, & OSS Calculations -> meta & oss at same time not allowed
   gpuCheck(cudaPeekAtLastError());
-  cudaMemcpy(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDeviceToDevice);
-  if (system->msld->oss || system->msld->abf || system->msld->meta) {
-    // TODO: make this async safe -> add alf bias & force into respective local
-    gpuCheck(cudaPeekAtLastError());
-    cudaMemset(system->msld->step_potential_d, 0.0, (system->state->lambdaCount-1)*sizeof(real));
-    cudaMemset(system->msld->step_force_d, 0.0, (system->state->lambdaCount-1)*sizeof(real));
-    gpuCheck(cudaPeekAtLastError());
-    // ABF & OSS update/calc energy&force w/ step_p, step_f, & lambdaF
-  }
   if (system->msld->meta) {
+    cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->metaBias);
+    cudaMemsetAsync(system->msld->step_potential_d, 0.0, (system->state->lambdaCount-1)*sizeof(real), system->run->metaBias);
+    cudaMemsetAsync(system->msld->step_force_d, 0.0, (system->state->lambdaCount-1)*sizeof(real), system->run->metaBias);
     gpuCheck(cudaPeekAtLastError());
     system->msld->get_force_meta(system, calcEnergy);
     gpuCheck(cudaPeekAtLastError());
@@ -1674,6 +1666,9 @@ void Potential::calc_force(int step,System *system) {
     cudaStreamWaitEvent(r->ossBias, r->nbrecipComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
+    cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->ossBias);
+    cudaMemsetAsync(system->msld->step_potential_d, 0.0, (system->state->lambdaCount-1)*sizeof(real), system->run->ossBias);
+    cudaMemsetAsync(system->msld->step_force_d, 0.0, (system->state->lambdaCount-1)*sizeof(real), system->run->ossBias);
     // Calculate dGdF from histogram/ABF
     gpuCheck(cudaPeekAtLastError());
     system->msld->getforce_hist(system,calcEnergy);
@@ -1713,11 +1708,17 @@ void Potential::calc_force(int step,System *system) {
       cudaStreamWaitEvent(r->updateStream, r->ossRecipComplete, 0);
     }
   }
-  // Need to wait for what hist_potential is to properly weight sample - add alf bias?
-  if (system->msld->abf) { 
+  // Need to wait for what hist_potential is to properly weight sample
+  if (system->msld->abf) {
     // Wait on lambda force calc
     cudaStreamWaitEvent(r->abfBias, r->ossBiasComplete, 0);
     cudaStreamWaitEvent(r->abfBias, r->metaBiasComplete, 0);
+    if (!system->msld->oss && !system->msld->meta) {
+      cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d,
+        system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->abfBias);
+      cudaMemsetAsync(system->msld->step_potential_d, 0.0, (system->state->lambdaCount-1)*sizeof(real), system->run->abfBias);
+      cudaMemsetAsync(system->msld->step_force_d, 0.0, (system->state->lambdaCount-1)*sizeof(real), system->run->abfBias);
+    }
     system->msld->getforce_abf(system, calcEnergy);
     gpuCheck(cudaPeekAtLastError());
     if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {

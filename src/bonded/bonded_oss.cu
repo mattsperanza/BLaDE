@@ -522,13 +522,13 @@ void getforce_imprT_oss(System *system,box_type box)
   if (r->calcTermFlag[eeimpr]==false) return;
 
   N=p->imprCount;
-  if (N>0) getforce_torsion_kernel_oss <flagBox,ImprPotential,false> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+  if (N>0) getforce_torsion_kernel_oss <flagBox,ImprPotential,false> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->imprs_d,(real3*)s->position_fd,
     (real3_f*) s->force_d, box,s->lambda_fd,
     s->lambdaForce_d, 1,
     system->msld->dGdF_d);
   N=p->softImprCount;
-  if (N>0) getforce_torsion_kernel_oss <flagBox,ImprPotential,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+  if (N>0) getforce_torsion_kernel_oss <flagBox,ImprPotential,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->softImprs_d,(real3*)s->position_fd,
     (real3_f*) s->force_d,
     box,s->lambda_fd,

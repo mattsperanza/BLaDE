@@ -496,7 +496,7 @@ void getforce_ewaldTT_oss(System *system,box_type kbox)
   if (r->calcTermFlag[eenbrecip]==false) return;
 
   // Note we will already have the potential grid from the previous
-  cudaMemsetAsync(p->ostGridPME_d,0,p->gridDimPME[0]*p->gridDimPME[1]*p->gridDimPME[2]*sizeof(myCufftReal),r->nbrecipStream);
+  cudaMemsetAsync(p->ostGridPME_d,0,p->gridDimPME[0]*p->gridDimPME[1]*p->gridDimPME[2]*sizeof(myCufftReal),r->ossRecip);
 
   // Setup for spread and gather
   int spreadGatherBlocks=(N + BLNB/8 - 1)/(BLNB/8);
@@ -507,7 +507,7 @@ void getforce_ewaldTT_oss(System *system,box_type kbox)
     s->lambda_fd,((int3*)p->gridDimPME)[0],
     dGdF, p->ostGridPME_d);
 
-  myCufftExecR2C(p->planFFTPME, p->ostGridPME_d, p->ostFourierGridPME_d);
+  myCufftExecR2C(p->ossPlanFFTPME, p->ostGridPME_d, p->ostFourierGridPME_d);
 
   // Convolution kernel
   dim3 blockCount((p->gridDimPME[0]+8-1)/8,(p->gridDimPME[1]+8-1)/8,(p->gridDimPME[2]/2+1+8-1)/8);
@@ -515,7 +515,7 @@ void getforce_ewaldTT_oss(System *system,box_type kbox)
   getforce_ewald_convolution_kernel_oss<flagBox><<<blockCount,blockSize,0,r->ossRecip>>>(((int3*)p->gridDimPME)[0],
     p->ostFourierGridPME_d, p->bGridPME_d,system->run->betaEwald,kbox);
 
-  myCufftExecC2R(p->planIFFTPME, p->ostFourierGridPME_d, p->ostPotentialGridPME_d);
+  myCufftExecC2R(p->ossPlanIFFTPME, p->ostFourierGridPME_d, p->ostPotentialGridPME_d);
 
   // Gather kernel
   getforce_ewald_gather_kernel_oss<flagBox,order><<<spreadGatherBlocks,BLNB,shMem,r->ossRecip>>>(

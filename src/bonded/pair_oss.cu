@@ -382,7 +382,7 @@ void getforce_nb14TTTT_oss(System *system,box_type box)
 
   if (N==0) return;
 
-  getforce_14pair_kernel_oss<flagBox,useSoftCore,usevdWSwitch,usePME> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+  getforce_14pair_kernel_oss<flagBox,useSoftCore,usevdWSwitch,usePME> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
       N,p->nb14s_d,system->run->cutoffs,(real3*)s->position_fd,
       (real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,
       system->msld->dGdF_d);
@@ -444,7 +444,7 @@ void getforce_nbexT_oss(System *system,box_type box)
   if (r->calcTermFlag[eenbrecipexcl]==false) return;
 
   // Never use soft cores for nbex, they're already soft.
-  getforce_exclusion_pair_kernel_oss<flagBox,false,false,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+  getforce_exclusion_pair_kernel_oss<flagBox,false,false,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
       N,p->nbexs_d,system->run->cutoffs,(real3*)s->position_fd,
       (real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,
       system->msld->dGdF_d);

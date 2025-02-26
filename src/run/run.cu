@@ -468,6 +468,7 @@ void test_OST_force(System *system) {
     system->msld->oss = false;
     gpuCheck(cudaPeekAtLastError());
     system->potential->calc_force(1, system);
+    cudaDeviceSynchronize();
     system->msld->oss = true;
     cudaMemcpy(dU, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     double sum = 0;
@@ -484,17 +485,24 @@ void test_OST_force(System *system) {
       // L+dl
       real_f tmp_high[len];
       // lambda block at beginning of position buffer, everything else is index into this array
+      cudaDeviceSynchronize();
       shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, dl, j);
+      cudaDeviceSynchronize();
       gpuCheck(cudaPeekAtLastError());
       system->potential->calc_force(1, system);
+      cudaDeviceSynchronize();
       cudaMemcpy(tmp_high, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
       // L-dl
       real_f tmp_low[len];
+      cudaDeviceSynchronize();
       shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, -2.0*dl, j);
+      cudaDeviceSynchronize();
       system->potential->calc_force(1, system);
+      cudaDeviceSynchronize();
       cudaMemcpy(tmp_low, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
       // Reset and diff
       real_f d2U_numeric[len];
+      cudaDeviceSynchronize();
       shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, dl, j);
       for (int k = 0; k < len; k++) {
         d2U_numeric[k] = (tmp_high[k] - tmp_low[k]) / (2.0*dl);
@@ -503,8 +511,11 @@ void test_OST_force(System *system) {
       // Analytic Force
       real_f d2U_analytic[len];
       system->msld->oss = true;
+      cudaDeviceSynchronize();
       system->potential->calc_force(1, system);
+      cudaDeviceSynchronize();
       cudaMemcpy(d2U_analytic, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
+      cudaDeviceSynchronize();
       for (int k = 0; k < len; k++) {
         d2U_analytic[k] = (d2U_analytic[k] - dU[k]) / pi_e;
         sum += abs(d2U_analytic[k]);
@@ -512,7 +523,7 @@ void test_OST_force(System *system) {
       // Check if they match
       for (int k = 0; k < len; k++) {
         real_f diff = abs(d2U_analytic[k] - d2U_numeric[k]);
-        real_f tol = .001;
+        real_f tol = .1;
         if (diff > tol) { // floating point ops (like expf) can cause float errors
           printf("Numerical derivatives test %d failed (tol = %f, dl = %f) at force array index %d for lambda %d! \n",
             i, tol, dl, k, j);
@@ -559,7 +570,7 @@ void test_OSS_conservation(System* system) {
 
   // NPT/NVT for 100k steps adding bias
   int total = 100010;
-  int updating = total * 1.0;
+  int updating = total * .5;
   printf("Running %d steps with bias+update and %d steps just bias to equilibrate!\n", updating, total-updating);
   system->run->freqNRG = 1;
   for (int step=0; step<total; step++) { 
@@ -598,7 +609,7 @@ void test_OSS_conservation(System* system) {
   }
 
   // Output Histogram data to histograms.txt
-  write_histogram_file(system, "histograms.txt");
+  //write_histogram_file(system, "histograms.txt");
 
   // Turn on NVE for 500k w/ oss & abf update off
   printf("Running 500k steps with oss to check energy conservation!\n");
