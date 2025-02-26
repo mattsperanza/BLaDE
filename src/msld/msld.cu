@@ -440,8 +440,6 @@ void parse_msld(char *line,System *system)
     system->msld->tempering=io_nextf(line);
   } else if (strcmp(token, "min_bias") == 0){
     system->msld->min_bias=io_nextf(line);
-  } else if (strcmp(token, "decouple") == 0){
-    system->msld->decouple=io_nextb(line);
   } else if (strcmp(token, "abf") == 0){
     system->msld->abf=io_nextb(line);
   } else if (strcmp(token, "meta") == 0){
@@ -789,9 +787,7 @@ void __global__ add_sample_meta_kernel(
   real kT, int nL, real* lambdas,
   real weight, real tempering, real temper_min,
   real* histogram, int* hist_indices, real* hist_potential,
-  int L_bins, real L_max, real L_min,
-  bool temper, bool decouple
-) {
+  int L_bins, real L_max, real L_min, bool temper) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
@@ -801,7 +797,7 @@ void __global__ add_sample_meta_kernel(
     for (int j = 0; j < nL; j++) {
       sum += exp(-hist_potential[j] / kT);
     }
-    real factorDecouple = decouple ? exp(-hist_potential[i] / kT) / sum : 1.0;
+    real factorDecouple = exp(-hist_potential[i] / kT) / sum;
     // TODO: make tempering based off Mike's tempering
     real factorTemper = temper ? exp(-hist_potential[i] / (tempering*kT)) : 1.0;
     if (X >= 0 && X < L_bins) {
@@ -824,8 +820,7 @@ void Msld::add_sample_meta(System *system) {
     s->leapParms1->kT, blockCount-1, s->lambda_fd,
     gaussian_weight, tempering, min_bias,
     meta_histogram_d, meta_index_d, hist_potential_d,
-    L_oss_bins, L_max, L_min,
-    temper, decouple);
+    L_oss_bins, L_max, L_min, temper);
 }
 
 void __global__ getforce_meta_kernel(
@@ -1221,8 +1216,7 @@ __global__ void add_sample_hist_kernel(
   real* histogram, int* hist_indices,
   int L_bins, real L_max, real L_min, 
   int dUdL_bins, real dUdL_max, real dUdL_min,
-  bool temper, bool decouple
-) {
+  bool temper) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
@@ -1233,7 +1227,7 @@ __global__ void add_sample_hist_kernel(
     for (int j = 0; j < nL; j++) {
       sum += exp(-hist_potential[j] / kT);
     }
-    real factorDecouple = decouple ? exp(-hist_potential[i] / kT) / sum : 1.0;
+    real factorDecouple = exp(-hist_potential[i] / kT) / sum;
     // TODO: make tempering based off Mike's tempering
     real factorTemper = temper ? exp(-hist_potential[i] / (tempering*kT)) : 1.0;
     if (X >= 0 && X < L_bins && Y >= 0 && Y < dUdL_bins) {
@@ -1257,7 +1251,7 @@ void Msld::add_sample_hist(System* system) {
     s->leapParms1->kT, blockCount-1, s->lambda_fd, dU_msld_d, hist_potential_d,
     gaussian_weight, tempering, min_bias, oss_histogram_d, oss_index_d,
     L_oss_bins, L_max, L_min, dUdL_bins, dUdL_max, dUdL_min,
-    temper, decouple);
+    temper);
 }
 
 __global__ void getforce_hist_kernel(
@@ -1291,8 +1285,9 @@ __global__ void getforce_hist_kernel(
     }
     for (int j = X-L_search; j <= X+L_search; j++) {
       int L_index = j;
-      if(L_index < 0) {continue;}
-      if(L_index >= L_bins){break;}
+      real mirrorFactor = L_index == 0 ? 2.0 : 1.0;
+      L_index = L_index < 0 ? -L_index : L_index;
+      if(L_index >= L_bins){ break; }
 
       real L_resolution = (L_max-L_min)/(L_bins-1.0);
       real L_center = L_index*L_resolution;
@@ -1309,7 +1304,7 @@ __global__ void getforce_hist_kernel(
         real dUdL_gaussian = exp(-.5*dUdL_distance*dUdL_distance);
 
         int index = hist_indices[i] + L_index*dUdL_bins + dUdL_index; // indexed so dUdL bins are continuous in mem
-        real weight = histogram[index];
+        real weight = mirrorFactor * histogram[index];
 
         real tmp_bias = weight * L_gaussian * dUdL_gaussian;
         bias += tmp_bias;

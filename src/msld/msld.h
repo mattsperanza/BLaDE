@@ -76,32 +76,31 @@ class Msld {
 
   // Histogram (2D meta) - uniform binning
   bool oss = false; // Perform Orthogonal Space Sampling force calculations
-  int L_oss_bins = 101; // # of whole bins that fit in range [L_min, L_max]
+  int L_oss_bins = 1001; // # of whole bins that fit in range [L_min, L_max]
   real* oss_histogram_d; // 1000 x 100 = 1 million float = 4 -> stores sum of prefactors
   int* oss_index_d; // index into lambda's histogram
 
   // Meta options
   bool temper = false;
-  bool decouple = false; // Parallel bias meta-dynamics
   real min_bias = 2.0; // Amount of bias stored in histogram to add before starting tempering in kcal/mol
   real tempering = 8.0; // exp(-g(L, dU))/tempering)
-  real gaussian_weight = .01; // kcal/mol
+  real gaussian_weight = .05; // kcal/mol
 
   // Don't change?
-  int dUdL_bins = 1001; // # of whole bins that fit in range [dUdL_min, dUdL_max]
+  int dUdL_bins = 2001; // # of whole bins that fit in range [dUdL_min, dUdL_max]
   real dUdL_max = 1500;
-  real dUdL_min = -dUdL_max; // symmetric energy range
+  real dUdL_min = -500;
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
-  real L_std = 3.0*L_resolution; // 2/3 times the resolution
-  real dUdL_std = 5.0*dUdL_resolution;
+  real L_std = .02;
+  real dUdL_std = 10;
   int L_search = 5.0*(L_std/L_resolution); // ~5 L std in each direction
   int dUdL_search = 5.0*(dUdL_std/dUdL_resolution); // ~5 dUdL std in each direction
 
   // ABF - uniform binning - separate from histogram estimation
   bool abf = false;
-  int nFull = 100;
-  int L_abf_bins = 101; // this is also the max index
+  int nFull = 10;
+  int L_abf_bins = 51; // this is also the max index
   int* abf_index_d; // index into abf histogram
   real* abf_histogram_d; // counts in bin -> also used for 1D meta
   real* ensemble_dUdL_d;

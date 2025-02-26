@@ -595,7 +595,7 @@ void test_OSS_conservation(System* system) {
       exit(-1);
     }
 
-    if(step % 1000 == 0){
+    if(step % 1 == 0){
       printf("Step: %d, Pot: %f, Kin: %f, Tot: %f\n",step,system->state->energy[eepotential],system->state->energy[eekinetic],system->state->energy[eetotal]);
       real dUdL[nL+1], dU_msld[nL+1];
       cudaMemcpy(dUdL, system->state->lambdaForce_d, (nL+1)*sizeof(real), cudaMemcpyDefault);
