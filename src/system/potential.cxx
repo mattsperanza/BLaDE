@@ -1659,6 +1659,7 @@ void Potential::calc_force(int step,System *system) {
       system->msld->add_sample_meta(system);
       gpuCheck(cudaPeekAtLastError());
     }
+    cudaEventRecord(r->metaBiasComplete, r->metaBias);
   }
   if (system->msld->oss) {
     // Wait on lambda force calc being complete
@@ -1713,12 +1714,17 @@ void Potential::calc_force(int step,System *system) {
     // Wait on lambda force calc
     cudaStreamWaitEvent(r->abfBias, r->ossBiasComplete, 0);
     cudaStreamWaitEvent(r->abfBias, r->metaBiasComplete, 0);
-    if (!system->msld->oss && !system->msld->meta) {
-      cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d,
-        system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->abfBias);
+    if ((!system->msld->oss && !system->msld->meta) || system->msld->gaussian_weight <= 0) {
+      // Wait for force to get in
+      cudaStreamWaitEvent(r->abfBias, r->nbdirectComplete, 0);
+      cudaStreamWaitEvent(r->abfBias, r->nbrecipComplete, 0);
+      cudaStreamWaitEvent(r->abfBias, r->biaspotComplete, 0);
+      cudaStreamWaitEvent(r->abfBias, r->bondedComplete, 0);
+      cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->abfBias);
       cudaMemsetAsync(system->msld->step_potential_d, 0.0, (system->state->lambdaCount-1)*sizeof(real), system->run->abfBias);
       cudaMemsetAsync(system->msld->step_force_d, 0.0, (system->state->lambdaCount-1)*sizeof(real), system->run->abfBias);
     }
+    // Adds to step_potential and step_force
     system->msld->getforce_abf(system, calcEnergy);
     gpuCheck(cudaPeekAtLastError());
     if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {

@@ -70,7 +70,7 @@ class Msld {
 
   // Meta - uniform binning - use abf histogram?
   bool meta = false;
-  int L_meta_bins = 101;
+  int L_meta_bins = 1001;
   real* meta_histogram_d;
   int* meta_index_d;
 
@@ -83,12 +83,12 @@ class Msld {
   // Meta options
   bool temper = false;
   real min_bias = 2.0; // Amount of bias stored in histogram to add before starting tempering in kcal/mol
-  real tempering = 8.0; // exp(-g(L, dU))/tempering)
-  real gaussian_weight = .05; // kcal/mol
+  real tempering = 3.0; // exp(-g(L, dU))/tempering)
+  real gaussian_weight = .05; // <= 0.0 turns off oss force calculation
 
   // Don't change?
   int dUdL_bins = 2001; // # of whole bins that fit in range [dUdL_min, dUdL_max]
-  real dUdL_max = 800;
+  real dUdL_max = 1500;
   real dUdL_min = -500;
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
@@ -105,12 +105,14 @@ class Msld {
   real* abf_histogram_d; // counts in bin -> also used for 1D meta
   real* ensemble_dUdL_d;
   real* ensemble_dUdL2_d;
+  real* ensemble_var_d;
   real* weights_d;
   real* weighted_dUdL_d;
   real* weighted_dUdL2_d;
   real* offsets_d;
   real* average_dUdL_d;
-  real* variance_d;
+  real* average_dUdL2_d;
+  real* ave_var_d;
 
   int thetaCollBiasCount;
   real *kThetaCollBias;
