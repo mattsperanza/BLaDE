@@ -1266,82 +1266,6 @@ void Msld::add_sample_hist(System* system) {
     temper);
 }
 
-__global__ void getforce_hist_kernel_o(
-  int nL, real* lambdas, real* lambdaForce, real* dU_msld,
-  real* step_potential, real* hist_potential, real* step_force,
-  int* hist_indices, real* histogram,
-  int dUdL_bins, real dUdL_max, real dUdL_min, int dUdL_search,
-  int L_bins, real L_max, real L_min, int L_search,
-  real dUdL_std, real L_std,
-  real* dGdF, real_e* energy
-) {
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  extern __shared__ real sEnergy[];
-  real lEnergy=0;
-  if (i < nL) {
-    hist_potential[i] = 0; // reset from last eval
-    // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
-    int X = get_histogram_index(lambdas[i+1], L_bins, L_max, L_min);
-    int Y = get_histogram_index(dU_msld[i+1], dUdL_bins, dUdL_max, dUdL_min);
-    real bias = 0;
-    real dUdL_force = 0;
-    real L_force = 0;
-    int index_min = hist_indices[i];
-    int index_max = index_min + L_bins*dUdL_bins - 1;
-    int id = 5;
-    bool print = false;
-    if(i == id && print){
-      int i1 = i == nL-1 ? i : i+1;
-      printf("Lambda: %f -> %d, dUdL: %f -> %d, hist_index[i]: %d, hist_index[i+1]: %d, index_min: %d, index_max: %d, X: %d, L_search: %d, \n",
-        lambdas[i+1], X, dU_msld[i+1], Y, hist_indices[i], hist_indices[i1], index_min, index_max, X, L_search);
-    }
-    // Meta-dynamics
-    for (int j = X-L_search; j <= X+L_search; j++) {
-      int L_index = j; // used to get weight within histogram
-      real mirrorFactor = L_index == 0 ? 2.0 : 1.0;
-      L_index = L_index < 0 ? -L_index : L_index;
-      if(L_index >= L_bins){ break; }
-
-      real L_resolution = (L_max-L_min)/(L_bins-1.0);
-      real L_center = j*L_resolution;
-      real L_distance = (lambdas[i+1] - L_center) / L_std;
-      real L_gaussian = exp(-.5*L_distance*L_distance);
-      real local_bias = 0;
-      real dG = 0;
-      for (int k = Y-dUdL_search; k <= Y+dUdL_search; k++) {
-        int dUdL_index = k;
-        if (dUdL_index < 0) { continue; }
-        if (dUdL_index >= dUdL_bins) { break; }
-
-        real dUdL_resolution = (dUdL_max-dUdL_min)/(dUdL_bins-1.0);
-        real dUdL_center = dUdL_min + k*dUdL_resolution;
-        real dUdL_distance = (dU_msld[i+1] - dUdL_center) / dUdL_std;
-        real dUdL_gaussian = exp(-.5*dUdL_distance*dUdL_distance);
-
-        int index = hist_indices[i] + L_index*dUdL_bins + dUdL_index; // indexed so dUdL bins are continuous in mem
-        real weight = mirrorFactor * histogram[index];
-
-        real tmp_bias = weight * L_gaussian * dUdL_gaussian;
-        local_bias += tmp_bias;
-        bias += tmp_bias;
-        dUdL_force += -dUdL_distance/dUdL_std * tmp_bias;
-        dG += -dUdL_distance/dUdL_std * tmp_bias;
-        L_force += -L_distance/L_std * tmp_bias;
-
-        if(i == id && print){
-          printf("(L_dist: %f, X: %3d -> %3f) ",
-            L_distance, L_index, L_center, dUdL_index, dUdL_center, tmp_bias);
-        }
-      }
-      if(i == id && print){ printf("\n"); }
-      if (i == 0) {
-        //printf("L: %f, X: %d, Y: %d, j: %d -> %d, bias: %f, dG: %f, dUdL_Fo: %f\n", lambdas[i+1], X, Y, j, L_index, local_bias, dG, dUdL_force);
-      }
-    }
-    dGdF[i+1] = dUdL_force;
-  }
-}
-
 __global__ void getforce_hist_kernel(
   int nL, real* lambdas, real* lambdaForce, real* dU_msld,
   real* step_potential, real* hist_potential, real* step_force,
@@ -1392,9 +1316,6 @@ __global__ void getforce_hist_kernel(
           local_dUdL_force += -dUdL_distance/dUdL_std * tmp_bias;
           local_L_force += -L_distance/L_std * tmp_bias;
         }
-        if (iL == 0) {
-          //printf("L: %f, X: %d, Y: %d, j: %d -> %d, bias: %f, Fl: %f\n", lambdas[iL+1], X, Y, j, L_index, local_bias, local_dUdL_force);
-        }
       }
       atomicAdd(&dGdF[iL+1], local_dUdL_force);
       atomicAdd(&lambdaForce[iL+1], local_L_force);
@@ -1431,35 +1352,6 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
   gridDim.y = blockCount - 1;                     // Number of lambdas
   gridDim.z = 1;
 
-  /*
-  // Currently set up to do one thread per lambda, each thread loops over (2*dUdL_search+1)*(2*L_search+1) bins
-  getforce_hist_kernel_o<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
-    blockCount-1, s->lambda_fd, s->lambdaForce_d, dU_msld_d,
-    step_potential_d, hist_potential_d, step_force_d,
-    oss_index_d, oss_histogram_d,
-    dUdL_bins, dUdL_max, dUdL_min, dUdL_search,
-    L_oss_bins, L_max, L_min, L_search,
-    dUdL_std, L_std,
-    dGdF_d, pEnergy);
-
-  real dGdF[blockCount], dL[blockCount];
-  cudaMemcpyAsync(dGdF, dGdF_d, blockCount*sizeof(real), cudaMemcpyDefault, r->ossBias);
-  cudaMemcpyAsync(dL, step_force_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault, r->ossBias);
-  cudaDeviceSynchronize();
-  printf("dGdF O = [ ");
-  for (int i = 0; i < blockCount; i++) {
-    printf("%f, ", dGdF[i]);
-  }
-  printf("]\n");
-  printf("dL O = [ ");
-  for (int i = 0; i < blockCount-1; i++) {
-    printf("%f, ", dL[i]);
-  }
-  printf("]\n");
-  cudaMemsetAsync(dGdF_d, 0, blockCount*sizeof(real), r->ossBias);
-  cudaDeviceSynchronize();
-  */
-
   // Launch kernel
   cudaMemsetAsync(dGdF_d, 0, blockCount*sizeof(real), r->ossBias);
   cudaMemsetAsync(hist_potential_d, 0, (blockCount-1)*sizeof(real), r->ossBias);
@@ -1471,23 +1363,6 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
     L_oss_bins, L_max, L_min, L_search,
     dUdL_std, L_std,
     dGdF_d, pEnergy);
-
-  /*
-  real dGdF[blockCount], dL[blockCount];
-  cudaMemcpyAsync(dGdF, dGdF_d, blockCount*sizeof(real), cudaMemcpyDefault, r->ossBias);
-  cudaMemcpyAsync(dL, step_force_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault, r->ossBias);
-  cudaDeviceSynchronize();
-  printf("dGdF N = [ ");
-  for (int i = 0; i < blockCount; i++) {
-    printf("%f, ", dGdF[i]);
-  }
-  printf("]\n");
-  printf("dL N = [ ");
-  for (int i = 0; i < blockCount-1; i++) {
-    printf("%f, ", dL[i]);
-  }
-  printf("]\n");
-  */
 }
 
 __global__ void getpotential_hist_kernel(
