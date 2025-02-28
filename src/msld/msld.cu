@@ -806,9 +806,7 @@ void __global__ add_sample_meta_kernel(
       sum += exp(-hist_potential[j] / kT);
     }
     real factorDecouple = exp(-hist_potential[i] / kT) / sum;
-    // TODO: make tempering based off Mike's tempering
-    real tmp = max(0.0, hist_potential[i] - temper_min);
-    real factorTemper = temper ? exp(-tmp / (tempering*kT)) : 1.0;
+    real factorTemper = temper ? exp(-hist_potential[i] / (tempering*kT)) : 1.0;
     if (X >= 0 && X < L_bins) {
       histogram[index] += weight * factorDecouple * factorTemper;
     }
@@ -1245,10 +1243,7 @@ __global__ void add_sample_hist_kernel(
       sum += exp(-hist_potential[j] / kT);
     }
     real factorDecouple = exp(-hist_potential[i] / kT) / sum;
-    // TODO: Temper based on potential at highest point in dUdL space in lowest lambda
-    // TODO: Corresponds to building FES exactly -> mine just coats the surface
-    real tmp = max(0.0, hist_potential[i] - temper_min);
-    real factorTemper = temper ? exp(-tmp / (tempering*kT)) : 1.0;
+    real factorTemper = temper ? exp(-hist_potential[i] / (tempering*kT)) : 1.0;
     if (X >= 0 && X < L_bins && Y >= 0 && Y < dUdL_bins) {
       histogram[index] += weight * factorDecouple * factorTemper;
     }
@@ -1290,7 +1285,6 @@ __global__ void getforce_hist_kernel(
   real local_bias = 0.0;
   real local_dUdL_force = 0.0;
   real local_L_force = 0.0;
-  // Ensure we're within bounds
   if (iL < nL) {
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
     int X = get_histogram_index(lambdas[iL+1], L_bins, L_max, L_min);
@@ -1299,9 +1293,9 @@ __global__ void getforce_hist_kernel(
     if (j >= X-L_search && j <= X+L_search) {
       int L_index = j;
       real mirrorFactor = (L_index == 0 || L_index == L_bins-1) ? 2.0 : 1.0;
-      // Mirror at L=0 & L_1
-      L_index = (L_index < 0) ? -L_index : L_index;
-      L_index = (L_index > L_bins-1) ? L_index - 2*(L_index-(L_bins-1)) : L_index;
+      // Mirror at L=0 & L_1 ?
+      //L_index = (L_index < 0) ? -L_index : L_index;
+      //L_index = (L_index > L_bins-1) ? L_index - 2*(L_index-(L_bins-1)) : L_index;
       if (L_index >= 0 && L_index < L_bins) {
         real L_resolution = (L_max-L_min)/(L_bins-1.0);
         real L_center = L_min + j*L_resolution;
@@ -1324,14 +1318,14 @@ __global__ void getforce_hist_kernel(
           local_dUdL_force += -dUdL_distance/dUdL_std * tmp_bias;
           local_L_force += -L_distance/L_std * tmp_bias;
         }
-      }
-      atomicAdd(&dGdF[iL+1], local_dUdL_force);
-      atomicAdd(&lambdaForce[iL+1], local_L_force);
-      atomicAdd(&step_force[iL], local_L_force);
-      if (energy) {
-        atomicAdd(&step_potential[iL], local_bias);
-        atomicAdd(&hist_potential[iL], local_bias);
-        atomicAdd(energy, local_bias);
+        atomicAdd(&dGdF[iL+1], local_dUdL_force);
+        atomicAdd(&lambdaForce[iL+1], local_L_force);
+        atomicAdd(&step_force[iL], local_L_force);
+        if (energy) {
+          atomicAdd(&step_potential[iL], local_bias);
+          atomicAdd(&hist_potential[iL], local_bias);
+          atomicAdd(energy, local_bias);
+        }
       }
     }
   }
@@ -1395,8 +1389,9 @@ __global__ void getpotential_hist_kernel(
         // Evaluate potential at (X,Y)
         for (int j = X-L_search; j <= X+L_search; j++) {
           int L_index = j;
-          real mirrorFactor = L_index == 0 ? 2.0 : 1.0;
-          L_index = L_index < 0 ? -L_index : L_index;
+          real mirrorFactor = (L_index == 0 || L_index == L_bins-1) ? 2.0 : 1.0;
+          //L_index = L_index < 0 ? -L_index : L_index;
+          if (L_index < 0) {continue;}
           if (L_index >= L_bins) {break;}
 
           real L_resolution = (L_max-L_min)/(L_bins-1.0);
