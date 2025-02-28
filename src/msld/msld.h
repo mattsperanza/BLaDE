@@ -92,8 +92,8 @@ class Msld {
   real dUdL_min = -500;
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
-  real L_std = .01;
-  real dUdL_std = 4;
+  real L_std = .02;
+  real dUdL_std = 8;
   int L_search = 3.0*(L_std/L_resolution); // ~3 L std in each direction
   int dUdL_search = 3.0*(dUdL_std/dUdL_resolution); // ~3 dUdL std in each direction
 
@@ -107,6 +107,8 @@ class Msld {
   real* ensemble_dUdL2_d;
   real* ensemble_var_d;
   real* weights_d;
+  real* partition_functions;
+  real* partition_offsets;
   real* weighted_dUdL_d;
   real* weighted_dUdL2_d;
   real* offsets_d;
