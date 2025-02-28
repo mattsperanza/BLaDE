@@ -92,10 +92,10 @@ class Msld {
   real dUdL_min = -500;
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
-  real L_std = .02;
-  real dUdL_std = 10;
-  int L_search = 5.0*(L_std/L_resolution); // ~5 L std in each direction
-  int dUdL_search = 5.0*(dUdL_std/dUdL_resolution); // ~5 dUdL std in each direction
+  real L_std = .01;
+  real dUdL_std = 4;
+  int L_search = 3.0*(L_std/L_resolution); // ~3 L std in each direction
+  int dUdL_search = 3.0*(dUdL_std/dUdL_resolution); // ~3 dUdL std in each direction
 
   // ABF - uniform binning - separate from histogram estimation
   bool abf = false;
