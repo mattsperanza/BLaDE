@@ -999,8 +999,8 @@ void Msld::add_sample_abf(System* system){
     s->leapParms1->kT, nFull, blockCount-1,
     s->lambda_fd, dU_msld_d, hist_potential_d,
     abf_histogram_d, abf_index_d, L_abf_bins, L_max, L_min,
-    offsets_d, weights_d, weighted_dUdL_d, weighted_dUdL2_d,
-    partition_functions, partition_offsets,
+    offsets_d, partition_functions, partition_offsets,
+    weights_d, weighted_dUdL_d, weighted_dUdL2_d,
     ensemble_dUdL_d, ensemble_dUdL2_d, ensemble_var_d,
     average_dUdL_d, average_dUdL2_d, ave_var_d);
 
@@ -1301,7 +1301,7 @@ __global__ void getforce_hist_kernel(
       real mirrorFactor = (L_index == 0 || L_index == L_bins-1) ? 2.0 : 1.0;
       // Mirror at L=0 & L_1
       L_index = (L_index < 0) ? -L_index : L_index;
-      L_index = (L_index >= L_bins) ? L_index - 2*(L_index-(L_bins-1)) : L_index;
+      L_index = (L_index > L_bins-1) ? L_index - 2*(L_index-(L_bins-1)) : L_index;
       if (L_index >= 0 && L_index < L_bins) {
         real L_resolution = (L_max-L_min)/(L_bins-1.0);
         real L_center = L_min + j*L_resolution;
