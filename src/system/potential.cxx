@@ -1730,7 +1730,6 @@ void Potential::calc_force(int step,System *system) {
     }
     // Adds to step_potential and step_force
     if (!system->msld->tracking_only) {
-      printf("Calculating ABF Force!!!");
       system->msld->getforce_abf(system, calcEnergy);
     }
     gpuCheck(cudaPeekAtLastError());
