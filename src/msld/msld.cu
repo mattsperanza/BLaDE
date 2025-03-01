@@ -448,8 +448,13 @@ void parse_msld(char *line,System *system)
     system->msld->temper=io_nextb(line);
   } else if (strcmp(token, "temper_amount") == 0) {
     system->msld->tempering=io_nextf(line);
-  } else if (strcmp(token, "abf") == 0){
+  } else if (strcmp(token, "abf") == 0) {
     system->msld->abf=io_nextb(line);
+  } else if (strcmp(token, "tracking_only") == 0){
+    system->msld->tracking_only=io_nextb(line);
+    if (system->msld->tracking_only) {
+      system->msld->abf = true;
+    }
   } else if (strcmp(token, "meta") == 0){
     system->msld->meta=io_nextb(line);
   } else if (strcmp(token, "update_fe") == 0) {

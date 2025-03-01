@@ -1729,7 +1729,10 @@ void Potential::calc_force(int step,System *system) {
       cudaMemsetAsync(system->msld->step_force_d, 0.0, (system->state->lambdaCount-1)*sizeof(real), system->run->abfBias);
     }
     // Adds to step_potential and step_force
-    system->msld->getforce_abf(system, calcEnergy);
+    if (!system->msld->tracking_only) {
+      printf("Calculating ABF Force!!!");
+      system->msld->getforce_abf(system, calcEnergy);
+    }
     gpuCheck(cudaPeekAtLastError());
     if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
       system->msld->add_sample_abf(system);

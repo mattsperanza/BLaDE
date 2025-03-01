@@ -100,6 +100,7 @@ class Msld {
 
   // ABF - uniform binning - separate from histogram estimation
   bool abf = false;
+  bool tracking_only = false; // Don't apply ABF bias if this is true -> dominates abf flag
   int nFull = 10;
   int L_abf_bins = 51; // this is also the max index
   int* abf_index_d; // index into abf histogram
