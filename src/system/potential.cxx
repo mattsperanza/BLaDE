@@ -1652,6 +1652,7 @@ void Potential::calc_force(int step,System *system) {
     cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->metaBias);
     cudaMemsetAsync(system->msld->step_potential_d, 0.0, (system->state->lambdaCount-1)*sizeof(real), system->run->metaBias);
     cudaMemsetAsync(system->msld->step_force_d, 0.0, (system->state->lambdaCount-1)*sizeof(real), system->run->metaBias);
+    cudaMemsetAsync(system->msld->hist_potential_d, 0, (system->msld->blockCount-1)*sizeof(real), r->metaBias);
     gpuCheck(cudaPeekAtLastError());
     system->msld->get_force_meta(system, calcEnergy);
     gpuCheck(cudaPeekAtLastError());
@@ -1667,9 +1668,12 @@ void Potential::calc_force(int step,System *system) {
     cudaStreamWaitEvent(r->ossBias, r->nbrecipComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
+    // Reset Storage
     cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->ossBias);
     cudaMemsetAsync(system->msld->step_potential_d, 0.0, (system->state->lambdaCount-1)*sizeof(real), system->run->ossBias);
     cudaMemsetAsync(system->msld->step_force_d, 0.0, (system->state->lambdaCount-1)*sizeof(real), system->run->ossBias);
+    cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
+    cudaMemsetAsync(system->msld->hist_potential_d, 0, (system->msld->blockCount-1)*sizeof(real), r->ossBias);
     // Calculate dGdF from histogram/ABF
     gpuCheck(cudaPeekAtLastError());
     system->msld->getforce_hist(system,calcEnergy);

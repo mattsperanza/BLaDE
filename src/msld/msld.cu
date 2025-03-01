@@ -437,6 +437,10 @@ void parse_msld(char *line,System *system)
   } else if (strcmp(token, "L_std") == 0) {
     system->msld->L_std=io_nextf(line);
     system->msld->L_search = 4.0*(system->msld->L_std/system->msld->L_resolution); // ~4 L std in each direction
+  } else if (strcmp(token, "mir_Lmin") == 0){
+    system->msld->mirror_Lmin=io_nextb(line);
+  } else if (strcmp(token, "mir_Lmax") == 0){
+    system->msld->mirror_Lmax=io_nextb(line);
   } else if (strcmp(token, "dUdL_std") == 0){
     system->msld->dUdL_std=io_nextf(line);
     system->msld->dUdL_search = 4.0*(system->msld->dUdL_std/system->msld->dUdL_resolution); // ~4 dUdL std in each direction
@@ -444,8 +448,6 @@ void parse_msld(char *line,System *system)
     system->msld->temper=io_nextb(line);
   } else if (strcmp(token, "temper_amount") == 0) {
     system->msld->tempering=io_nextf(line);
-  } else if (strcmp(token, "min_bias") == 0){
-    system->msld->min_bias=io_nextf(line);
   } else if (strcmp(token, "abf") == 0){
     system->msld->abf=io_nextb(line);
   } else if (strcmp(token, "meta") == 0){
@@ -793,7 +795,7 @@ void Msld::init_meta(System* system){
 
 void __global__ add_sample_meta_kernel(
   real kT, int nL, real* lambdas,
-  real weight, real tempering, real temper_min,
+  real weight, real tempering,
   real* histogram, int* hist_indices, real* hist_potential,
   int L_bins, real L_max, real L_min, bool temper) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -825,7 +827,7 @@ void Msld::add_sample_meta(System *system) {
 
   add_sample_meta_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->leapParms1->kT, blockCount-1, s->lambda_fd,
-    gaussian_weight, tempering, min_bias,
+    gaussian_weight, tempering,
     meta_histogram_d, meta_index_d, hist_potential_d,
     L_oss_bins, L_max, L_min, temper);
 }
@@ -835,8 +837,8 @@ void __global__ getforce_meta_kernel(
   real* step_potential, real* hist_potential, real* step_force,
   int* hist_indices, real* histogram,
   int L_bins, real L_max, real L_min,
-  real L_std, int L_search,
-  real_e* energy) {
+  real L_std, int L_search, real_e* energy,
+  bool mirror_Lmin, bool mirror_Lmax) {
   extern __shared__ real sEnergy[];
   real lEnergy = 0.0;
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -845,11 +847,22 @@ void __global__ getforce_meta_kernel(
     real L_force = 0.0;
     int X = get_histogram_index(lambdas[i+1], L_bins, L_max, L_min);
     for (int j = X-L_search; j <= X+L_search; j++) {
+      int L_index = j;
+      real mirrorFactor = 1.0;
+      if (mirror_Lmin) {
+        L_index = (L_index < 0) ? -L_index : L_index;
+        mirrorFactor = L_index == 0 ? 2.0 : 1.0;
+      }
+      if (mirror_Lmax) {
+        L_index = (L_index > L_bins-1) ? L_index - 2*(L_index-(L_bins-1)) : L_index;
+        mirrorFactor = L_index == L_bins-1 ? 2.0 : 1.0;
+      }
+      // Still check it is in bounds
+      if (L_index < 0 && L_index >= L_bins) { continue; }
       real L_resolution = (L_max-L_min)/(L_bins-1.0);
-      real L_center = j*L_resolution;
+      real L_center = L_min + j*L_resolution;
       real L_distance = (lambdas[i+1] - L_center) / L_std;
       real L_gaussian = exp(-.5*L_distance*L_distance);
-      real mirrorFactor = j == 0 ? 2.0 : 1.0;
       int index = hist_indices[i] + j;
       real weight = mirrorFactor * histogram[index];
       real tmp_bias = weight * L_gaussian;
@@ -891,7 +904,7 @@ void Msld::get_force_meta(System *system, bool calcEnergy) {
     blockCount-1, s->lambda_fd, s->lambdaForce_d,
     step_potential_d, hist_potential_d, step_force_d,
     meta_index_d, meta_histogram_d, L_meta_bins, L_max, L_min, L_std, L_search,
-    pEnergy);
+    pEnergy, mirror_Lmin, mirror_Lmax);
 }
 
 
@@ -949,6 +962,7 @@ __global__ void add_sample_abf_kernel(
     int bin = get_histogram_index(lambda, num_bins, L_max, L_min); 
     int hist_bin = bin + hist_indices[i];
     real dUdL = dU_msld[i+1]; // lambdaForce before biasing forces
+    // Uniform Estimations
     average_dUdL[hist_bin] = (average_dUdL[hist_bin] * histogram_counts[hist_bin] + dUdL) / (histogram_counts[hist_bin] + 1);
     average_dUdL2[hist_bin] = (average_dUdL2[hist_bin] * histogram_counts[hist_bin] + dUdL*dUdL) / (histogram_counts[hist_bin] + 1);
     ave_var[hist_bin] = average_dUdL2[hist_bin] - pow(average_dUdL[hist_bin], 2);
@@ -1227,7 +1241,7 @@ void Msld::init_oss(System* system){
 
 __global__ void add_sample_hist_kernel(
   real kT, int nL, real* lambdas, real* dU_msld, real* hist_potential,
-  real weight, real tempering, real temper_min,
+  real weight, real tempering,
   real* histogram, int* hist_indices,
   int L_bins, real L_max, real L_min, 
   int dUdL_bins, real dUdL_max, real dUdL_min,
@@ -1263,7 +1277,7 @@ void Msld::add_sample_hist(System* system) {
 
   add_sample_hist_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->leapParms1->kT, blockCount-1, s->lambda_fd, dU_msld_d, hist_potential_d,
-    gaussian_weight, tempering, min_bias, oss_histogram_d, oss_index_d,
+    gaussian_weight, tempering, oss_histogram_d, oss_index_d,
     L_oss_bins, L_max, L_min, dUdL_bins, dUdL_max, dUdL_min,
     temper);
 }
@@ -1275,7 +1289,8 @@ __global__ void getforce_hist_kernel(
   int dUdL_bins, real dUdL_max, real dUdL_min, int dUdL_search,
   int L_bins, real L_max, real L_min, int L_search,
   real dUdL_std, real L_std,
-  real* dGdF, real_e* energy
+  real* dGdF, real_e* energy,
+  bool mirror_Lmin, bool mirror_Lmax
 ) {
   // 2D grid: blockIdx.y = lambda index, blockIdx.x*blockDim.x+threadIdx.x = L search offset
   int iSearch = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1292,15 +1307,21 @@ __global__ void getforce_hist_kernel(
     int j = X - L_search + iSearch;
     if (j >= X-L_search && j <= X+L_search) {
       int L_index = j;
-      real mirrorFactor = (L_index == 0 || L_index == L_bins-1) ? 2.0 : 1.0;
-      // Mirror at L=0 & L_1 ?
-      //L_index = (L_index < 0) ? -L_index : L_index;
-      //L_index = (L_index > L_bins-1) ? L_index - 2*(L_index-(L_bins-1)) : L_index;
+      real mirrorFactor = 1;
+      // Optional mirror at L=0 & L_1 to put L_index in range
+      if (mirror_Lmin) {
+        L_index = (L_index < 0) ? -L_index : L_index;
+        mirrorFactor = L_index == 0 ? 2.0 : 1.0;
+      }
+      if (mirror_Lmax) {
+        L_index = (L_index > L_bins-1) ? L_index - 2*(L_index-(L_bins-1)) : L_index;
+        mirrorFactor = L_index == L_bins-1 ? 2.0 : 1.0;
+      }
       if (L_index >= 0 && L_index < L_bins) {
         real L_resolution = (L_max-L_min)/(L_bins-1.0);
-        real L_center = L_min + j*L_resolution;
+        real L_center = L_min + j*L_resolution; // Important that this is j and below dUdL_center has k
         real L_distance = (lambdas[iL+1] - L_center) / L_std;
-        real L_gaussian = exp(-0.5*L_distance*L_distance);
+        real L_gaussian = expf(-0.5*L_distance*L_distance);
         for (int k = Y-dUdL_search; k <= Y+dUdL_search; k++) {
           int dUdL_index = k;
           if (dUdL_index < 0) continue;
@@ -1309,7 +1330,7 @@ __global__ void getforce_hist_kernel(
           real dUdL_resolution = (dUdL_max-dUdL_min)/(dUdL_bins-1.0);
           real dUdL_center = dUdL_min + k*dUdL_resolution;
           real dUdL_distance = (dU_msld[iL+1] - dUdL_center) / dUdL_std;
-          real dUdL_gaussian = exp(-0.5*dUdL_distance*dUdL_distance);
+          real dUdL_gaussian = expf(-0.5*dUdL_distance*dUdL_distance);
           int index = hist_indices[iL] + L_index*dUdL_bins + dUdL_index;
           real weight = mirrorFactor * histogram[index];
 
@@ -1355,8 +1376,6 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
   gridDim.z = 1;
 
   // Launch kernel
-  cudaMemsetAsync(dGdF_d, 0, blockCount*sizeof(real), r->ossBias);
-  cudaMemsetAsync(hist_potential_d, 0, (blockCount-1)*sizeof(real), r->ossBias);
   getforce_hist_kernel<<<gridDim, blockDim, shMem, stream>>>(
     blockCount-1, s->lambda_fd, s->lambdaForce_d, dU_msld_d,
     step_potential_d, hist_potential_d, step_force_d,
@@ -1364,7 +1383,8 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
     dUdL_bins, dUdL_max, dUdL_min, dUdL_search,
     L_oss_bins, L_max, L_min, L_search,
     dUdL_std, L_std,
-    dGdF_d, pEnergy);
+    dGdF_d, pEnergy,
+    mirror_Lmin, mirror_Lmax);
 }
 
 __global__ void getpotential_hist_kernel(

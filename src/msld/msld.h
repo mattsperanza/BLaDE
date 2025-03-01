@@ -69,6 +69,8 @@ class Msld {
   real L_min = 0.0;
 
   // Meta - uniform binning - use abf histogram?
+  bool mirror_Lmin = false;
+  bool mirror_Lmax = false;
   bool meta = false;
   int L_meta_bins = 1001;
   real* meta_histogram_d;
@@ -82,7 +84,6 @@ class Msld {
 
   // Meta options
   bool temper = false;
-  real min_bias = 2.0; // Amount of bias stored in histogram to add before starting tempering in kcal/mol
   real tempering = 3.0; // exp(-g(L, dU))/tempering)
   real gaussian_weight = .05; // <= 0.0 turns off oss force calculation
 
@@ -92,8 +93,8 @@ class Msld {
   real dUdL_min = -500;
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
-  real L_std = .02;
-  real dUdL_std = 8;
+  real L_std = .01;
+  real dUdL_std = 5;
   int L_search = 3.0*(L_std/L_resolution); // ~3 L std in each direction
   int dUdL_search = 3.0*(dUdL_std/dUdL_resolution); // ~3 dUdL std in each direction
 
