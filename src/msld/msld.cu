@@ -1041,6 +1041,9 @@ void Msld::add_sample_abf(System* system){
     printf("Step: %ld\n", system->run->step);
     real fractionPhysical = 0.0;
     for (int i = 0; i < siteCount-1; i++) {
+      int refID = count;
+      int startRef = indices[count];
+      real refTI = 0;
       for (int k = 0; k < blocksPerSite[i+1]; k++) {
         int start= indices[count];
         printf("Site %d, Sub %d\n", i, k);
@@ -1082,18 +1085,33 @@ void Msld::add_sample_abf(System* system){
           printf("%f, ", sqrt(ave_var_dUdL[start+j]));
         }
         printf("]\n");
-        // dG WT->j = -kT ln(Zj(1)/ZWT(1))
+        printf("dG 0->i: [");
+        real sum = 0;
+        for (int j = 0; j < L_abf_bins-1; j++) {
+          real factor = j == 0 || j == L_abf_bins-2 ? .5 : 1.0;
+          real width = factor * (L_max - L_min) / (L_abf_bins-1.0);
+          sum += width * (ens_dUdL[j] + ens_dUdL[j+1]) / 2.0;
+          printf("%f, ", sum);
+        }
+        printf("]\n");
+        if (count == refID) {
+          refTI = sum;
+        }
+        // dG WT->j = -kT ln(Zj(1)/ZWT(1)) - (TI_j - TI_WT)
         int bins = system->msld->L_abf_bins-1; // index to last bin
-        real wWT = weights[0 + bins];
-        real offWT = offsets[0 + bins];
-        real ZWT = Z[0];
-        real offZWT = Z_off[0];
+        real wWT = weights[startRef + bins];
+        real offWT = offsets[startRef + bins];
+        real ZWT = Z[refID];
+        real offZWT = Z_off[refID];
+        real TI_j = sum;
         real wj = weights[indices[count] + bins];
         real offJ = offsets[indices[count] + bins];
         real Zj = Z[count];
         real offZj = Z_off[count];
-        real dG = -system->state->leapParms1->kT*log((wj*exp(offJ - offWT) / wWT)*(ZWT*exp(offZWT - offZj)/Zj));
-        printf("dG 0->1: %f\n\n", dG);
+        // Accounts for bias felt when sampled assuming TI estimate is in equilibrium (bad assumption)
+        real logProb = -system->state->leapParms1->kT*log((wj*exp(offJ - offWT) / wWT)*(ZWT*exp(offZWT - offZj)/Zj));
+        real dG = logProb - (TI_j - refTI);
+        printf("dG 0->1 = -kb*T*ln(P(L_j>c)/P(L_WT>c)) - (TI_j - TI_WT) = %f - (%f - %f) = %f \n\n", logProb, TI_j, refTI, dG);
         count++;
       }
     }
@@ -1369,57 +1387,57 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
 
 __global__ void getpotential_hist_kernel(
   int nL, int* hist_indices, real* histogram,
-  int dUdL_bins, real dUdL_max, real dUdL_min, int dUdL_search, 
+  int dUdL_bins, real dUdL_max, real dUdL_min, int dUdL_search,
   int L_bins, real L_max, real L_min, int L_search,
-  real dUdL_std, real L_std, 
-  real* potential_grid
+  real dUdL_std, real L_std,
+  real* potential_grid,
+  bool mirror_Lmin, bool mirror_Lmax
 ) {
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i < nL) {
-    for (int ii = 0; ii < L_bins; ii++){
-      int X = ii;
-      real X_res = (L_max - L_min) / (L_bins-1.0);
-      real X_center = X*X_res;
-      for(int jj = 0; jj < dUdL_bins; jj++){
-        int Y = jj;
-        real Y_res = (dUdL_max - dUdL_min) / (dUdL_bins-1.0);
-        real Y_center = dUdL_min + Y*Y_res;
-        real bias = 0.0;
+  // Claude 3.7 wrote the indexing scheme
+  // Calculate thread global coordinates
+  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  int total_bins = L_bins * dUdL_bins;
+  int iL = blockIdx.y; // Use blockIdx.y for iL dimension
+  real X_res = (L_max - L_min) / (L_bins - 1.0);
+  real Y_res = (dUdL_max - dUdL_min) / (dUdL_bins - 1.0);
+  for (int bin_idx = tid; bin_idx < total_bins; bin_idx += blockDim.x * gridDim.x) {
+    if (iL >= nL) continue;
+    // Convert linear bin index to 2D X,Y coordinates
+    int X = bin_idx / dUdL_bins;
+    int Y = bin_idx % dUdL_bins;
+    if (X >= L_bins || Y >= dUdL_bins) continue;
+    real X_center = L_min + X * X_res;
+    real Y_center = dUdL_min + Y * Y_res;
+    real bias = 0.0;
+    for (int j = X - L_search; j <= X + L_search; j++) {
+      int L_index = j;
+      real mirrorFactor = 1.0;
+      if (mirror_Lmin) {
+        L_index = (L_index < 0) ? -L_index : L_index;
+        mirrorFactor = (L_index == 0) ? 2.0 : 1.0;
+      }
+      if (mirror_Lmax) {
+        L_index = (L_index >= L_bins) ? L_bins - 1 - (L_index - (L_bins - 1)) : L_index;
+        mirrorFactor = (mirror_Lmin && L_index == 0) || L_index == L_bins - 1 ? 2.0 : 1.0;
+      }
+      if (L_index < 0 || L_index >= L_bins) continue;
 
-        // Evaluate potential at (X,Y)
-        for (int j = X-L_search; j <= X+L_search; j++) {
-          int L_index = j;
-          real mirrorFactor = (L_index == 0 || L_index == L_bins-1) ? 2.0 : 1.0;
-          //L_index = L_index < 0 ? -L_index : L_index;
-          if (L_index < 0) {continue;}
-          if (L_index >= L_bins) {break;}
+      real L_center = L_min + j * X_res;
+      real L_distance = (X_center - L_center) / L_std;
+      real L_gaussian = expf(-0.5 * L_distance * L_distance);
+      for (int k = Y - dUdL_search; k <= Y + dUdL_search; k++) {
+        if (k < 0 || k >= dUdL_bins) continue;
+        real dUdL_center = dUdL_min + k * Y_res;
+        real dUdL_distance = (Y_center - dUdL_center) / dUdL_std;
+        real dUdL_gaussian = expf(-0.5 * dUdL_distance * dUdL_distance);
+        int index = hist_indices[iL] + L_index * dUdL_bins + k;
+        real weight = mirrorFactor * histogram[index];
 
-          real L_resolution = (L_max-L_min)/(L_bins-1.0);
-          real L_center = j*L_resolution;
-          real L_distance = (X_center - L_center) / L_std;
-          real L_gaussian = exp(-.5*L_distance*L_distance);
-          for (int k = Y-dUdL_search; k <= Y+dUdL_search; k++) {
-            int dUdL_index = k;
-            if (dUdL_index < 0) {continue;}
-            if (dUdL_index >= dUdL_bins) {break;}
-
-            real dUdL_resolution = (dUdL_max-dUdL_min)/(dUdL_bins-1.0);
-            real dUdL_center = dUdL_min + k*dUdL_resolution;
-            real dUdL_distance = (Y_center - dUdL_center) / dUdL_std;
-            real dUdL_gaussian = exp(-.5*dUdL_distance*dUdL_distance);
-    
-            int index = hist_indices[i] + L_index*dUdL_bins + dUdL_index; // indexed so dUdL bins are continuous in mem
-            real weight = mirrorFactor * histogram[index];
-    
-            real tmp_bias = weight * L_gaussian * dUdL_gaussian;
-            bias += tmp_bias;
-          }
-        }
-
-        int index = hist_indices[i] + X*dUdL_bins + Y;
-        potential_grid[index] = bias;
+        bias += weight * L_gaussian * dUdL_gaussian;
       }
     }
+    int grid_index = hist_indices[iL] + X * dUdL_bins + Y;
+    atomicAdd(&potential_grid[grid_index], bias);
   }
 }
 
@@ -1430,12 +1448,16 @@ __global__ void getpotential_hist_kernel(
  * Expects a device pointer to a grid with same dimensions as the histogram.
  */
 void Msld::getpotential_hist(System *system, real* potential_grid){
-  getpotential_hist_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS>>>(
-    blockCount-1, oss_index_d, oss_histogram_d,
-    dUdL_bins, dUdL_max, dUdL_min, dUdL_search, 
-    L_oss_bins, L_max, L_min, L_search,
-    dUdL_std, L_std, 
-    potential_grid);
+  // Calculate grid dimensions based on bin counts and nL
+  dim3 grid((L_oss_bins * dUdL_bins + BLMS - 1) / BLMS, blockCount-1);
+  getpotential_hist_kernel<<<grid, BLMS>>>(
+      blockCount-1, oss_index_d, oss_histogram_d,
+      dUdL_bins, dUdL_max, dUdL_min, dUdL_search,
+      L_oss_bins, L_max, L_min, L_search,
+      dUdL_std, L_std,
+      potential_grid,
+      mirror_Lmin, mirror_Lmax
+  );
 }
 
 __global__ void calc_lambda_from_theta_kernel(real_x *lambda,real_x *theta,int siteCount,int *siteBound,real fnex)
