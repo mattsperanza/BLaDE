@@ -729,7 +729,6 @@ void Msld::initialize(System *system)
   // Thermodynamic Integration/Metadynamics/OST variables
   cudaMalloc(&dU_msld_d, blockCount*sizeof(real)); // lambda force prior to biasing
   cudaMalloc(&step_force_d, (blockCount-1)*sizeof(real));
-  cudaMalloc(&step_potential_d, (blockCount-1)*sizeof(real));
   cudaMalloc(&hist_potential_d, (blockCount-1)*sizeof(real)); // use blockCount so that it is indexed same as lambda array
   cudaMemset(hist_potential_d, 0, (blockCount-1)*sizeof(real));
   if (abf && !abf_histogram_d) {
@@ -839,7 +838,7 @@ void Msld::add_sample_meta(System *system) {
 
 void __global__ getforce_meta_kernel(
   int nL, real* lambdas, real* lambdaForce,
-  real* step_potential, real* hist_potential, real* step_force,
+  real* hist_potential, real* step_force,
   int* hist_indices, real* histogram,
   int L_bins, real L_max, real L_min,
   real L_std, int L_search, real_e* energy,
@@ -877,7 +876,6 @@ void __global__ getforce_meta_kernel(
     atomicAdd(&lambdaForce[i+1], L_force);
     atomicAdd(&step_force[i], L_force);
     if (energy) {
-      atomicAdd(&step_potential[i], bias);
       atomicAdd(&hist_potential[i], bias);
       lEnergy = bias;
     }
@@ -907,7 +905,7 @@ void Msld::get_force_meta(System *system, bool calcEnergy) {
 
   getforce_meta_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     blockCount-1, s->lambda_fd, s->lambdaForce_d,
-    step_potential_d, hist_potential_d, step_force_d,
+    hist_potential_d, step_force_d,
     meta_index_d, meta_histogram_d, L_meta_bins, L_max, L_min, L_std, L_search,
     pEnergy, mirror_Lmin, mirror_Lmax);
 }
@@ -1111,7 +1109,7 @@ void Msld::add_sample_abf(System* system){
 
 // This is done on GPU just to avoid moving data back and forth
 __global__ void getforce_abf_kernel(
-  real* lambdas, real* lambdaForce, real* step_potential, real* step_force,
+  real* lambdas, real* lambdaForce, real* step_force,
   int* abf_hist_indices, int num_bins, real L_max, real L_min,
   real* ensemble_dUdL, real* average_dUdL,
   real_e *energy, int nL)
@@ -1157,7 +1155,6 @@ __global__ void getforce_abf_kernel(
         lEnergy += (ensemble_dUdL[histBin-1] + dUdL_abf)*(.5/(num_bins-1));
       }
       lEnergy = -lEnergy; // We add -<dU/dL> to the force
-      atomicAdd(&step_potential[i],lEnergy);
     }
   }
 
@@ -1184,49 +1181,10 @@ void Msld::getforce_abf(System *system, bool calcEnergy) {
   }
 
   getforce_abf_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
-    s->lambda_fd, s->lambdaForce_d, step_potential_d, step_force_d,
+    s->lambda_fd, s->lambdaForce_d, step_force_d,
     abf_index_d, L_abf_bins, L_max, L_min,
     ensemble_dUdL_d, average_dUdL_d,
     pEnergy, blockCount-1);
-}
-
-
-__global__ void getpotential_abf_kernel(
-  real* lambdas, real* lambdaForce, real* step_potential, real* step_force,
-  int* abf_hist_indices, int num_bins, real L_max, real L_min,
-  real* ensemble_dUdL, real* average_dUdL,
-  real_e *energy, int nL, real* potential_grid){
-
-    int i=blockIdx.x*blockDim.x+threadIdx.x;
-
-    real lEnergy = 0;
-    if (i < nL) {
-      int start = abf_hist_indices[i];
-      potential_grid[start] = lEnergy;
-      for (int j = 0; j < num_bins-1; j++) { 
-        real factor = j == 0 || j == num_bins-1 ? .5 : 1;
-        lEnergy += factor*(ensemble_dUdL[start+j] + ensemble_dUdL[start+j+1])*(.5/(num_bins-1));
-        potential_grid[start+j+1] = lEnergy;
-      }
-    }
-  }
-
-/**
- * In-place fill of the potential of ABF at every point in lambda space
- * represented.
- * 
- * Expects a device pointer to a grid with same dimensions as the abf grid.
- */
-void Msld::getpotential_abf(System *system, real* potential_grid){
-
-  // Default stream
-  real_e* pEnergy =  NULL;
-  State* s = system->state;
-  getpotential_abf_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS>>>(
-    s->lambda_fd, s->lambdaForce_d, step_potential_d, step_force_d,
-    abf_index_d, L_abf_bins, L_max, L_min,
-    ensemble_dUdL_d, average_dUdL_d,
-    pEnergy, blockCount-1, potential_grid);
 }
 
 void Msld::init_oss(System* system){
@@ -1242,6 +1200,8 @@ void Msld::init_oss(System* system){
 
     cudaMalloc(&dGdF_d, blockCount*sizeof(real)); // use blockCount so that it is indexed same as lambda array
     cudaMemset(dGdF_d, 0, blockCount*sizeof(real));
+    cudaMalloc(&dGdL_d, blockCount*sizeof(real));
+    cudaMemset(dGdL_d, 0, blockCount*sizeof(real));
 }
 
 __global__ void add_sample_hist_kernel(
@@ -1288,13 +1248,12 @@ void Msld::add_sample_hist(System* system) {
 }
 
 __global__ void getforce_hist_kernel(
-  int nL, real* lambdas, real* lambdaForce, real* dU_msld,
-  real* step_potential, real* hist_potential, real* step_force,
-  int* hist_indices, real* histogram,
+  int nL, real* lambdas, real* dU_msld,
+  real* hist_potential, int* hist_indices, real* histogram,
   int dUdL_bins, real dUdL_max, real dUdL_min, int dUdL_search,
   int L_bins, real L_max, real L_min, int L_search,
   real dUdL_std, real L_std,
-  real* dGdF, real_e* energy,
+  real* dGdF, real* dGdL,
   bool mirror_Lmin, bool mirror_Lmax
 ) {
   // 2D grid: blockIdx.y = lambda index, blockIdx.x*blockDim.x+threadIdx.x = L search offset
@@ -1320,7 +1279,7 @@ __global__ void getforce_hist_kernel(
       }
       if (mirror_Lmax) {
         L_index = (L_index > L_bins-1) ? L_index - 2*(L_index-(L_bins-1)) : L_index;
-        mirrorFactor = L_index == L_bins-1 ? 2.0 : 1.0;
+        mirrorFactor = (mirror_Lmin && L_index == 0) || L_index == L_bins-1 ? 2.0 : 1.0;
       }
       if (L_index >= 0 && L_index < L_bins) {
         real L_resolution = (L_max-L_min)/(L_bins-1.0);
@@ -1345,14 +1304,25 @@ __global__ void getforce_hist_kernel(
           local_L_force += -L_distance/L_std * tmp_bias;
         }
         atomicAdd(&dGdF[iL+1], local_dUdL_force);
-        atomicAdd(&lambdaForce[iL+1], local_L_force);
-        atomicAdd(&step_force[iL], local_L_force);
-        if (energy) {
-          atomicAdd(&step_potential[iL], local_bias);
-          atomicAdd(&hist_potential[iL], local_bias);
-          atomicAdd(energy, local_bias);
-        }
+        atomicAdd(&dGdL[iL+1], local_L_force);
+        atomicAdd(&hist_potential[iL], local_bias);
       }
+    }
+  }
+}
+
+__global__ void getforce_pb_oss(int nL, real kT, real* hist_potential, real* dGdF, real* dGdL, real* lambdaForce, real_e* energy) {
+  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  if (i < nL) {
+    real denom = 0.0;
+    for (int j = 0; j < nL; j++) {
+      denom += exp(-hist_potential[j] / kT);
+    }
+    real pbFactor = exp(-hist_potential[i] / kT) / denom;
+    atomicAdd(&lambdaForce[i+1], pbFactor * dGdL[i+1]);
+    dGdF[i+1] *= pbFactor;
+    if (energy && i==0) {
+      atomicAdd(energy, -kT*log(denom));
     }
   }
 }
@@ -1373,23 +1343,28 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
   if (calcEnergy) {
     pEnergy = s->energy_d + eebias;
   }
+
+  // Force from individual histograms
   // Set up grid and block dimensions
   dim3 blockDim(BLMS, 1, 1);
   dim3 gridDim;
   gridDim.x = (2*L_search + 1 + BLMS - 1) / BLMS; // Ceiling division for L search range
   gridDim.y = blockCount - 1;                     // Number of lambdas
   gridDim.z = 1;
-
-  // Launch kernel
   getforce_hist_kernel<<<gridDim, blockDim, shMem, stream>>>(
-    blockCount-1, s->lambda_fd, s->lambdaForce_d, dU_msld_d,
-    step_potential_d, hist_potential_d, step_force_d,
+    blockCount-1, s->lambda_fd, dU_msld_d,
+    hist_potential_d,
     oss_index_d, oss_histogram_d,
     dUdL_bins, dUdL_max, dUdL_min, dUdL_search,
     L_oss_bins, L_max, L_min, L_search,
     dUdL_std, L_std,
-    dGdF_d, pEnergy,
+    dGdF_d, dGdL_d,
     mirror_Lmin, mirror_Lmax);
+  // Force from PBMetaD combined function -kT ln(sum(-gi(li, Fi)/kT)))
+  getforce_pb_oss<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
+    blockCount-1, system->state->leapParms1->kT,
+    hist_potential_d, dGdF_d, dGdL_d,
+    s->lambdaForce_d, pEnergy);
 }
 
 __global__ void getpotential_hist_kernel(

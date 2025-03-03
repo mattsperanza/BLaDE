@@ -60,9 +60,9 @@ class Msld {
   bool update_fe_surface = true; // add samples to abf/meta/oss
   int sample_freq = 10;
   real* dGdF_d;
+  real* dGdL_d;
   real* dU_msld_d;
   real* hist_potential_d; // potential from metadynamics
-  real* step_potential_d; // potential from histogram+abf at each lambda
   real* step_force_d; // force from bias
   // Just in case we get ideas for later
   real L_max = 1.0;
