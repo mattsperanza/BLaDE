@@ -448,6 +448,8 @@ void parse_msld(char *line,System *system)
     system->msld->temper=io_nextb(line);
   } else if (strcmp(token, "temper_amount") == 0) {
     system->msld->tempering=io_nextf(line);
+  } else if (strcmp(token, "min_bias") == 0){
+    system->msld->temper_min=io_nextf(line);
   } else if (strcmp(token, "abf") == 0) {
     system->msld->abf=io_nextb(line);
   } else if (strcmp(token, "tracking_only") == 0){
@@ -1090,7 +1092,7 @@ void Msld::add_sample_abf(System* system){
         for (int j = 0; j < L_abf_bins-1; j++) {
           real factor = j == 0 || j == L_abf_bins-2 ? .5 : 1.0;
           real width = factor * (L_max - L_min) / (L_abf_bins-1.0);
-          sum += width * (ens_dUdL[j] + ens_dUdL[j+1]) / 2.0;
+          sum += width * (ens_dUdL[start + j] + ens_dUdL[start + j+1]) / 2.0;
           printf("%f, ", sum);
         }
         printf("]\n");
@@ -1111,7 +1113,15 @@ void Msld::add_sample_abf(System* system){
         // Accounts for bias felt when sampled assuming TI estimate is in equilibrium (bad assumption)
         real logProb = -system->state->leapParms1->kT*log((wj*exp(offJ - offWT) / wWT)*(ZWT*exp(offZWT - offZj)/Zj));
         real dG = logProb - (TI_j - refTI);
-        printf("dG 0->1 = -kb*T*ln(P(L_j>c)/P(L_WT>c)) - (TI_j - TI_WT) = %f - (%f - %f) = %f \n\n", logProb, TI_j, refTI, dG);
+        printf("dG 0->1 = %f - (%f - %f) = %f \n", logProb, TI_j, refTI, dG);
+
+        if (oss && temper) {
+          real minFL[blockCount-1];
+          cudaMemcpy(minFL, minL_maxdUdL_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
+          real temperFactor = exp(-max(0.0, minFL[count] - temper_min) / (tempering*system->state->leapParms1->kT));
+          printf("OSS Tempering Percentage: %6.3f%%, minFL: %f\n", 100*temperFactor, minFL[count]);
+        }
+        printf("\n");
         count++;
       }
     }
@@ -1213,9 +1223,13 @@ void Msld::init_oss(System* system){
     }
     cudaMalloc(&oss_index_d, nL*sizeof(int)); // index into lambda's histogram
     cudaMemcpy(oss_index_d, index, nL*sizeof(int), cudaMemcpyHostToDevice);
+    cudaMalloc(&oss_potential_d, nL*L_oss_bins*dUdL_bins*sizeof(real)); // ~4/8 Mb per histogram
+    cudaMemset(oss_potential_d, 0, nL*L_oss_bins*dUdL_bins*sizeof(real));
     cudaMalloc(&oss_histogram_d, nL*L_oss_bins*dUdL_bins*sizeof(real)); // ~4/8 Mb per histogram
     cudaMemset(oss_histogram_d, 0, nL*L_oss_bins*dUdL_bins*sizeof(real));
 
+    cudaMalloc(&minL_maxdUdL_d, (blockCount-1)*sizeof(real));
+    cudaMemset(minL_maxdUdL_d, 0, (blockCount-1)*sizeof(real));
     cudaMalloc(&dGdF_d, blockCount*sizeof(real)); // use blockCount so that it is indexed same as lambda array
     cudaMemset(dGdF_d, 0, blockCount*sizeof(real));
     cudaMalloc(&dGdL_d, blockCount*sizeof(real));
@@ -1224,7 +1238,7 @@ void Msld::init_oss(System* system){
 
 __global__ void add_sample_hist_kernel(
   real kT, int nL, real* lambdas, real* dU_msld, real* hist_potential,
-  real weight, real tempering,
+  real weight, real tempering, real temper_min, real* minL_maxdUdL_d,
   real* histogram, int* hist_indices,
   int L_bins, real L_max, real L_min, 
   int dUdL_bins, real dUdL_max, real dUdL_min,
@@ -1240,7 +1254,8 @@ __global__ void add_sample_hist_kernel(
       sum += exp(-hist_potential[j] / kT);
     }
     real factorDecouple = exp(-hist_potential[i] / kT) / sum;
-    real factorTemper = temper ? exp(-hist_potential[i] / (tempering*kT)) : 1.0;
+    real potential = max(0.0, minL_maxdUdL_d[i] - temper_min);
+    real factorTemper = temper ? exp(-potential / (tempering*kT)) : 1.0;
     if (X >= 0 && X < L_bins && Y >= 0 && Y < dUdL_bins) {
       histogram[index] += weight * factorDecouple * factorTemper;
     }
@@ -1258,9 +1273,13 @@ void Msld::add_sample_hist(System* system) {
     stream=system->run->ossBias;
   }
 
+  if (system->run->step % 1000*system->msld->sample_freq == 0 && temper) {
+    system->msld->get_tempering_hist(system); // Evaluates potential on grid everywhere
+  }
+
   add_sample_hist_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->leapParms1->kT, blockCount-1, s->lambda_fd, dU_msld_d, hist_potential_d,
-    gaussian_weight, tempering, oss_histogram_d, oss_index_d,
+    gaussian_weight, tempering, temper_min, minL_maxdUdL_d, oss_histogram_d, oss_index_d,
     L_oss_bins, L_max, L_min, dUdL_bins, dUdL_max, dUdL_min,
     temper);
 }
@@ -1393,7 +1412,7 @@ __global__ void getpotential_hist_kernel(
   real* potential_grid,
   bool mirror_Lmin, bool mirror_Lmax
 ) {
-  // Claude 3.7 wrote the indexing scheme
+  // TODO: Make much faster this is really slow with large L_oss_bins
   // Calculate thread global coordinates
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
   int total_bins = L_bins * dUdL_bins;
@@ -1441,13 +1460,7 @@ __global__ void getpotential_hist_kernel(
   }
 }
 
-/**
- * In-place fill of the potential of the histogram at every point on the grid
- * for every lambda.
- *  
- * Expects a device pointer to a grid with same dimensions as the histogram.
- */
-void Msld::getpotential_hist(System *system, real* potential_grid){
+void Msld::getpotential_hist(System *system){
   // Calculate grid dimensions based on bin counts and nL
   dim3 grid((L_oss_bins * dUdL_bins + BLMS - 1) / BLMS, blockCount-1);
   getpotential_hist_kernel<<<grid, BLMS>>>(
@@ -1455,9 +1468,67 @@ void Msld::getpotential_hist(System *system, real* potential_grid){
       dUdL_bins, dUdL_max, dUdL_min, dUdL_search,
       L_oss_bins, L_max, L_min, L_search,
       dUdL_std, L_std,
-      potential_grid,
+      oss_potential_d,
       mirror_Lmin, mirror_Lmax
   );
+}
+
+__global__ void min_L_max_dUdL_kernel(
+    int nL, int* hist_indices,
+    int L_bins, int dUdL_bins,
+    real* potential_grid,
+    real* min_bias
+) {
+  // TODO: Claude 3.7 wrote, eventually write your own reductions
+  extern __shared__ real shared_max_bias[];
+  int iL = blockIdx.x;
+  int tid = threadIdx.x;
+  int stride = blockDim.x;
+  if (iL < nL) {
+    // Each thread initializes its assigned X positions
+    for (int x = tid; x < L_bins; x += stride) {
+      shared_max_bias[x] = -INFINITY;
+    }
+    __syncthreads();
+
+    // For each X position, find the maximum bias across all Y values
+    for (int x = tid; x < L_bins; x += stride) {
+      real local_max = -INFINITY;
+      for (int y = 0; y < dUdL_bins; y++) {
+        int grid_index = hist_indices[iL] + x * dUdL_bins + y;
+        real current_bias = potential_grid[grid_index];
+        local_max = max(local_max, current_bias);
+      }
+      shared_max_bias[x] = local_max;
+    }
+    __syncthreads();
+
+    if (tid == 0) {
+      real min_of_max_bias = 0;
+      for (int x = 0; x < L_bins; x++) {
+        min_of_max_bias = min(min_of_max_bias, shared_max_bias[x]);
+      }
+      min_bias[iL] = min_of_max_bias;
+    }
+  }
+}
+
+void Msld::get_tempering_hist(System* system) {
+  // Evaluate potential everywhere
+  int sharedMemSize = L_oss_bins * sizeof(real);
+  dim3 grid((L_oss_bins * dUdL_bins + BLMS - 1) / BLMS, blockCount-1);
+  getpotential_hist_kernel<<<grid, BLMS, sharedMemSize, system->run->ossBias>>>(
+      blockCount-1, oss_index_d, oss_histogram_d,
+      dUdL_bins, dUdL_max, dUdL_min, dUdL_search,
+      L_oss_bins, L_max, L_min, L_search,
+      dUdL_std, L_std,
+      oss_potential_d,
+      mirror_Lmin, mirror_Lmax
+  );
+
+  // minL(maxdUdL(potential_grid))
+  min_L_max_dUdL_kernel<<<blockCount-1, BLMS, sharedMemSize, system->run->ossBias>>>(
+      blockCount-1, oss_index_d, L_oss_bins, dUdL_bins, oss_potential_d, minL_maxdUdL_d);
 }
 
 __global__ void calc_lambda_from_theta_kernel(real_x *lambda,real_x *theta,int siteCount,int *siteBound,real fnex)

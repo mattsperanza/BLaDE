@@ -79,12 +79,15 @@ class Msld {
   // Histogram (2D meta) - uniform binning
   bool oss = false; // Perform Orthogonal Space Sampling force calculations
   int L_oss_bins = 1001; // # of whole bins that fit in range [L_min, L_max]
+  real* minL_maxdUdL_d; // tempering for each histogram
   real* oss_histogram_d; // 1000 x 100 = 1 million float = 4 -> stores sum of prefactors
+  real* oss_potential_d; // same size as histogram
   int* oss_index_d; // index into lambda's histogram
 
   // Meta options
-  bool temper = false;
-  real tempering = 3.0; // exp(-g(L, dU))/tempering)
+  bool temper = true;
+  real tempering = 3.0;
+  real temper_min = 2.0; // add at least 2 kcal/mol bias before tempering
   real gaussian_weight = .05; // <= 0.0 turns off oss force calculation
 
   // Don't change?
@@ -93,8 +96,8 @@ class Msld {
   real dUdL_min = -500;
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
-  real L_std = .01;
-  real dUdL_std = 5;
+  real L_std = 4*L_resolution;
+  real dUdL_std = 4*dUdL_resolution;
   int L_search = 3.0*(L_std/L_resolution); // ~3 L std in each direction
   int dUdL_search = 3.0*(dUdL_std/dUdL_resolution); // ~3 dUdL std in each direction
 
@@ -191,7 +194,8 @@ class Msld {
 
   void init_oss(System* system);
   void add_sample_hist(System *system);
-  void getpotential_hist(System* system, real* potential_grid);
+  void get_tempering_hist(System* system);
+  void getpotential_hist(System* system);
   void getforce_hist(System *system, bool calcEnergy);
 };
 
