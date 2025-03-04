@@ -1456,7 +1456,7 @@ __global__ void getpotential_hist_kernel(
       }
     }
     int grid_index = hist_indices[iL] + X * dUdL_bins + Y;
-    atomicAdd(&potential_grid[grid_index], bias);
+    potential_grid[grid_index] = bias;
   }
 }
 
