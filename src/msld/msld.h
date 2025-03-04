@@ -105,7 +105,7 @@ class Msld {
   bool abf = false;
   bool tracking_only = false; // Don't apply ABF bias if this is true -> dominates abf flag
   int nFull = 10;
-  int L_abf_bins = 51; // this is also the max index
+  int L_abf_bins = 51; // this is also the max index (51 leads to >.99 as last bin)
   int* abf_index_d; // index into abf histogram
   real* abf_histogram_d; // counts in bin -> also used for 1D meta
   real* ensemble_dUdL_d;

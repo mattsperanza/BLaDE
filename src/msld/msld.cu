@@ -1500,9 +1500,6 @@ __global__ void min_L_max_dUdL_kernel(
         local_max = max(local_max, current_bias);
       }
       shared_max_bias[x] = local_max;
-      if (iL == 0 && abs(local_max) < 1e-3) {
-        printf("x: %d, local_max: %f\n", x, local_max);
-      }
     }
     __syncthreads();
 
