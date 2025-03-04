@@ -69,18 +69,18 @@ class Msld {
   real L_min = 0.0;
 
   // Meta - uniform binning - use abf histogram?
-  bool mirror_Lmin = false;
-  bool mirror_Lmax = false;
+  bool mirror_Lmin = true;
+  bool mirror_Lmax = true;
   bool meta = false;
-  int L_meta_bins = 1001;
+  int L_meta_bins = 501;
   real* meta_histogram_d;
   int* meta_index_d;
 
   // Histogram (2D meta) - uniform binning
   bool oss = false; // Perform Orthogonal Space Sampling force calculations
-  int L_oss_bins = 1001; // # of whole bins that fit in range [L_min, L_max]
+  int L_oss_bins = 501; // # of whole bins that fit in range [L_min, L_max]
   real* minL_maxdUdL_d; // tempering for each histogram
-  real* oss_histogram_d; // 1000 x 100 = 1 million float = 4 -> stores sum of prefactors
+  real* oss_histogram_d; // stores sum of prefactors
   real* oss_potential_d; // same size as histogram
   int* oss_index_d; // index into lambda's histogram
 
@@ -88,7 +88,7 @@ class Msld {
   bool temper = true;
   real tempering = 3.0;
   real temper_min = 2.0; // add at least 2 kcal/mol bias before tempering
-  real gaussian_weight = .05; // <= 0.0 turns off oss force calculation
+  real gaussian_weight = .01;
 
   // Don't change?
   int dUdL_bins = 2001; // # of whole bins that fit in range [dUdL_min, dUdL_max]
