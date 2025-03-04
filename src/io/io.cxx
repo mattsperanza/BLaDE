@@ -444,11 +444,10 @@ void write_histogram_file(System* system, std::string file_name) {
 
   if (system->msld->abf) {
     printf("Writing ABF to file!\n");
-    int bins = system->msld->L_abf_bins;
-    real* abf_potential_d;
+    int bins = system->msld->oss_abf ? system->msld->L_oss_bins : system->msld->L_abf_bins;
     real* abf_potential = (real*)malloc(bins * nL * sizeof(real));
-
-    cudaMemcpy(abf_potential, system->msld->ensemble_dUdL_d, bins * nL * sizeof(real), cudaMemcpyDeviceToHost);
+    real* dUdL_d = system->msld->oss_abf ? system->msld->oss_ensemble_dUdL_d : system->msld->ensemble_dUdL_d;
+    cudaMemcpy(abf_potential, dUdL_d, bins * nL * sizeof(real), cudaMemcpyDefault);
 
     file << "# ABF <dU/dL>\n";
     for (int i = 0; i < nL; i++) {
@@ -457,9 +456,7 @@ void write_histogram_file(System* system, std::string file_name) {
           file << i << ", " << j << ", " << abf_potential[i * bins + j] << "\n";
       }
     }
-
     free(abf_potential);
-    cudaFree(abf_potential_d);
   }
 
   if (system->msld->oss) {
@@ -471,11 +468,10 @@ void write_histogram_file(System* system, std::string file_name) {
     real dUdL_max = system->msld->dUdL_max;
     real dUdL_min = system->msld->dUdL_min;
 
-    real* hist_potential_d;
     real* hist_potential = (real*)malloc(L_bins * dUdL_bins * nL * sizeof(real));
     system->msld->getpotential_hist(system);
     printf("Done with histogram potential evaluation!\n");
-    cudaMemcpy(hist_potential, hist_potential_d, L_bins * dUdL_bins * nL * sizeof(real), cudaMemcpyDeviceToHost);
+    cudaMemcpy(hist_potential, system->msld->oss_histogram_d, L_bins * dUdL_bins * nL * sizeof(real), cudaMemcpyDeviceToHost);
 
     file << "# Histogram Potential\n";
     for (int i = 0; i < nL; i++) {
@@ -488,9 +484,7 @@ void write_histogram_file(System* system, std::string file_name) {
         }
       }
     }
-
     free(hist_potential);
-    cudaFree(hist_potential_d);
   }
 
   file.close();

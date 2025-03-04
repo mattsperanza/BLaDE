@@ -19,7 +19,7 @@ struct VariableBias {
 };
 
 class Msld {
-  public:
+public:
   int blockCount;
   int *atomBlock;
   int *lambdaSite;
@@ -62,15 +62,15 @@ class Msld {
   real* dGdF_d;
   real* dGdL_d;
   real* dU_msld_d;
-  real* hist_potential_d; // potential from metadynamics
+  real* hist_potential_d; // [blockCount] potential from metadynamics
   real* step_force_d; // force from bias
   // Just in case we get ideas for later
   real L_max = 1.0;
   real L_min = 0.0;
 
   // Meta - uniform binning - use abf histogram?
-  bool mirror_Lmin = true;
-  bool mirror_Lmax = true;
+  bool mirror_Lmin = false;
+  bool mirror_Lmax = false;
   bool meta = false;
   int L_meta_bins = 501;
   real* meta_histogram_d;
@@ -78,7 +78,10 @@ class Msld {
 
   // Histogram (2D meta) - uniform binning
   bool oss = false; // Perform Orthogonal Space Sampling force calculations
+  bool oss_abf = false; // Use <dU/dL> from integration over histogram for ABF force
   int L_oss_bins = 501; // # of whole bins that fit in range [L_min, L_max]
+  real* oss_ensemble_dUdL_d;
+  real* oss_var_d;
   real* minL_maxdUdL_d; // tempering for each histogram
   real* oss_histogram_d; // stores sum of prefactors
   real* oss_potential_d; // same size as histogram
@@ -86,8 +89,8 @@ class Msld {
 
   // Meta options
   bool temper = true;
-  real tempering = 3.0;
-  real temper_min = 2.0; // add at least 2 kcal/mol bias before tempering
+  real tempering = 3.0; // constant for decay of bias magnitude
+  real temper_min = 4.0; // add at least 4 kcal/mol (felt) bias for every l bin before tempering
   real gaussian_weight = .01;
 
   // Don't change?
@@ -96,19 +99,19 @@ class Msld {
   real dUdL_min = -500;
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
-  real L_std = 4*L_resolution;
-  real dUdL_std = 4*dUdL_resolution;
+  real L_std = 3*L_resolution;
+  real dUdL_std = 3*dUdL_resolution;
   int L_search = 3.0*(L_std/L_resolution); // ~3 L std in each direction
   int dUdL_search = 3.0*(dUdL_std/dUdL_resolution); // ~3 dUdL std in each direction
 
   // ABF - uniform binning - separate from histogram estimation
   bool abf = false;
-  bool tracking_only = false; // Don't apply ABF bias if this is true -> dominates abf flag
+  bool tracking_only = false; // Don't apply ABF bias if this is true -> dominates abf & oss_abf flag
   int nFull = 10;
   int L_abf_bins = 51; // this is also the max index (51 leads to >.99 as last bin)
   int* abf_index_d; // index into abf histogram
   real* abf_histogram_d; // counts in bin -> also used for 1D meta
-  real* ensemble_dUdL_d;
+  real* ensemble_dUdL_d; // <dU/dL> from umbrella re-weighting of PBMetaD
   real* ensemble_dUdL2_d;
   real* ensemble_var_d;
   real* weights_d;
