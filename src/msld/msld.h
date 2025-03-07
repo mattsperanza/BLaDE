@@ -62,6 +62,8 @@ public:
   real* dGdF_d;
   real* dGdL_d;
   real* dU_msld_d;
+  real* dG_imp_d; // -kbT*ln(p) where p is probability of a lambda bin uses 501 bins & 1 billion samples
+  real dG_imp_bins = 401;
   real* hist_potential_d; // [blockCount] potential from metadynamics
   real* step_force_d; // force from bias
   // Just in case we get ideas for later
@@ -184,6 +186,10 @@ public:
   void getforce_thetaBias(System *system,bool calcEnergy);
   void getforce_atomRestraints(System *system,bool calcEnergy);
   void getforce_chargeRestraints(System *system,bool calcEnergy);
+
+  // Implicit constraints entropy
+  void calc_imp(System* system);
+  void sub_imp_dGdL(System* system, cudaStream_t stream); // adds -dG_imp to dU_msld based on site
 
   // On the fly enhanced sampling
   void init_meta(System* system);

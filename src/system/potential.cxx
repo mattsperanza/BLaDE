@@ -1670,6 +1670,7 @@ void Potential::calc_force(int step,System *system) {
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
     // Reset Storage
     cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->ossBias);
+    system->msld->sub_imp_dGdL(system, system->run->ossBias);
     cudaMemsetAsync(system->msld->step_force_d, 0, (system->state->lambdaCount-1)*sizeof(real), system->run->ossBias);
     cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
     cudaMemsetAsync(system->msld->dGdL_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
@@ -1725,6 +1726,7 @@ void Potential::calc_force(int step,System *system) {
       cudaStreamWaitEvent(r->abfBias, r->biaspotComplete, 0);
       cudaStreamWaitEvent(r->abfBias, r->bondedComplete, 0);
       cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->abfBias);
+      system->msld->sub_imp_dGdL(system, system->run->abfBias);
       cudaMemsetAsync(system->msld->step_force_d, 0, (system->state->lambdaCount-1)*sizeof(real), system->run->abfBias);
     }
     // Adds to step_potential and step_force

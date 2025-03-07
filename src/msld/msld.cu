@@ -7,6 +7,7 @@
 #include <cfloat>
 #include <math.h>
 #include <math.h>
+#include <random>
 
 #include "system/system.h"
 #include "io/io.h"
@@ -445,14 +446,14 @@ void parse_msld(char *line,System *system)
     system->msld->gaussian_weight=io_nextf(line);
   } else if (strcmp(token, "L_std") == 0) {
     system->msld->L_std=io_nextf(line);
-    system->msld->L_search = 4.0*(system->msld->L_std/system->msld->L_resolution); // ~4 L std in each direction
+    system->msld->L_search = 3.0*(system->msld->L_std/system->msld->L_resolution); // ~4 L std in each direction
   } else if (strcmp(token, "mir_Lmin") == 0){
     system->msld->mirror_Lmin=io_nextb(line);
   } else if (strcmp(token, "mir_Lmax") == 0){
     system->msld->mirror_Lmax=io_nextb(line);
   } else if (strcmp(token, "dUdL_std") == 0){
     system->msld->dUdL_std=io_nextf(line);
-    system->msld->dUdL_search = 4.0*(system->msld->dUdL_std/system->msld->dUdL_resolution); // ~4 dUdL std in each direction
+    system->msld->dUdL_search = 3.0*(system->msld->dUdL_std/system->msld->dUdL_resolution); // ~4 dUdL std in each direction
   } else if (strcmp(token, "temper") == 0) {
     system->msld->temper=io_nextb(line);
   } else if (strcmp(token, "temper_amount") == 0) {
@@ -754,6 +755,9 @@ void Msld::initialize(System *system)
   if (oss && !oss_histogram_d) {
     init_oss(system);
   }
+  if (oss || abf) {
+    calc_imp(system);
+  }
 
   // Atom restraints
   atomRestraintCount=atomRestraints.size();
@@ -797,6 +801,74 @@ static __forceinline__ __device__ int get_histogram_index(real val, int num_bins
   real resolution = range / (num_bins-1);
   return round(tmp/resolution);
 }
+
+static int histogram_index(real val, int num_bins, real max, real min) {
+  real tmp = val - min;
+  real range = max - min;
+  real resolution = range / (num_bins-1);
+  return round(tmp/resolution);
+}
+
+void Msld::calc_imp(System *system) {
+  int bins = 401;
+  int nSample = 10000000; // 10 mil
+  int c = system->msld->fnex;
+  int nSite = system->msld->siteCount;
+  cudaMalloc(&dG_imp_d, nSite*bins*sizeof(real));
+  real dx = 1.0 / (bins-1);
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_real_distribution<real> dist(0.0, 1.0);
+  real dG[(bins-1)*nSite];
+  for (int ii = 0; ii < nSite-1; ii++) {
+    int nDim = system->msld->blocksPerSite[ii+1];
+    int start = (bins-1)*ii;
+    double histogram[bins];
+    for (int i = 0; i < nSample; i++) {
+      real ti[nDim], unli[nDim], li[nDim], sum_unli = 0.0;
+      for (int j = 0; j < nDim; j++) {
+        ti[j] = dist(gen);
+        unli[j] = exp(c * sin(M_PI * ti[j] - M_PI/2));
+        sum_unli += unli[j];
+      }
+      for (int j = 0; j < nDim; j++) {
+        li[j] = unli[j] / sum_unli;
+        int index = histogram_index(li[j], bins, 1.0, 0.0);
+        histogram[index] += 1;
+      }
+    }
+
+    for (int i = 0; i < bins; i++) {
+      histogram[i] += 1e-3; // prevent log(0)
+    }
+
+    printf("dG_imp Site %d: [ ", ii+1);
+    for (int i = 0; i < bins-1; i++) {
+      real dHdx = (histogram[i+1] - histogram[i]) / dx;
+      dG[start + i] = dHdx / histogram[i];
+      printf("%f, ", dG[start+i]);
+    }
+    printf(" ]\n");
+  }
+  cudaMemcpy(dG_imp_d, dG, (bins-1)*nSite*sizeof(real), cudaMemcpyDefault);
+}
+
+void __global__ add_imp(int nL, real kT, real* lambdas, int* lambda_site, real* dU_msld, real* dG_imp, int dG_bins) {
+  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  if (i < nL) {
+    int idx = (lambda_site[i+1]-1)*dG_bins + (int)(lambdas[i+1]*dG_bins);
+    atomicAdd(&dU_msld[i+1], kT*dG_imp[idx]);
+  }
+}
+
+void Msld::sub_imp_dGdL(System *system, cudaStream_t stream) {
+  Run *r = system->run;
+  State *s = system->state;
+  int shMem = 0;
+  add_imp<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem, stream>>>(blockCount-1, system->state->leapParms1->kT, s->lambda_fd, lambdaSite_d, dU_msld_d, dG_imp_d, dG_imp_bins);
+}
+
+
 
 void Msld::init_meta(System* system){
   int nL = blockCount-1;
@@ -1057,13 +1129,14 @@ void Msld::add_sample_abf(System* system){
     int count = 0;
     system->state->recv_lambda();
     printf("Step: %ld\n", system->run->step);
-    real fractionPhysical = 0.0;
     for (int i = 0; i < siteCount-1; i++) {
+      real fractionPhysical = 0.0;
       int refID = count;
       int startRef = indices[count];
       real refUniformTI = 0;
       real refUmbrellaTI = 0;
       real refOSSTI = 0;
+      real dGs[blocksPerSite[i+1]];
       for (int k = 0; k < blocksPerSite[i+1]; k++) {
         int start= indices[count];
         // dG WT->j = -kT ln(Zj(1)/ZWT(1)) - (TI_j - TI_WT)
@@ -1152,6 +1225,9 @@ void Msld::add_sample_abf(System* system){
         }
         TI_j = sum;
         dG = logProb - (TI_j - refUmbrellaTI);
+        if (!oss_abf) {
+          dGs[k] = dG;
+        }
         printf("dG 0->1 = %f - (%f - %f) = %f \n", logProb, TI_j, refUmbrellaTI, dG);
 
         if (oss) {
@@ -1193,19 +1269,27 @@ void Msld::add_sample_abf(System* system){
           }
           TI_j = sum;
           dG = logProb - (TI_j - refOSSTI);
+          if (oss_abf) {
+            dGs[k] = dG;
+          }
           printf("dG 0->1 = %f - (%f - %f) = %f \n", logProb, TI_j, refOSSTI, dG);
         }
         printf("\n\n");
         count++;
       }
+      real totalSamples = 0;
+      for (int k = 0; k < L_abf_bins; k++) {
+        totalSamples += counts[k];
+      }
+      fractionPhysical /= totalSamples;
+      printf("Site fraction Physical: %f\n", fractionPhysical);
+      printf("Site dG: [");
+      for (int k = 0; k < blocksPerSite[i+1]; k++) {
+        printf("%f, ", dGs[k]);
+      }
+      printf("] \n");
+      printf("\n\n");
     }
-    real totalSamples = 0;
-    for (int i = 0; i < L_abf_bins; i++) {
-      totalSamples += counts[i];
-    }
-    fractionPhysical /= totalSamples;
-    printf("Fraction Physical: %f", fractionPhysical);
-    printf("\n\n");
   }
 }
 
