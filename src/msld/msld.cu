@@ -810,7 +810,7 @@ static int histogram_index(real val, int num_bins, real max, real min) {
 }
 
 void Msld::calc_imp(System *system) {
-  int bins = 401;
+  int bins = system->msld->dG_imp_bins;
   int nSample = 10000000; // 10 mil
   int c = system->msld->fnex;
   int nSite = system->msld->siteCount;
@@ -844,8 +844,8 @@ void Msld::calc_imp(System *system) {
 
     printf("dG_imp Site %d: [ ", ii+1);
     for (int i = 0; i < bins-1; i++) {
-      real dHdx = (histogram[i+1] - histogram[i]) / dx;
-      dG[start + i] = dHdx / histogram[i];
+      real dG_i = (log(histogram[i+1]) - log(histogram[i])) / dx;
+      dG[start + i] = dG_i;
       printf("%f, ", dG[start+i]);
     }
     printf(" ]\n");
@@ -853,10 +853,11 @@ void Msld::calc_imp(System *system) {
   cudaMemcpy(dG_imp_d, dG, (bins-1)*nSite*sizeof(real), cudaMemcpyDefault);
 }
 
-void __global__ add_imp(int nL, real kT, real* lambdas, int* lambda_site, real* dU_msld, real* dG_imp, int dG_bins) {
+void __global__ sub_imp(int nL, real kT, real* lambdas, int* lambda_site, real* dU_msld, real* dG_imp, int dG_bins) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
     int idx = (lambda_site[i+1]-1)*dG_bins + (int)(lambdas[i+1]*dG_bins);
+    // -G_imp = kT*ln(p)
     atomicAdd(&dU_msld[i+1], kT*dG_imp[idx]);
   }
 }
@@ -865,7 +866,8 @@ void Msld::sub_imp_dGdL(System *system, cudaStream_t stream) {
   Run *r = system->run;
   State *s = system->state;
   int shMem = 0;
-  add_imp<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem, stream>>>(blockCount-1, system->state->leapParms1->kT, s->lambda_fd, lambdaSite_d, dU_msld_d, dG_imp_d, dG_imp_bins);
+  // Add directly into lambda forces since it is a constant and cancels in the free energy calculation
+  sub_imp<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem, stream>>>(blockCount-1, system->state->leapParms1->kT, s->lambda_fd, lambdaSite_d, s->lambdaForce_d, dG_imp_d, dG_imp_bins);
 }
 
 
