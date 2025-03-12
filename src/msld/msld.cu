@@ -810,7 +810,7 @@ static int histogram_index(real val, int num_bins, real max, real min) {
 }
 
 void Msld::calc_imp(System *system) {
-  int bins = system->msld->dG_imp_bins;
+  int bins = system->msld->G_imp_bins;
   int nSample = 10000000; // 10 mil
   int c = system->msld->fnex;
   int nSite = system->msld->siteCount;
@@ -842,7 +842,7 @@ void Msld::calc_imp(System *system) {
       histogram[i] += 1e-3; // prevent log(0)
     }
 
-    printf("dG_imp Site %d: [ ", ii+1);
+    printf("dG_imp/kT for site %d: [ ", ii+1);
     for (int i = 0; i < bins-1; i++) {
       real dG_i = (log(histogram[i+1]) - log(histogram[i])) / dx;
       dG[start + i] = dG_i;
@@ -866,8 +866,9 @@ void Msld::sub_imp_dGdL(System *system, cudaStream_t stream) {
   Run *r = system->run;
   State *s = system->state;
   int shMem = 0;
-  // Add directly into lambda forces since it is a constant and cancels in the free energy calculation
-  sub_imp<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem, stream>>>(blockCount-1, system->state->leapParms1->kT, s->lambda_fd, lambdaSite_d, s->lambdaForce_d, dG_imp_d, dG_imp_bins);
+  // TODO: Potential add into lambda forces since it is a constant and cancels in the free energy calculation?
+  // See note about G_imp_bins to understand why -1
+  sub_imp<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem, stream>>>(blockCount-1, system->state->leapParms1->kT, s->lambda_fd, lambdaSite_d, dU_msld_d, dG_imp_d, G_imp_bins-1);
 }
 
 
