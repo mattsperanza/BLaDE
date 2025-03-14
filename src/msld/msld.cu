@@ -823,7 +823,8 @@ void Msld::calc_imp(System *system) {
   for (int ii = 0; ii < nSite-1; ii++) {
     int nDim = system->msld->blocksPerSite[ii+1];
     int start = (bins-1)*ii;
-    double histogram[bins];
+    real histogram[bins];
+    memset(histogram, 0, bins*sizeof(real));
     for (int i = 0; i < nSample; i++) {
       real ti[nDim], unli[nDim], li[nDim], sum_unli = 0.0;
       for (int j = 0; j < nDim; j++) {
@@ -838,10 +839,11 @@ void Msld::calc_imp(System *system) {
       }
     }
 
+    printf("Uniform theta -> implicit lambda histogram for site %d: [", ii+1);
     for (int i = 0; i < bins; i++) {
-      histogram[i] += 1e-3; // prevent log(0)
+      printf("%f, ", histogram[i]);
     }
-
+    printf(" ]\n");
     printf("dG_imp/kT for site %d: [ ", ii+1);
     for (int i = 0; i < bins-1; i++) {
       real dG_i = (log(histogram[i+1]) - log(histogram[i])) / dx;
@@ -858,7 +860,7 @@ void __global__ sub_imp(int nL, real kT, real* lambdas, int* lambda_site, real* 
   if (i < nL) {
     int idx = (lambda_site[i+1]-1)*dG_bins + (int)(lambdas[i+1]*dG_bins);
     // -G_imp = kT*ln(p)
-    if (lambdas[i+1] < .9) { // Don't trap in l=1 state
+    if (lambdas[i+1] < .95) { // Don't trap in l=1 state
       atomicAdd(&dU_msld[i+1], kT*dG_imp[idx]);
     }
   }
