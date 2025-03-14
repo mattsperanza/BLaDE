@@ -839,11 +839,6 @@ void Msld::calc_imp(System *system) {
       }
     }
 
-    printf("Uniform theta -> implicit lambda histogram for site %d: [", ii+1);
-    for (int i = 0; i < bins; i++) {
-      printf("%f, ", histogram[i]);
-    }
-    printf(" ]\n");
     printf("dG_imp/kT for site %d: [ ", ii+1);
     for (int i = 0; i < bins-1; i++) {
       real dG_i = (log(histogram[i+1]) - log(histogram[i])) / dx;
@@ -860,7 +855,7 @@ void __global__ sub_imp(int nL, real kT, real* lambdas, int* lambda_site, real* 
   if (i < nL) {
     int idx = (lambda_site[i+1]-1)*dG_bins + (int)(lambdas[i+1]*dG_bins);
     // -G_imp = kT*ln(p)
-    if (lambdas[i+1] < .95) { // Don't trap in l=1 state
+    if (lambdas[i+1] < .95) { // Don't implicitly trap in l=1 state
       atomicAdd(&dU_msld[i+1], kT*dG_imp[idx]);
     }
   }
@@ -1133,40 +1128,25 @@ void Msld::add_sample_abf(System* system){
     cudaMemcpy(indices, abf_index_d, (blockCount-1)*sizeof(int), cudaMemcpyDeviceToHost);
     cudaMemcpy(Z, partition_functions, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
     cudaMemcpy(Z_off, partition_offsets, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
-    int count = 0;
+    int count = 0; // Start of site
     system->state->recv_lambda();
     printf("Step: %ld\n", system->run->step);
-    for (int i = 0; i < siteCount-1; i++) {
+    for (int site = 0; site < siteCount-1; site++) {
       real fractionPhysical = 0.0;
-      int refID = count;
-      int startRef = indices[count];
-      real refUniformTI = 0;
-      real refUmbrellaTI = 0;
-      real refOSSTI = 0;
-      real dGs[blocksPerSite[i+1]];
-      for (int k = 0; k < blocksPerSite[i+1]; k++) {
-        int start= indices[count];
-        // dG WT->j = -kT ln(Zj(1)/ZWT(1)) - (TI_j - TI_WT)
-        int bins = system->msld->L_abf_bins-1; // index to last bin
-        real wWT = weights[startRef + bins];
-        real offWT = offsets[startRef + bins];
-        real ZWT = Z[refID];
-        real offZWT = Z_off[refID];
-        real wj = weights[indices[count] + bins];
-        real offJ = offsets[indices[count] + bins];
-        real Zj = Z[count];
-        real offZj = Z_off[count];
-        // Accounts for bias felt when sampled L>Lc assuming TI estimate is in equilibrium/constant (bad assumption?)
-        real logProb = -system->state->leapParms1->kT*log((wj*exp(offJ - offWT) / wWT)*(ZWT*exp(offZWT - offZj)/Zj));
-        // Common Info
-        printf("Site %d, Sub %d\n", i, k);
+      real TI[blocksPerSite[site+1]];
+      // Sampling info
+      real samples = 0;
+      for (int i = 0; i < blocksPerSite[site+1]; i++) {
+        int start=indices[count+i];
+        printf("Site %d, Sub %d\n", site, i);
         if (tracking_only) {
           printf("Tracking only mode!!\n");
         }
-        printf("Lambda: %f \n", s->lambda[count+1]);
-        printf("Count >= %3.2f: %f\n", 1.0 - .5/(system->msld->L_abf_bins-1.0), counts[start + system->msld->L_abf_bins-1]);
-        fractionPhysical += counts[start + system->msld->L_abf_bins-1];
-        real samples = 0;
+        printf("Lambda: %f \n", s->lambda[count+i+1]);
+        real physical = counts[start+system->msld->L_abf_bins-1];
+        printf("Count >= %3.2f: %f\n", 1.0 - .5/(system->msld->L_abf_bins-1.0), physical);
+        fractionPhysical += physical;
+        samples = 0;
         for (int j = 0; j < L_abf_bins; j++) {
           samples += counts[start + j];
         }
@@ -1176,8 +1156,6 @@ void Msld::add_sample_abf(System* system){
           printf("%f, ", counts[start+j]);
         }
         printf("]\n");
-        // Standard ABF (equal weights)
-        printf("\nUniform Weighting:\n");
         printf("E[dU/dL]: [");
         for (int j = 0; j < L_abf_bins; j++) {
           printf("%f, ", ave_dUdL[start+j]);
@@ -1188,26 +1166,6 @@ void Msld::add_sample_abf(System* system){
           printf("%f, ", sqrt(ave_var_dUdL[start+j]));
         }
         printf("]\n");
-        real sum = 0;
-        printf("dG 0->i: [");
-        for (int j = 0; j < L_abf_bins-1; j++) {
-          real factor = j == 0 || j == L_abf_bins-2 ? .5 : 1.0;
-          real width = factor * (L_max - L_min) / (L_abf_bins-1.0);
-          sum += width * (ave_dUdL[start + j] + ave_dUdL[start + j+1]) / 2.0;
-          printf("%f, ", sum);
-        }
-        printf("]\n");
-        if (count == refID) {
-          refUniformTI = sum;
-        }
-        real TI_j = sum;
-        real dG = logProb - (TI_j - refUniformTI);
-        printf("Uniform dG 0->1 = %f - (%f - %f) = %f \n", logProb, TI_j, refUniformTI, dG);
-        // PBMetaD ABF
-        printf("\nABF Umbrella Re-weighting:\n");
-        if (!oss_abf && !tracking_only) {
-          printf("Using this as ABF potential!!!\n");
-        }
         printf("<dU/dL>: [ ");
         for (int j = 0; j < L_abf_bins; j++) {
           printf("%f, ", ens_dUdL[start+j]);
@@ -1218,8 +1176,8 @@ void Msld::add_sample_abf(System* system){
           printf("%f, ", sqrt(ens_var_dUdL[start+j]));
         }
         printf("]\n");
-        printf("Umbrella dG 0->i: [");
-        sum = 0;
+        printf("FES: [");
+        real sum = 0;
         for (int j = 0; j < L_abf_bins-1; j++) {
           real factor = j == 0 || j == L_abf_bins-2 ? .5 : 1.0;
           real width = factor * (L_max - L_min) / (L_abf_bins-1.0);
@@ -1227,75 +1185,30 @@ void Msld::add_sample_abf(System* system){
           printf("%f, ", sum);
         }
         printf("]\n");
-        if (count == refID) {
-          refUmbrellaTI = sum;
-        }
-        TI_j = sum;
-        dG = logProb - (TI_j - refUmbrellaTI);
-        if (!oss_abf) {
-          dGs[k] = dG;
-        }
-        printf("dG 0->1 = %f - (%f - %f) = %f \n", logProb, TI_j, refUmbrellaTI, dG);
-
-        if (oss) {
-          printf("\nOSS Re-weighting:\n");
-          if (oss_abf && !tracking_only) {
-            printf("Using this as ABF potential!!\n");
-          }
-          if (temper) {
-            real minFL[blockCount-1];
-            cudaMemcpy(minFL, minL_maxdUdL_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
-            real temperFactor = exp(-max(0.0, minFL[count] - temper_min) / (tempering*system->state->leapParms1->kT));
-            printf("OSS Tempering Percentage: %6.3f%%, minL(maxdUdL(potential)): %f\n", 100*temperFactor, minFL[count]);
-          }
-          real oss_dUdL[L_oss_bins*(blockCount-1)], oss_var[L_oss_bins*(blockCount-1)];
-          start = count*L_oss_bins;
-          cudaMemcpy(oss_dUdL, oss_ensemble_dUdL_d, (blockCount-1)*L_oss_bins*sizeof(real), cudaMemcpyDefault);
-          cudaMemcpy(oss_var, oss_var_d, (blockCount-1)*L_oss_bins*sizeof(real), cudaMemcpyDefault);
-          printf("<dU/dL>: [");
-          for (int j = 0; j < L_oss_bins-1; j++) {
-            printf("%f, ", oss_dUdL[start + j]);
-          }
-          printf("]\n");
-          printf("<Std[dU/dL]>: [");
-          for (int j = 0; j < L_oss_bins-1; j++) {
-            printf("%f, ", sqrt(oss_var[start + j]));
-          }
-          printf("]\n");
-          printf("OST dG 0->i: [");
-          sum = 0;
-          for (int j = 0; j < L_oss_bins-1; j++) {
-            real factor = j == 0 || j == L_oss_bins-2 ? .5 : 1.0;
-            real width = factor * (L_max - L_min) / (L_oss_bins-1.0);
-            sum += width * (oss_dUdL[start + j] + oss_dUdL[start + j+1]) / 2.0;
-            printf("%f, ", sum);
-          }
-          printf("]\n");
-          if (count == refID) {
-            refOSSTI = sum;
-          }
-          TI_j = sum;
-          dG = logProb - (TI_j - refOSSTI);
-          if (oss_abf) {
-            dGs[k] = dG;
-          }
-          printf("dG 0->1 = %f - (%f - %f) = %f \n", logProb, TI_j, refOSSTI, dG);
-        }
-        printf("\n\n");
-        count++;
+        TI[i] = sum;
+        printf("TI 0->1 = %f \n", TI[i]);
+        printf("\n");
       }
-      real totalSamples = 0;
-      for (int k = 0; k < L_abf_bins; k++) {
-        totalSamples += counts[k];
-      }
-      fractionPhysical /= totalSamples;
+      fractionPhysical /= samples;
       printf("Site fraction Physical: %f\n", fractionPhysical);
-      printf("Site dG: [");
-      for (int k = 0; k < blocksPerSite[i+1]; k++) {
-        printf("%f, ", dGs[k]);
+      // Print free energy info
+      for (int i = 0; i < blocksPerSite[site+1]; i++) {
+        int bins = system->msld->L_abf_bins-1; // index to last bin
+        int idx = indices[count + i] + bins;
+        printf("dG %2d -> j: [", i);
+        for (int j = 0; j < blocksPerSite[site+1]; j++) {
+          int jdx = indices[count + j] + bins;
+          // dG i->j = -kT ln(pj/pi) - (TI_j - TI_WT)
+          real relative_weights = weights[idx] * exp(offsets[idx] - offsets[jdx]) / weights[jdx];
+          real relative_Z = Z[j] * exp(Z_off[j] - Z_off[i]) / Z[i];
+          real logProb = -system->state->leapParms1->kT*log(relative_weights*relative_Z);
+          real dG = logProb - (TI[j] - TI[i]);
+          printf("%6.3f, ", dG);
+        }
+        printf(" ]\n");
       }
-      printf("] \n");
       printf("\n\n");
+      count++;
     }
   }
 }

@@ -63,7 +63,7 @@ public:
   real* dGdL_d;
   real* dU_msld_d;
   real* dG_imp_d; // -kbT*ln(p) where p is probability of a lambda bin uses 10 million samples
-  int G_imp_bins = 51; // dG_imp has this-1 bins
+  int G_imp_bins = 101; // dG_imp has this-1 bins
   real* hist_potential_d; // [blockCount] potential from metadynamics
   real* step_force_d; // force from bias
   // Just in case we get ideas for later
