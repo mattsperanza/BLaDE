@@ -858,7 +858,9 @@ void __global__ sub_imp(int nL, real kT, real* lambdas, int* lambda_site, real* 
   if (i < nL) {
     int idx = (lambda_site[i+1]-1)*dG_bins + (int)(lambdas[i+1]*dG_bins);
     // -G_imp = kT*ln(p)
-    atomicAdd(&dU_msld[i+1], kT*dG_imp[idx]);
+    if (lambdas[i+1] < .9) { // Don't trap in l=1 state
+      atomicAdd(&dU_msld[i+1], kT*dG_imp[idx]);
+    }
   }
 }
 
