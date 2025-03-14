@@ -471,7 +471,7 @@ void write_histogram_file(System* system, std::string file_name) {
     real* hist_potential = (real*)malloc(L_bins * dUdL_bins * nL * sizeof(real));
     system->msld->getpotential_hist(system);
     printf("Done with histogram potential evaluation!\n");
-    cudaMemcpy(hist_potential, system->msld->oss_histogram_d, L_bins * dUdL_bins * nL * sizeof(real), cudaMemcpyDeviceToHost);
+    cudaMemcpy(hist_potential, system->msld->oss_potential_d, L_bins * dUdL_bins * nL * sizeof(real), cudaMemcpyDeviceToHost);
 
     file << "# Histogram Potential\n";
     for (int i = 0; i < nL; i++) {

@@ -62,6 +62,7 @@ public:
   real* dGdF_d;
   real* dGdL_d;
   real* dU_msld_d;
+  bool G_imp = true; // flag of whether we subtract this
   real* dG_imp_d; // -kbT*ln(p) where p is probability of a lambda bin uses 10 million samples
   int G_imp_bins = 101; // dG_imp has this-1 bins
   real* hist_potential_d; // [blockCount] potential from metadynamics

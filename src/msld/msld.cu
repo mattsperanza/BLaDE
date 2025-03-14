@@ -470,8 +470,10 @@ void parse_msld(char *line,System *system)
     if (system->msld->tracking_only) {
       system->msld->abf = true;
     }
-  } else if (strcmp(token, "meta") == 0){
+  } else if (strcmp(token, "meta") == 0) {
     system->msld->meta=io_nextb(line);
+  } else if (strcmp(token, "G_imp") == 0){
+    system->msld->G_imp=io_nextb(line);
   } else if (strcmp(token, "update_fe") == 0) {
     system->msld->update_fe_surface=io_nextb(line);
   } else if (strcmp(token, "sample_freq") == 0){
@@ -865,6 +867,7 @@ void Msld::sub_imp_dGdL(System *system, cudaStream_t stream) {
   Run *r = system->run;
   State *s = system->state;
   int shMem = 0;
+  if (!G_imp){ return; }
   // TODO: Potential add into lambda forces since it is a constant and cancels in the free energy calculation?
   // See note about G_imp_bins to understand why -1
   sub_imp<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem, stream>>>(blockCount-1, system->state->leapParms1->kT, s->lambda_fd, lambdaSite_d, dU_msld_d, dG_imp_d, G_imp_bins-1);
@@ -1208,7 +1211,7 @@ void Msld::add_sample_abf(System* system){
         printf(" ]\n");
       }
       printf("\n\n");
-      count++;
+      count += blocksPerSite[site+1];
     }
   }
 }
