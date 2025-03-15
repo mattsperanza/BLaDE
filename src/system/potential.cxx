@@ -1646,12 +1646,13 @@ void Potential::calc_force(int step,System *system) {
 
   // cudaEventRecord(r->forceComplete,r->updateStream);
 
-  // ABF, META, & OSS Calculations -> meta & oss at same time not allowed
+  // ABF, META, & OSS Calculations -> meta & oss at same time not allowed right now
   gpuCheck(cudaPeekAtLastError());
   if (system->msld->meta) {
     cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->metaBias);
+    system->msld->sub_imp_dGdL(system, system->run->metaBias);
     cudaMemsetAsync(system->msld->step_force_d, 0.0, (system->state->lambdaCount-1)*sizeof(real), system->run->metaBias);
-    cudaMemsetAsync(system->msld->dGdL_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
+    cudaMemsetAsync(system->msld->dGdL_d, 0, system->msld->blockCount*sizeof(real), r->metaBias);
     cudaMemsetAsync(system->msld->hist_potential_d, 0.0, (system->msld->blockCount-1)*sizeof(real), r->metaBias);
     gpuCheck(cudaPeekAtLastError());
     system->msld->get_force_meta(system, calcEnergy);
@@ -1719,7 +1720,7 @@ void Potential::calc_force(int step,System *system) {
     // Wait on lambda force calc
     cudaStreamWaitEvent(r->abfBias, r->ossBiasComplete, 0);
     cudaStreamWaitEvent(r->abfBias, r->metaBiasComplete, 0);
-    if ((!system->msld->oss && !system->msld->meta) || system->msld->gaussian_weight <= 0) {
+    if (!system->msld->oss && !system->msld->meta) {
       // Wait for force to get in
       cudaStreamWaitEvent(r->abfBias, r->nbdirectComplete, 0);
       cudaStreamWaitEvent(r->abfBias, r->nbrecipComplete, 0);

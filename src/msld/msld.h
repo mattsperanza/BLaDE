@@ -60,7 +60,7 @@ public:
   bool update_fe_surface = true; // add samples to abf/meta/oss
   int sample_freq = 10;
   real* dGdF_d;
-  real* dGdL_d;
+  real* dGdL_d; // this is used for both meta and oss
   real* dU_msld_d;
   bool G_imp = true; // flag of whether we subtract this
   real* dG_imp_d; // -kbT*ln(p) where p is probability of a lambda bin uses 10 million samples

@@ -757,7 +757,7 @@ void Msld::initialize(System *system)
   if (oss && !oss_histogram_d) {
     init_oss(system);
   }
-  if (oss || abf) {
+  if ((oss || abf) && G_imp) {
     calc_imp(system);
   }
 
@@ -886,6 +886,8 @@ void Msld::init_meta(System* system){
   cudaMemcpy(meta_index_d, index, nL*sizeof(int), cudaMemcpyDefault);
   cudaMalloc(&meta_histogram_d, nL*n_edges*sizeof(real));
   cudaMemset(meta_histogram_d, 0, nL*n_edges*sizeof(real));
+  cudaMalloc(&dGdL_d, nL*n_edges*sizeof(real));
+  cudaMemset(dGdL_d, 0, nL*n_edges*sizeof(real));
 }
 
 void __global__ add_sample_meta_kernel(
@@ -895,7 +897,6 @@ void __global__ add_sample_meta_kernel(
   int L_bins, real L_max, real L_min, bool temper) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
-    // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
     int X =  get_histogram_index(lambdas[i+1], L_bins, L_max, L_min);
     int index = hist_indices[i] + X;
     real sum = 0.0;
@@ -924,18 +925,15 @@ void Msld::add_sample_meta(System *system) {
     s->leapParms1->kT, blockCount-1, s->lambda_fd,
     gaussian_weight, tempering,
     meta_histogram_d, meta_index_d, hist_potential_d,
-    L_oss_bins, L_max, L_min, temper);
+    L_meta_bins, L_max, L_min, temper);
 }
 
 void __global__ getforce_meta_kernel(
-  int nL, real* lambdas, real* lambdaForce,
-  real* hist_potential, real* step_force,
+  int nL, real* lambdas, real* dGdL, real* hist_potential,
   int* hist_indices, real* histogram,
   int L_bins, real L_max, real L_min,
-  real L_std, int L_search, real_e* energy,
+  real L_std, int L_search,
   bool mirror_Lmin, bool mirror_Lmax) {
-  extern __shared__ real sEnergy[];
-  real lEnergy = 0.0;
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if(i<nL) {
     real bias = 0.0;
@@ -946,13 +944,13 @@ void __global__ getforce_meta_kernel(
       real mirrorFactor = 1.0;
       if (mirror_Lmin) {
         L_index = (L_index < 0) ? -L_index : L_index;
-        mirrorFactor = L_index == 0 ? 2.0 : 1.0;
+        mirrorFactor = (L_index == 0) ? 2.0 : 1.0;
       }
       if (mirror_Lmax) {
-        L_index = (L_index > L_bins-1) ? L_index - 2*(L_index-(L_bins-1)) : L_index;
-        mirrorFactor = L_index == L_bins-1 ? 2.0 : 1.0;
+        L_index = (L_index >= L_bins) ? L_bins - 1 - (L_index - (L_bins - 1)) : L_index;
+        mirrorFactor = (mirror_Lmin && L_index == 0) || L_index == L_bins - 1 ? 2.0 : 1.0;
       }
-      // Still check it is in bounds
+
       if (L_index < 0 && L_index >= L_bins) { continue; }
       real L_resolution = (L_max-L_min)/(L_bins-1.0);
       real L_center = L_min + j*L_resolution;
@@ -964,17 +962,23 @@ void __global__ getforce_meta_kernel(
       bias += tmp_bias;
       L_force += -L_distance/L_std * tmp_bias;
     }
-    atomicAdd(&lambdaForce[i+1], L_force);
-    atomicAdd(&step_force[i], L_force);
-    if (energy) {
-      atomicAdd(&hist_potential[i], bias);
-      lEnergy = bias;
-    }
+    atomicAdd(&dGdL[i+1], L_force);
+    atomicAdd(&hist_potential[i], bias);
   }
+}
 
-  if (energy) {
-    __syncthreads();
-    real_sum_reduce(lEnergy, sEnergy, energy);
+void __global__ getforce_pb_meta(int nL, real kT, real* hist_potential, real* dGdL, real* lambdaForce, real_e* energy) {
+  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  if (i < nL) {
+    real denom = 0.0;
+    for (int j = 0; j < nL; j++) {
+      denom += exp(-hist_potential[j] / kT);
+    }
+    real pbFactor = exp(-hist_potential[i] / kT) / denom;
+    atomicAdd(&lambdaForce[i+1], pbFactor * dGdL[i+1]);
+    if (energy && i==0) {
+      atomicAdd(energy, -kT*log(denom));
+    }
   }
 }
 
@@ -995,10 +999,16 @@ void Msld::get_force_meta(System *system, bool calcEnergy) {
   }
 
   getforce_meta_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
-    blockCount-1, s->lambda_fd, s->lambdaForce_d,
-    hist_potential_d, step_force_d,
-    meta_index_d, meta_histogram_d, L_meta_bins, L_max, L_min, L_std, L_search,
-    pEnergy, mirror_Lmin, mirror_Lmax);
+    blockCount-1, s->lambda_fd, dGdL_d, hist_potential_d,
+    meta_index_d, meta_histogram_d, L_meta_bins,
+    L_max, L_min, L_std, L_search,
+    mirror_Lmin, mirror_Lmax);
+
+  // Combine lambda forces into PB meta-dynamics
+  getforce_pb_meta<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
+    blockCount-1, system->state->leapParms1->kT,
+    hist_potential_d, dGdL_d,
+    s->lambdaForce_d, pEnergy);
 }
 
 
@@ -1360,7 +1370,7 @@ void Msld::add_sample_hist(System* system) {
     stream=system->run->ossBias;
   }
 
-  if (system->run->step % 100*system->msld->sample_freq == 0 && temper) {
+  if (system->run->step % 10000*system->msld->sample_freq == 0 && temper) {
     system->msld->get_tempering_hist(system); // Evaluates potential on grid everywhere
   }
 
@@ -1499,7 +1509,7 @@ __global__ void getpotential_hist_kernel(
   real* potential_grid,
   bool mirror_Lmin, bool mirror_Lmax
 ) {
-  // TODO: Make much faster this is really slow with large L_oss_bins
+  // TODO: Make much faster this is really slow
   // Calculate thread global coordinates
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
   int total_bins = L_bins * dUdL_bins;
