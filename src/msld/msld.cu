@@ -1462,12 +1462,17 @@ __global__ void getforce_pb_oss(int nL, real kT, real* hist_potential, real* dGd
     real pbFactor = exp(-hist_potential[i] / kT) / denom;
     atomicAdd(&lambdaForce[i+1], pbFactor * dGdL[i+1]);
     dGdF[i+1] *= pbFactor;
-    // Add harmonic restraint in dU/dL space centered at zero
-    real k = 1.0 / 300; // 1 dGdF every 300 dU/dL away from zero
-    real U_harm = .5*k*(dU_msld[i+1]*dU_msld[i+1]);
-    hist_potential[i] += U_harm;
-    real dU_harm = k*dU_msld[i+1];
-    dGdF[i+1] += dU_harm;
+    // Add harmonic restraint in dU/dL space
+    real k = 1.0 / 300; // 1 dGdF every 300 dU/dL past 500
+    real U_harm = 0.0;
+    real flat_bottom = 800;
+    if (dU_msld[i+1] >= flat_bottom) {
+      real rel_dUdL = dU_msld[i+1] - flat_bottom;
+      U_harm = .5*k*rel_dUdL*rel_dUdL;
+      hist_potential[i] += U_harm;
+      real dU_harm = k*dU_msld[i+1];
+      dGdF[i+1] += dU_harm;
+    }
     if (energy && i==0) {
       atomicAdd(energy, -kT*log(denom) + U_harm);
     }

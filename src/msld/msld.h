@@ -93,12 +93,12 @@ public:
   // Meta options
   bool temper = true;
   real tempering = 3.0; // constant for decay of bias magnitude
-  real temper_min = 4.0; // add at least 4 kcal/mol (felt) bias for every l bin before tempering
+  real temper_min = 1.0; // add at least 2 kcal/mol (felt) bias for every l bin before tempering
   real gaussian_weight = .01;
 
   // Don't change?
   int dUdL_bins = 2001; // # of whole bins that fit in range [dUdL_min, dUdL_max]
-  real dUdL_max = 1500;
+  real dUdL_max = 1000;
   real dUdL_min = -500;
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
