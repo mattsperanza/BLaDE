@@ -857,9 +857,7 @@ void __global__ sub_imp(int nL, real kT, real* lambdas, int* lambda_site, real* 
   if (i < nL) {
     int idx = (lambda_site[i+1]-1)*dG_bins + (int)(lambdas[i+1]*dG_bins);
     // -G_imp = kT*ln(p)
-    if (lambdas[i+1] < .95) { // Don't implicitly trap in l=1 state
-      atomicAdd(&dU_msld[i+1], kT*dG_imp[idx]);
-    }
+    atomicAdd(&dU_msld[i+1], kT*dG_imp[idx]);
   }
 }
 
@@ -870,7 +868,7 @@ void Msld::sub_imp_dGdL(System *system, cudaStream_t stream) {
   if (!G_imp){ return; }
   // TODO: Potential add into lambda forces since it is a constant and cancels in the free energy calculation?
   // See note about G_imp_bins to understand why -1
-  sub_imp<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem, stream>>>(blockCount-1, system->state->leapParms1->kT, s->lambda_fd, lambdaSite_d, dU_msld_d, dG_imp_d, G_imp_bins-1);
+  sub_imp<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem, stream>>>(blockCount-1, -system->state->leapParms1->kT, s->lambda_fd, lambdaSite_d, s->lambdaForce_d, dG_imp_d, G_imp_bins-1);
 }
 
 
@@ -1129,7 +1127,7 @@ void Msld::add_sample_abf(System* system){
   if (system->run->step % 10000 == 0){
     int len = (blockCount-1)*L_abf_bins;
     real counts[len], ens_dUdL[len], ens_var_dUdL[len], ave_dUdL[len], ave_var_dUdL[len], weights[len], offsets[len];
-    real Z[blockCount-1], Z_off[blockCount-1];
+    real Z[blockCount-1], Z_off[blockCount-1], temper[blockCount-1];
     int indices[blockCount-1];
     cudaMemcpy(counts, abf_histogram_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     cudaMemcpy(ens_dUdL, ensemble_dUdL_d, len*sizeof(real), cudaMemcpyDeviceToHost);
@@ -1141,6 +1139,9 @@ void Msld::add_sample_abf(System* system){
     cudaMemcpy(indices, abf_index_d, (blockCount-1)*sizeof(int), cudaMemcpyDeviceToHost);
     cudaMemcpy(Z, partition_functions, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
     cudaMemcpy(Z_off, partition_offsets, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
+    if (oss) {
+      cudaMemcpy(temper, minL_maxdUdL_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
+    }
     int count = 0; // Start of site
     system->state->recv_lambda();
     printf("Step: %ld\n", system->run->step);
@@ -1200,6 +1201,12 @@ void Msld::add_sample_abf(System* system){
         printf("]\n");
         TI[i] = sum;
         printf("TI 0->1 = %f \n", TI[i]);
+        if (oss) {
+          real U = max(0.0, temper[i] - temper_min);
+          real factor = exp(U / (tempering*system->state->leapParms1->kT)) * 100;
+          printf("MinFL: %f\n", temper[i]);
+          printf("Tempering: %5.2f %%\n", factor);
+        }
         printf("\n");
       }
       fractionPhysical /= samples;
@@ -1445,7 +1452,7 @@ __global__ void getforce_hist_kernel(
   }
 }
 
-__global__ void getforce_pb_oss(int nL, real kT, real* hist_potential, real* dGdF, real* dGdL, real* lambdaForce, real_e* energy) {
+__global__ void getforce_pb_oss(int nL, real kT, real* hist_potential, real* dGdF, real* dGdL, real* lambdaForce, real* dU_msld, real_e* energy) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
     real denom = 0.0;
@@ -1455,8 +1462,14 @@ __global__ void getforce_pb_oss(int nL, real kT, real* hist_potential, real* dGd
     real pbFactor = exp(-hist_potential[i] / kT) / denom;
     atomicAdd(&lambdaForce[i+1], pbFactor * dGdL[i+1]);
     dGdF[i+1] *= pbFactor;
+    // Add harmonic restraint in dU/dL space centered at zero
+    real k = 1.0 / 300; // 1 dGdF every 300 dU/dL away from zero
+    real U_harm = .5*k*(dU_msld[i+1]*dU_msld[i+1]);
+    hist_potential[i] += U_harm;
+    real dU_harm = k*dU_msld[i+1];
+    dGdF[i+1] += dU_harm;
     if (energy && i==0) {
-      atomicAdd(energy, -kT*log(denom));
+      atomicAdd(energy, -kT*log(denom) + U_harm);
     }
   }
 }
@@ -1498,7 +1511,7 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
   getforce_pb_oss<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     blockCount-1, system->state->leapParms1->kT,
     hist_potential_d, dGdF_d, dGdL_d,
-    s->lambdaForce_d, pEnergy);
+    s->lambdaForce_d, dU_msld_d, pEnergy);
 }
 
 __global__ void getpotential_hist_kernel(
