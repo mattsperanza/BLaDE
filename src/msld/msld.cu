@@ -1189,7 +1189,11 @@ void Msld::add_sample_abf(System* system){
         printf("<Std[dU/dL]>: [");
         for (int j = 0; j < L_abf_bins; j++) {
           printf("%f, ", sqrt(ens_var_dUdL[start+j]));
-          estimate_std[j] = sqrt(ens_var_dUdL[start+j]/counts[start+j]);
+          if (counts[start+j] == 0) {
+            estimate_std[j] = 0;
+          } else {
+            estimate_std[j] = sqrt(ens_var_dUdL[start+j]/counts[start+j]);
+          }
         }
         printf("]\n");
         printf("Std[<dU/dL>]: [");
@@ -1204,7 +1208,7 @@ void Msld::add_sample_abf(System* system){
           real factor = j == 0 || j == L_abf_bins-2 ? .5 : 1.0;
           real width = factor * (L_max - L_min) / (L_abf_bins-1.0);
           sum += width * (ens_dUdL[start + j] + ens_dUdL[start + j+1]) / 2.0;
-          var += pow(factor*estimate_std[j], 2);
+          var += pow(factor*estimate_std[j], 2); // overestimate by not including width
           printf("%f, ", sum);
         }
         printf("]\n");

@@ -72,17 +72,17 @@ public:
   real L_min = 0.0;
 
   // Meta - uniform binning - use abf histogram?
-  bool mirror_Lmin = false;
-  bool mirror_Lmax = false;
+  bool mirror_Lmin = true;
+  bool mirror_Lmax = true;
   bool meta = false;
-  int L_meta_bins = 501;
+  int L_meta_bins = 201;
   real* meta_histogram_d;
   int* meta_index_d;
 
   // Histogram (2D meta) - uniform binning
   bool oss = false; // Perform Orthogonal Space Sampling force calculations
   bool oss_abf = false; // Use <dU/dL> from integration over histogram for ABF force
-  int L_oss_bins = 501; // # of whole bins that fit in range [L_min, L_max]
+  int L_oss_bins = 201; // # of whole bins that fit in range [L_min, L_max]
   real* oss_ensemble_dUdL_d;
   real* oss_var_d;
   real* minL_maxdUdL_d; // tempering for each histogram
@@ -92,13 +92,13 @@ public:
 
   // Meta options
   bool temper = true;
-  real tempering = 3.0; // constant for decay of bias magnitude
-  real temper_min = 1.0; // add at least 2 kcal/mol (felt) bias for every l bin before tempering
+  real tempering = 2.0; // constant for decay of bias magnitude
+  real temper_min = 1.0; // add at least 1 kcal/mol (felt) bias for every l bin before tempering
   real gaussian_weight = .01;
 
   // Don't change?
   int dUdL_bins = 2001; // # of whole bins that fit in range [dUdL_min, dUdL_max]
-  real dUdL_max = 1000;
+  real dUdL_max = 900;
   real dUdL_min = -500;
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
