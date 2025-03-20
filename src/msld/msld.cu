@@ -1185,25 +1185,34 @@ void Msld::add_sample_abf(System* system){
           printf("%f, ", ens_dUdL[start+j]);
         }
         printf("]\n");
+        real estimate_std[len];
         printf("<Std[dU/dL]>: [");
         for (int j = 0; j < L_abf_bins; j++) {
           printf("%f, ", sqrt(ens_var_dUdL[start+j]));
+          estimate_std[j] = sqrt(ens_var_dUdL[start+j]/counts[start+j]);
         }
         printf("]\n");
+        printf("Std[<dU/dL>]: [");
+        for (int j = 0; j < L_abf_bins; j++) {
+          printf("%f, ", estimate_std[j]);
+        }
+        printf("] \n");
         printf("FES: [");
         real sum = 0;
+        real var = 0;
         for (int j = 0; j < L_abf_bins-1; j++) {
           real factor = j == 0 || j == L_abf_bins-2 ? .5 : 1.0;
           real width = factor * (L_max - L_min) / (L_abf_bins-1.0);
           sum += width * (ens_dUdL[start + j] + ens_dUdL[start + j+1]) / 2.0;
+          var += pow(width*estimate_std[j], 2);
           printf("%f, ", sum);
         }
         printf("]\n");
         TI[i] = sum;
-        printf("TI 0->1 = %f \n", TI[i]);
+        printf("TI 0->1 = %f +- %f\n", TI[i], var);
         if (oss) {
           real U = max(0.0, temper[i] - temper_min);
-          real factor = exp(U / (tempering*system->state->leapParms1->kT)) * 100;
+          real factor = exp(-U / (tempering*system->state->leapParms1->kT)) * 100;
           printf("MinFL: %f\n", temper[i]);
           printf("Tempering: %5.2f %%\n", factor);
         }
@@ -1470,7 +1479,7 @@ __global__ void getforce_pb_oss(int nL, real kT, real* hist_potential, real* dGd
       real rel_dUdL = dU_msld[i+1] - flat_bottom;
       U_harm = .5*k*rel_dUdL*rel_dUdL;
       hist_potential[i] += U_harm;
-      real dU_harm = k*dU_msld[i+1];
+      real dU_harm = k*rel_dUdL;
       dGdF[i+1] += dU_harm;
     }
     if (energy && i==0) {
