@@ -1231,11 +1231,11 @@ void Msld::add_sample_abf(System* system){
         printf("dG %2d -> j: [", i);
         for (int j = 0; j < blocksPerSite[site+1]; j++) {
           int jdx = indices[count + j] + bins;
-          // dG i->j = -kT ln(pj/pi) - (TI_j - TI_WT)
+          // dG i->j = -kT ln(pj/pi) - (V(j=1) - V(i=1))
           real relative_weights = weights[idx] * exp(offsets[idx] - offsets[jdx]) / weights[jdx];
           real relative_Z = Z[j] * exp(Z_off[j] - Z_off[i]) / Z[i];
           real logProb = -system->state->leapParms1->kT*log(relative_weights*relative_Z);
-          real dG = logProb - (TI[j] - TI[i]);
+          real dG = logProb + (TI[j] - TI[i]); // bias by -TI with abf
           printf("%6.3f, ", dG);
         }
         printf(" ]\n");
