@@ -92,7 +92,7 @@ public:
 
   // Meta options
   bool temper = true;
-  real tempering = 2.0; // constant for decay of bias magnitude
+  real tempering = 3.0; // constant for decay of bias magnitude
   real temper_min = 1.0; // add at least 1 kcal/mol (felt) bias for every l bin before tempering
   real gaussian_weight = .01;
 
@@ -102,15 +102,15 @@ public:
   real dUdL_min = -500;
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
-  real L_std = 3*L_resolution;
-  real dUdL_std = 3*dUdL_resolution;
+  real L_std = 2.0*L_resolution;
+  real dUdL_std = 2.0*dUdL_resolution;
   int L_search = 3.0*(L_std/L_resolution); // ~3 L std in each direction
   int dUdL_search = 3.0*(dUdL_std/dUdL_resolution); // ~3 dUdL std in each direction
 
   // ABF - uniform binning - separate from histogram estimation
   bool abf = false;
   bool tracking_only = false; // Don't apply ABF bias if this is true -> dominates abf & oss_abf flag, says nothing about oss hist or meta
-  int nFull = 200;
+  int nFull = 200; // only for umbrella abf
   int L_abf_bins = 51; // this is also the max index (51 leads to >.99 as last bin)
   int* abf_index_d; // index into abf histogram
   real* abf_histogram_d; // counts in bin -> also used for 1D meta

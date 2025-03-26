@@ -1727,7 +1727,9 @@ void Potential::calc_force(int step,System *system) {
       cudaStreamWaitEvent(r->abfBias, r->biaspotComplete, 0);
       cudaStreamWaitEvent(r->abfBias, r->bondedComplete, 0);
       cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->abfBias);
-      system->msld->sub_imp_dGdL(system, system->run->abfBias);
+      if (!system->msld->tracking_only) {
+        system->msld->sub_imp_dGdL(system, system->run->abfBias);
+      }
       cudaMemsetAsync(system->msld->step_force_d, 0, (system->state->lambdaCount-1)*sizeof(real), system->run->abfBias);
     }
     // Adds to step_potential and step_force
