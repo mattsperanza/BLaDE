@@ -224,7 +224,7 @@ void parse_msld(char *line,System *system)
     system->msld->theta[i]=io_nextf(line);
     system->msld->thetaVelocity[i]=io_nextf(line);
     system->msld->thetaMass[i]=io_nextf(line);
-    system->msld->lambdaBias[i]=-io_nextf(line);
+    system->msld->lambdaBias[i]=io_nextf(line);
     system->msld->lambdaCharge[i]=io_nextf(line);
   } else if (strcmp(token,"gamma")==0) {
     system->msld->gamma=io_nextf(line)/PICOSECOND; // units: ps^-1
@@ -247,7 +247,7 @@ void parse_msld(char *line,System *system)
       fatal(__FILE__,__LINE__,"Type of variable bias (%d) is not a recognized type\n",vb.type);
     }
     vb.l0=io_nextf(line);
-    vb.k=-io_nextf(line);
+    vb.k=io_nextf(line);
     vb.n=io_nexti(line);
     system->msld->variableBias_tmp.push_back(vb);
   } else if (strcmp(token,"thetaebias")==0) {
