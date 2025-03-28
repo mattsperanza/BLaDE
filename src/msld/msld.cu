@@ -1010,6 +1010,25 @@ void Msld::get_force_meta(System *system, bool calcEnergy) {
 }
 
 
+void reset_abf(System* system){
+  Msld* m = system->msld;
+  int nL = m->blockCount-1;
+  int n_edges = m->L_abf_bins;
+  cudaMemset(m->abf_histogram_d, 0, nL*n_edges*sizeof(real));
+  cudaMemset(m->offsets_d, 0, nL*n_edges*sizeof(real)); // bias always > offset at beginning
+  cudaMemset(m->ensemble_dUdL_d, 0, nL*n_edges*sizeof(real));
+  cudaMemset(m->ensemble_dUdL2_d, 0, nL*n_edges*sizeof(real));
+  cudaMemset(m->ensemble_var_d, 0, nL*n_edges*sizeof(real));
+  cudaMemset(m->weights_d, 0, nL*n_edges*sizeof(real));
+  cudaMemset(m->partition_functions, 0, nL*sizeof(real));
+  cudaMemset(m->partition_offsets, 0, nL*sizeof(real));
+  cudaMemset(m->weighted_dUdL_d, 0, nL*n_edges*sizeof(real));
+  cudaMemset(m->weighted_dUdL2_d, 0, nL*n_edges*sizeof(real));
+  cudaMemset(m->average_dUdL_d, 0, nL*n_edges*sizeof(real));
+  cudaMemset(m->average_dUdL2_d, 0, nL*n_edges*sizeof(real));
+  cudaMemset(m->ave_var_d, 0, nL*n_edges*sizeof(real));
+}
+
 void Msld::init_abf(System* system){
   int nL = blockCount-1; // 0th lambda is environment
   int index[nL];
@@ -1020,31 +1039,19 @@ void Msld::init_abf(System* system){
   cudaMalloc(&abf_index_d, nL*sizeof(int));
   cudaMemcpy(abf_index_d, index, nL*sizeof(int), cudaMemcpyHostToDevice);
   cudaMalloc(&abf_histogram_d, nL*n_edges*sizeof(real));
-  cudaMemset(abf_histogram_d, 0, nL*n_edges*sizeof(real));
   cudaMalloc(&offsets_d, nL*n_edges*sizeof(real));
-  cudaMemset(offsets_d, 0, nL*n_edges*sizeof(real)); // bias always > offset at beginning
   cudaMalloc(&ensemble_dUdL_d, nL*n_edges*sizeof(real));
-  cudaMemset(ensemble_dUdL_d, 0, nL*n_edges*sizeof(real));
   cudaMalloc(&ensemble_dUdL2_d, nL*n_edges*sizeof(real));
-  cudaMemset(ensemble_dUdL2_d, 0, nL*n_edges*sizeof(real));
   cudaMalloc(&ensemble_var_d, nL*n_edges*sizeof(real));
-  cudaMemset(ensemble_var_d, 0, nL*n_edges*sizeof(real));
   cudaMalloc(&weights_d, nL*n_edges*sizeof(real));
-  cudaMemset(weights_d, 0, nL*n_edges*sizeof(real));
   cudaMalloc(&partition_functions, nL*sizeof(real));
-  cudaMemset(partition_functions, 0, nL*sizeof(real));
   cudaMalloc(&partition_offsets, nL*sizeof(real));
-  cudaMemset(partition_offsets, 0, nL*sizeof(real));
   cudaMalloc(&weighted_dUdL_d, nL*n_edges*sizeof(real));
-  cudaMemset(weighted_dUdL_d, 0, nL*n_edges*sizeof(real));
   cudaMalloc(&weighted_dUdL2_d, nL*n_edges*sizeof(real));
-  cudaMemset(weighted_dUdL2_d, 0, nL*n_edges*sizeof(real));
   cudaMalloc(&average_dUdL_d, nL*n_edges*sizeof(real));
-  cudaMemset(average_dUdL_d, 0, nL*n_edges*sizeof(real));
   cudaMalloc(&average_dUdL2_d, nL*n_edges*sizeof(real));
-  cudaMemset(average_dUdL2_d, 0, nL*n_edges*sizeof(real));
   cudaMalloc(&ave_var_d, nL*n_edges*sizeof(real));
-  cudaMemset(ave_var_d, 0, nL*n_edges*sizeof(real));
+  reset_abf(system); // init mem to zeros
 }
 
 __global__ void add_sample_abf_kernel(
@@ -1126,14 +1133,15 @@ void Msld::add_sample_abf(System* system){
   // Copy to host and print out info
   if (system->run->step % 10000 == 0){
     int len = (blockCount-1)*L_abf_bins;
-    real counts[len], ens_dUdL[len], ens_var_dUdL[len], ave_dUdL[len], ave_var_dUdL[len], weights[len], offsets[len];
+    int lenOss = (blockCount-1)*L_oss_bins;
+    real counts[len], ens_dUdL[len], ave_dUdL[len], weights[len], offsets[len];
+    real oss_ens_dUdL[lenOss];
     real Z[blockCount-1], Z_off[blockCount-1], temper[blockCount-1];
-    int indices[blockCount-1];
+    int indices[blockCount-1], oss_indices[blockCount-1];
     cudaMemcpy(counts, abf_histogram_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     cudaMemcpy(ens_dUdL, ensemble_dUdL_d, len*sizeof(real), cudaMemcpyDeviceToHost);
-    cudaMemcpy(ens_var_dUdL, ensemble_var_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+    cudaMemcpy(oss_ens_dUdL, oss_ensemble_dUdL_d, lenOss*sizeof(real), cudaMemcpyDeviceToHost);
     cudaMemcpy(ave_dUdL, average_dUdL_d, len*sizeof(real), cudaMemcpyDeviceToHost);
-    cudaMemcpy(ave_var_dUdL, ave_var_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     cudaMemcpy(weights, weights_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     cudaMemcpy(offsets, offsets_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     cudaMemcpy(indices, abf_index_d, (blockCount-1)*sizeof(int), cudaMemcpyDeviceToHost);
@@ -1143,6 +1151,7 @@ void Msld::add_sample_abf(System* system){
       cudaMemcpy(temper, minL_maxdUdL_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
     }
     int count = 0; // Start of site
+    int resetCount = 0; // Reset weights after all tempering < 20%
     system->state->recv_lambda();
     printf("Step: %ld\n", system->run->step);
     for (int site = 0; site < siteCount-1; site++) {
@@ -1152,98 +1161,61 @@ void Msld::add_sample_abf(System* system){
       real samples = 0;
       for (int i = 0; i < blocksPerSite[site+1]; i++) {
         int start=indices[count+i];
-        printf("Site %d, Sub %d\n", site, i);
+        int start_oss = L_oss_bins*(count+i);
+        printf("Site %d, Sub %d, Lambda: %f\n", site, i, s->lambda[count+i+1]);
         if (tracking_only) {
           printf("Tracking only mode!!\n");
         }
-        printf("Lambda: %f \n", s->lambda[count+i+1]);
-        real physical = counts[start+system->msld->L_abf_bins-1];
-        printf("Count >= %3.2f: %f\n", 1.0 - .5/(system->msld->L_abf_bins-1.0), physical);
+        int physical = counts[start+system->msld->L_abf_bins-1];
+        printf("Count >= %3.2f: %d / ", 1.0 - .5/(system->msld->L_abf_bins-1.0), physical);
         fractionPhysical += physical;
         samples = 0;
         for (int j = 0; j < L_abf_bins; j++) {
           samples += counts[start + j];
         }
-        printf("Total Samples: %f\n", samples);
-        printf("Histogram: [ ");
-        for (int j = 0; j < L_abf_bins; j++) {
-          printf("%f, ", counts[start+j]);
-        }
-        printf("]\n");
-        printf("E[dU/dL]: [");
-        for (int j = 0; j < L_abf_bins; j++) {
-          printf("%f, ", ave_dUdL[start+j]);
-        }
-        printf("]\n");
-        printf("Std[dU/dL]: [");
-        for (int j = 0; j < L_abf_bins; j++) {
-          printf("%f, ", sqrt(ave_var_dUdL[start+j]));
-        }
-        printf("]\n");
-        printf("<dU/dL>: [ ");
-        for (int j = 0; j < L_abf_bins; j++) {
-          printf("%f, ", ens_dUdL[start+j]);
-        }
-        printf("]\n");
-        real estimate_std[len];
-        printf("<Std[dU/dL]>: [");
-        for (int j = 0; j < L_abf_bins; j++) {
-          printf("%f, ", sqrt(ens_var_dUdL[start+j]));
-          if (counts[start+j] == 0) {
-            estimate_std[j] = HUGE_VALF;
-          } else {
-            estimate_std[j] = sqrt(ens_var_dUdL[start+j]/counts[start+j]);
-          }
-        }
-        printf("]\n");
-        printf("Std[<dU/dL>]: [");
-        for (int j = 0; j < L_abf_bins; j++) {
-          printf("%f, ", estimate_std[j]);
-        }
-        printf("] \n");
-        printf("FES: [");
+        printf("%d\n", (int) samples);
         real sum = 0;
-        real var = 0;
-        for (int j = 0; j < L_abf_bins-1; j++) {
-          real factor = j == 0 || j == L_abf_bins-2 ? .5 : 1.0;
-          real width = factor * (L_max - L_min) / (L_abf_bins-1.0);
-          sum += width * (ens_dUdL[start + j] + ens_dUdL[start + j+1]) / 2.0;
-          var += pow(factor*estimate_std[j], 2); // overestimate by not including width
-          printf("%f, ", sum);
+        for (int j = 0; j < L_oss_bins-1; j++) {
+          real factor = j == 0 || j == L_oss_bins-2 ? .5 : 1.0;
+          real width = factor * (L_max - L_min) / (L_oss_bins-1.0);
+          sum += width * (oss_ens_dUdL[start_oss + j] + oss_ens_dUdL[start_oss + j+1]) / 2.0;
         }
-        printf("]\n");
         TI[i] = sum;
-        printf("TI 0->1 = %f +- %f\n", TI[i], sqrt(var));
-        if (oss) {
-          real U = max(0.0, temper[i] - temper_min);
-          real factor = exp(-U / (tempering*system->state->leapParms1->kT)) * 100;
-          printf("MinFL: %f\n", temper[i]);
-          printf("Tempering: %5.2f %%\n", factor);
+        printf("TI 0->1 = %f \n", TI[i]);
+        if(oss){
+        real U = max(0.0, temper[i] - temper_min);
+        real factor = exp(-U / (tempering*system->state->leapParms1->kT)) * 100;
+        printf("minFL: %5.2f, ", temper[i]);
+        printf("tempering: %5.2f %%\n", factor);
+        if(factor <= 30){
+          resetCount++;
         }
         printf("\n");
+        }
       }
       fractionPhysical /= samples;
       printf("Site fraction Physical: %f\n", fractionPhysical);
       // Print free energy info
-      for (int i = 0; i < blocksPerSite[site+1]; i++) {
-        int bins = system->msld->L_abf_bins-1; // index to last bin
-        int idx = indices[count + i] + bins;
-        printf("dG %2d -> j: [", i);
-        for (int j = 0; j < blocksPerSite[site+1]; j++) {
-          int jdx = indices[count + j] + bins;
-          // dG i->j = G_j - G_i = -kT*ln(pj) + TI_j + kT*ln(pi) - TI_i
-          // dG i->j = -kT*ln(pj/pi) + TI_j - TI_i
-          // pj/pi = (wj/wi)*(Zi/Zj)
-          real relative_weights = weights[jdx] * exp(offsets[jdx] - offsets[idx]) / weights[idx];
-          real relative_Z = Z[i] * exp(Z_off[i] - Z_off[j]) / Z[j];
-          real logProb = -system->state->leapParms1->kT*log(relative_weights*relative_Z);
-          real dG = logProb + TI[j] - TI[i]; // bias by -TI with abf
-          printf("%6.3f, ", dG);
-        }
-        printf(" ]\n");
+      printf("dG %2d -> j: [", 0);
+      int idx = indices[count] + L_abf_bins-1;
+      for (int j = 0; j < blocksPerSite[site+1]; j++) {
+        int jdx = indices[count + j] + L_abf_bins-1;
+        // dG i->j = G_j - G_i = -kT*ln(pj) + TI_j + kT*ln(pi) - TI_i
+        // dG i->j = -kT*ln(pj/pi) + TI_j - TI_i
+        // pj/pi = (wj/wi)*(Zi/Zj)
+        real relative_weights = weights[jdx] * exp(offsets[jdx] - offsets[idx]) / weights[idx];
+        real relative_Z = Z[count] * exp(Z_off[count] - Z_off[j]) / Z[j];
+        real logProb = -system->state->leapParms1->kT*log(relative_weights*relative_Z);
+        real dG = logProb + TI[j] - TI[0]; // bias by -TI with abf
+        printf("%6.3f, ", dG);
       }
+      printf(" ]\n");
       printf("\n\n");
       count += blocksPerSite[site+1];
+    }
+    if(resetCount == count){ // all are ready to get reset
+      printf("\n\nResetting storage of weights & counts!\n\n");
+      reset_abf(system);
     }
   }
 }
