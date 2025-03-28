@@ -1187,7 +1187,7 @@ void Msld::add_sample_abf(System* system){
         real factor = exp(-U / (tempering*system->state->leapParms1->kT)) * 100;
         printf("minFL: %5.2f, ", temper[i]);
         printf("tempering: %5.2f %%\n", factor);
-        if(factor <= 30){
+        if(factor <= 40){
           resetCount++;
         }
         printf("\n");
@@ -1213,9 +1213,10 @@ void Msld::add_sample_abf(System* system){
       printf("\n\n");
       count += blocksPerSite[site+1];
     }
-    if(resetCount == count){ // all are ready to get reset
+    if(resetCount == count && !reset){ // all are ready to get reset
       printf("\n\nResetting storage of weights & counts!\n\n");
       reset_abf(system);
+      reset = true;
     }
   }
 }
