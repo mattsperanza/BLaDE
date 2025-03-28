@@ -158,6 +158,7 @@ void Coordinates::file_pdb(FILE *fp,System *system)
   struct AtomCoordinates as;
   double x; // Intentional double
   struct Real3 xyz;
+  bool hexRes = false; // flag if exceeded PDB residue limit of 9999 (read hex values after that)
 
   fileData.clear();
   while (fgets(line, MAXLENGTHSTRING, fp)!=NULL) {
@@ -167,7 +168,18 @@ void Coordinates::file_pdb(FILE *fp,System *system)
       as.atomName=token2;
       io_strncpy(token1,line+22,5);
       if (sscanf(token1,"%s",token2)!=1) fatal(__FILE__,__LINE__,"PDB error\n");
-      as.resIdx=token2;
+      if (strtol(token2, NULL, 10) == 1) { // Reset?? Based on VMD output
+        hexRes = false;
+      }
+      if (hexRes && strcmp(token2, "9999") != 0) { // next couple may still be 9999
+        int decimalValue = (int)strtol(token2, NULL, 16);
+        as.resIdx = std::to_string(decimalValue);
+      } else {
+        as.resIdx = token2;
+      }
+      if (strcmp(token2, "9999") == 0) { // start reading hex values
+        hexRes = true;
+      }
       io_strncpy(token1,line+72,4);
       if (sscanf(token1,"%s",token2)!=1) fatal(__FILE__,__LINE__,"PDB error\n");
       as.segName=token2;
