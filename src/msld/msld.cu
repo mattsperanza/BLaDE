@@ -1135,7 +1135,7 @@ void Msld::add_sample_abf(System* system){
     int len = (blockCount-1)*L_abf_bins;
     int lenOss = (blockCount-1)*L_oss_bins;
     real counts[len], ens_dUdL[len], ave_dUdL[len], weights[len], offsets[len];
-    real oss_ens_dUdL[lenOss];
+    real oss_ens_dUdL[lenOss], oss_Z[lenOss], oss_Z_off[lenOss];
     real Z[blockCount-1], Z_off[blockCount-1], temper[blockCount-1];
     int indices[blockCount-1], oss_indices[blockCount-1];
     cudaMemcpy(counts, abf_histogram_d, len*sizeof(real), cudaMemcpyDeviceToHost);
@@ -1147,6 +1147,8 @@ void Msld::add_sample_abf(System* system){
     cudaMemcpy(indices, abf_index_d, (blockCount-1)*sizeof(int), cudaMemcpyDeviceToHost);
     cudaMemcpy(Z, partition_functions, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
     cudaMemcpy(Z_off, partition_offsets, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
+    cudaMemcpy(oss_Z, oss_Z_d, lenOss*sizeof(real), cudaMemcpyDefault);
+    cudaMemcpy(oss_Z_off, oss_Z_offset_d, lenOss*sizeof(real), cudaMemcpyDefault);
     if (oss) {
       cudaMemcpy(temper, minL_maxdUdL_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
     }
@@ -1157,6 +1159,7 @@ void Msld::add_sample_abf(System* system){
     for (int site = 0; site < siteCount-1; site++) {
       real fractionPhysical = 0.0;
       real TI[blocksPerSite[site+1]];
+      real p[blocksPerSite[site+1]];
       // Sampling info
       real samples = 0;
       for (int i = 0; i < blocksPerSite[site+1]; i++) {
@@ -1187,6 +1190,25 @@ void Msld::add_sample_abf(System* system){
         real factor = exp(-U / (tempering*system->state->leapParms1->kT)) * 100;
         printf("minFL: %5.2f, ", temper[i]);
         printf("tempering: %5.2f %%\n", factor);
+        // Calculate the probability > .99 (or whatever is close) from histogram
+        real oss_width = 1.0 / (L_oss_bins-1);
+        int bins_to_edge = .01 / oss_width;
+        real Z = 0;
+        real Z_edge = 0;
+        real largest_off = 0;
+        for (int j = 0; j < L_oss_bins; j++) {
+          if (largest_off < oss_Z_off[start_oss + j]) {
+            real correction = exp(largest_off - oss_Z_off[start_oss + j]);
+            Z *= correction;
+            Z_edge *= correction;
+            largest_off = oss_Z_off[j];
+          }
+          Z += oss_Z[start_oss + j] * exp(oss_Z_off[start_oss + j] - largest_off);
+          if (j >= L_oss_bins - bins_to_edge) {
+            Z_edge += oss_Z[start_oss + j] * exp(oss_Z_off[start_oss + j] - largest_off);
+          }
+        }
+        p[i] = Z_edge / Z;
         if(factor <= 40){
           resetCount++;
         }
@@ -1203,9 +1225,7 @@ void Msld::add_sample_abf(System* system){
         // dG i->j = G_j - G_i = -kT*ln(pj) + TI_j + kT*ln(pi) - TI_i
         // dG i->j = -kT*ln(pj/pi) + TI_j - TI_i
         // pj/pi = (wj/wi)*(Zi/Zj)
-        real relative_weights = weights[jdx] * exp(offsets[jdx] - offsets[idx]) / weights[idx];
-        real relative_Z = Z[count] * exp(Z_off[count] - Z_off[j]) / Z[j];
-        real logProb = -system->state->leapParms1->kT*log(relative_weights*relative_Z);
+        real logProb = -system->state->leapParms1->kT*log(p[j]/p[0]);
         real dG = logProb + TI[j] - TI[0]; // bias by -TI with abf
         printf("%6.3f, ", dG);
       }
@@ -1313,8 +1333,10 @@ void Msld::init_oss(System* system){
     cudaMemcpy(oss_index_d, index, nL*sizeof(int), cudaMemcpyHostToDevice);
     cudaMalloc(&oss_ensemble_dUdL_d, nL*L_oss_bins*sizeof(real));
     cudaMemset(oss_ensemble_dUdL_d, 0, nL*L_oss_bins*sizeof(real));
-    cudaMalloc(&oss_var_d, nL*L_oss_bins*sizeof(real));
-    cudaMemset(oss_var_d, 0, nL*L_oss_bins*sizeof(real));
+    cudaMalloc(&oss_Z_d, nL*L_oss_bins*sizeof(real));
+    cudaMemset(oss_Z_d, 0, nL*L_oss_bins*sizeof(real));
+    cudaMalloc(&oss_Z_offset_d, nL*L_oss_bins*sizeof(real));
+    cudaMemset(oss_Z_offset_d, 0, nL*L_oss_bins*sizeof(real));
     cudaMalloc(&oss_potential_d, nL*L_oss_bins*dUdL_bins*sizeof(real)); // ~4/8 Mb per histogram
     cudaMemset(oss_potential_d, 0, nL*L_oss_bins*dUdL_bins*sizeof(real));
     cudaMalloc(&oss_histogram_d, nL*L_oss_bins*dUdL_bins*sizeof(real)); // ~4/8 Mb per histogram
@@ -1578,7 +1600,7 @@ __global__ void min_L_max_dUdL_kernel(
     int nL, int* hist_indices,
     int L_bins, int dUdL_bins,
     real dUdL_max, real dUdL_min,
-    real* oss_ens_dUdL, real* oss_var,
+    real* oss_ens_dUdL, real* oss_Z, real* oss_Z_offset,
     real* potential_grid, real* histogram,
     real* min_bias
 ) {
@@ -1600,7 +1622,6 @@ __global__ void min_L_max_dUdL_kernel(
       real local_max = -INFINITY;
       real offset = 0.0;
       real weighted_dUdL = 0;
-      real weighted_dUdL2 = 0;
       real Z = 0;
       for (int y = 0; y < dUdL_bins; y++) {
         int grid_index = hist_indices[iL] + x * dUdL_bins + y;
@@ -1612,17 +1633,16 @@ __global__ void min_L_max_dUdL_kernel(
         if (current_bias > offset) {
           real correction = exp(offset - current_bias); // Zero on first execution since -INFINITY
           weighted_dUdL *= correction;
-          weighted_dUdL2 *= correction;
           Z *= correction;
           offset = current_bias;
         }
         weighted_dUdL += dUdL * exp(current_bias - offset);
-        weighted_dUdL2 += dUdL*dUdL * exp(current_bias - offset);
         Z += exp(current_bias - offset);
       }
       shared_max_bias[x] = local_max;
       oss_ens_dUdL[iL*L_bins + x] = Z > 1e-5 ? weighted_dUdL / Z : 0.0;
-      oss_var[iL*L_bins + x] = Z > 1e-5 ? weighted_dUdL2 / Z - pow(oss_ens_dUdL[iL*L_bins + x], 2): 0.0;
+      oss_Z[iL*L_bins + x] = Z;
+      oss_Z_offset[iL*L_bins + x] = offset;
     }
     __syncthreads();
 
@@ -1653,7 +1673,7 @@ void Msld::get_tempering_hist(System* system) {
       blockCount-1, oss_index_d,
       L_oss_bins, dUdL_bins,
       dUdL_max, dUdL_min,
-      oss_ensemble_dUdL_d, oss_var_d,
+      oss_ensemble_dUdL_d, oss_Z_d, oss_Z_offset_d,
       oss_potential_d, oss_histogram_d,
       minL_maxdUdL_d);
 }

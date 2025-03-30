@@ -84,7 +84,8 @@ public:
   bool oss_abf = false; // Use <dU/dL> from integration over histogram for ABF force
   int L_oss_bins = 201; // # of whole bins that fit in range [L_min, L_max]
   real* oss_ensemble_dUdL_d;
-  real* oss_var_d;
+  real* oss_Z_d;
+  real* oss_Z_offset_d;
   real* minL_maxdUdL_d; // tempering for each histogram
   real* oss_histogram_d; // stores sum of prefactors
   real* oss_potential_d; // same size as histogram
