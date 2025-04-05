@@ -1368,6 +1368,7 @@ __global__ void add_sample_hist_kernel(
       sum += exp(-hist_potential[j] / kT);
     }
     real factorDecouple = exp(-hist_potential[i] / kT) / sum;
+    // TODO: Try other tempering
     real potential = max(0.0, minL_maxdUdL_d[i] - temper_min);
     real factorTemper = temper ? exp(-potential / (tempering*kT)) : 1.0;
     if (X >= 0 && X < L_bins && Y >= 0 && Y < dUdL_bins) {
@@ -1462,7 +1463,7 @@ __global__ void getforce_hist_kernel(
   }
 }
 
-__global__ void getforce_pb_oss(int nL, real kT, real* hist_potential, real* dGdF, real* dGdL, real* lambdaForce, real* dU_msld, real_e* energy) {
+__global__ void getforce_pb_oss(int nL, real kT, real dUdL_max, real* hist_potential, real* dGdF, real* dGdL, real* lambdaForce, real* dU_msld, real_e* energy) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
     real denom = 0.0;
@@ -1473,9 +1474,9 @@ __global__ void getforce_pb_oss(int nL, real kT, real* hist_potential, real* dGd
     atomicAdd(&lambdaForce[i+1], pbFactor * dGdL[i+1]);
     dGdF[i+1] *= pbFactor;
     // Add harmonic restraint in dU/dL space
-    real k = 1.0 / 300; // 1 dGdF every 300 dU/dL past 500
+    real k = 1.0 / 300; // 1 dGdF every 300 dU/dL past dUdL_max-100
     real U_harm = 0.0;
-    real flat_bottom = 800;
+    real flat_bottom = dUdL_max - 100.0;
     if (dU_msld[i+1] >= flat_bottom) {
       real rel_dUdL = dU_msld[i+1] - flat_bottom;
       U_harm = .5*k*rel_dUdL*rel_dUdL;
@@ -1524,7 +1525,7 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
     mirror_Lmin, mirror_Lmax);
   // Force from PBMetaD combined function -kT ln(sum(-gi(li, Fi)/kT)))
   getforce_pb_oss<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
-    blockCount-1, system->state->leapParms1->kT,
+    blockCount-1, system->state->leapParms1->kT, dUdL_max,
     hist_potential_d, dGdF_d, dGdL_d,
     s->lambdaForce_d, dU_msld_d, pEnergy);
 }

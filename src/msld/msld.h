@@ -99,7 +99,7 @@ public:
 
   // Don't change?
   int dUdL_bins = 2001; // # of whole bins that fit in range [dUdL_min, dUdL_max]
-  real dUdL_max = 1000;
+  real dUdL_max = 1500;
   real dUdL_min = -500;
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
