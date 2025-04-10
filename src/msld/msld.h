@@ -62,7 +62,7 @@ public:
   real* dGdF_d;
   real* dGdL_d; // this is used for both meta and oss
   real* dU_msld_d;
-  bool G_imp = true; // flag of whether we subtract this
+  bool G_imp = false; // flag of whether we subtract this
   real* dG_imp_d; // -kbT*ln(p) where p is probability of a lambda bin uses 10 million samples
   int G_imp_bins = 101; // dG_imp has this-1 bins
   real* hist_potential_d; // [blockCount] potential from metadynamics
@@ -99,7 +99,7 @@ public:
 
   // Don't change?
   int dUdL_bins = 2001; // # of whole bins that fit in range [dUdL_min, dUdL_max]
-  real dUdL_max = 1500;
+  real dUdL_max = 4500;
   real dUdL_min = -500;
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;

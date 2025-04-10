@@ -756,8 +756,6 @@ void Msld::initialize(System *system)
   }
   if (oss && !oss_histogram_d) {
     init_oss(system);
-  }
-  if ((oss || abf) && G_imp) {
     calc_imp(system);
   }
 
@@ -1153,7 +1151,7 @@ void Msld::add_sample_abf(System* system){
       cudaMemcpy(temper, minL_maxdUdL_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
     }
     int count = 0; // Start of site
-    int resetCount = 0; // Reset weights after all tempering < 20%
+    int resetCount = 0; // Reset weights after all tempering < #%
     system->state->recv_lambda();
     printf("Step: %ld\n", system->run->step);
     for (int site = 0; site < siteCount-1; site++) {
@@ -1190,26 +1188,7 @@ void Msld::add_sample_abf(System* system){
         real factor = exp(-U / (tempering*system->state->leapParms1->kT)) * 100;
         printf("minFL: %5.2f, ", temper[i]);
         printf("tempering: %5.2f %%\n", factor);
-        // Calculate the probability > .99 (or whatever is close) from histogram
-        real oss_width = 1.0 / (L_oss_bins-1);
-        int bins_to_edge = .01 / oss_width;
-        real Z = 0;
-        real Z_edge = 0;
-        real largest_off = 0;
-        for (int j = 0; j < L_oss_bins; j++) {
-          if (largest_off < oss_Z_off[start_oss + j]) {
-            real correction = exp(largest_off - oss_Z_off[start_oss + j]);
-            Z *= correction;
-            Z_edge *= correction;
-            largest_off = oss_Z_off[j];
-          }
-          Z += oss_Z[start_oss + j] * exp(oss_Z_off[start_oss + j] - largest_off);
-          if (j >= L_oss_bins - bins_to_edge) {
-            Z_edge += oss_Z[start_oss + j] * exp(oss_Z_off[start_oss + j] - largest_off);
-          }
-        }
-        p[i] = Z_edge / Z;
-        if(factor <= 40){
+        if(factor <= 30){
           resetCount++;
         }
         printf("\n");
@@ -1224,9 +1203,10 @@ void Msld::add_sample_abf(System* system){
         int jdx = indices[count + j] + L_abf_bins-1;
         // dG i->j = G_j - G_i = -kT*ln(pj) + TI_j + kT*ln(pi) - TI_i
         // dG i->j = -kT*ln(pj/pi) + TI_j - TI_i
-        // pj/pi = (wj/wi)*(Zi/Zj)
-        real logProb = -system->state->leapParms1->kT*log(p[j]/p[0]);
-        real dG = logProb + TI[j] - TI[0]; // bias by -TI with abf
+        // pj/pi = (wj/wi)*(Zi/Zj) -> Z's are the same
+        real rel_weight = weights[jdx] * exp(offsets[jdx]-offsets[idx]) / weights[idx];
+        real logProb = -system->state->leapParms1->kT*log(rel_weight);
+        real dG = logProb + TI[j] - TI[0]; // bias by -TI with abf (TI defined per site)
         printf("%6.3f, ", dG);
       }
       printf(" ]\n");
@@ -1234,8 +1214,10 @@ void Msld::add_sample_abf(System* system){
       count += blocksPerSite[site+1];
     }
     if(resetCount == count && !reset){ // all are ready to get reset
-      printf("\n\nResetting storage of weights & counts!\n\n");
-      reset_abf(system);
+      printf("\n\nResetting storage of weights & counts! Setting gaussian_weight to zero! Adding dG_imp!\n\n");
+      //reset_abf(system);
+      gaussian_weight = 0.0;
+      G_imp = true;
       reset = true;
     }
   }
@@ -1473,19 +1455,8 @@ __global__ void getforce_pb_oss(int nL, real kT, real dUdL_max, real* hist_poten
     real pbFactor = exp(-hist_potential[i] / kT) / denom;
     atomicAdd(&lambdaForce[i+1], pbFactor * dGdL[i+1]);
     dGdF[i+1] *= pbFactor;
-    // Add harmonic restraint in dU/dL space
-    real k = 1.0 / 300; // 1 dGdF every 300 dU/dL past dUdL_max-100
-    real U_harm = 0.0;
-    real flat_bottom = dUdL_max - 100.0;
-    if (dU_msld[i+1] >= flat_bottom) {
-      real rel_dUdL = dU_msld[i+1] - flat_bottom;
-      U_harm = .5*k*rel_dUdL*rel_dUdL;
-      hist_potential[i] += U_harm;
-      real dU_harm = k*rel_dUdL;
-      dGdF[i+1] += dU_harm;
-    }
     if (energy && i==0) {
-      atomicAdd(energy, -kT*log(denom) + U_harm);
+      atomicAdd(energy, -kT*log(denom));
     }
   }
 }
@@ -1598,7 +1569,7 @@ void Msld::getpotential_hist(System *system){
 }
 
 __global__ void min_L_max_dUdL_kernel(
-    int nL, int* hist_indices,
+    real kT, int nL, int* hist_indices,
     int L_bins, int dUdL_bins,
     real dUdL_max, real dUdL_min,
     real* oss_ens_dUdL, real* oss_Z, real* oss_Z_offset,
@@ -1626,7 +1597,7 @@ __global__ void min_L_max_dUdL_kernel(
       real Z = 0;
       for (int y = 0; y < dUdL_bins; y++) {
         int grid_index = hist_indices[iL] + x * dUdL_bins + y;
-        real current_bias = potential_grid[grid_index];
+        real current_bias = potential_grid[grid_index] / kT;
         local_max = max(local_max, current_bias);
         if (current_bias <= 0.0) { continue; } // if we don't do this the bins with zero bias contribute
         if (histogram[grid_index] <= 0.0) { continue; } // No contribution from dUdL without samples
@@ -1671,6 +1642,7 @@ void Msld::get_tempering_hist(System* system) {
 
   // minL(maxdUdL(potential_grid))
   min_L_max_dUdL_kernel<<<blockCount-1, BLMS, sharedMemSize, system->run->ossBias>>>(
+      system->state->leapParms1->kT,
       blockCount-1, oss_index_d,
       L_oss_bins, dUdL_bins,
       dUdL_max, dUdL_min,
