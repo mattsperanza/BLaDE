@@ -119,7 +119,6 @@ Run::Run(System *system)
   nbrecipStream=0;
 
   abfBias=0;
-  metaBias=0;
   ossBias=0;
   ossBonded=0;
   ossDirect=0;
@@ -132,8 +131,6 @@ Run::Run(System *system)
   cudaStreamCreate(&nbrecipStream);
   // ABF Bias Streams
   cudaStreamCreate(&abfBias);
-  // Meta Bias Streams
-  cudaStreamCreate(&metaBias);
   // Orthogonal Bias streams
   cudaStreamCreate(&ossBias);
   cudaStreamCreate(&ossBonded);
@@ -156,8 +153,6 @@ Run::Run(System *system)
 
   // ABF Bias Events
   cudaEventCreate(&abfBiasComplete);
-  // Meta Bias Events
-  cudaEventCreate(&metaBiasComplete);
   // Orthogonal Bias events
   cudaEventCreate(&ossForceBegin);
   cudaEventCreate(&ossBiasComplete);

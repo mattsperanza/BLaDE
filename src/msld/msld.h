@@ -55,16 +55,16 @@ public:
   struct VariableBias *variableBias;
   struct VariableBias *variableBias_d;
 
-  // FE Estimation Variables -> need to be on/off before msld::init is called since no other init_XXX method call exists
-  // Mem not allocated if not set since histogram so large
+  // FE Estimation Variables -> need to be on/off before msld::init is called
   bool update_fe_surface = true; // add samples to abf/meta/oss
   int sample_freq = 10;
   real* dGdF_d;
   real* dGdL_d; // this is used for both meta and oss
   real* dU_msld_d;
-  bool G_imp = false; // flag of whether we subtract this
+  bool G_imp = false; // flag of whether we subtract dG_imp from forces to account for OSS bias
   real* dG_imp_d; // -kbT*ln(p) where p is probability of a lambda bin uses 10 million samples
   int G_imp_bins = 101; // dG_imp has this-1 bins
+  real dG_imp_scale = .2; // scale forces from dG_imp by this to avoid over trapping (oss doesn't fill well completely)
   real* hist_potential_d; // [blockCount] potential from metadynamics
   real* step_force_d; // force from bias
   // Just in case we get ideas for later
@@ -74,10 +74,6 @@ public:
   // Meta - uniform binning - use abf histogram?
   bool mirror_Lmin = true;
   bool mirror_Lmax = true;
-  bool meta = false;
-  int L_meta_bins = 201;
-  real* meta_histogram_d;
-  int* meta_index_d;
 
   // Histogram (2D meta) - uniform binning
   bool oss = false; // Perform Orthogonal Space Sampling force calculations
@@ -93,12 +89,13 @@ public:
 
   // Meta options
   bool temper = true;
-  real tempering = 3.0; // constant for decay of bias magnitude
+  real tempering = 4.0; // constant for decay of bias magnitude
   real temper_min = 1.0; // add at least 1 kcal/mol (felt) bias for every l bin before tempering
-  real gaussian_weight = .01;
+  real final_temper = 20; // Percent of tempering before zeroing out gaussian_weight - set to zero to never do it
+  real gaussian_weight = .01; // TODO: Determine if this should be higher
 
   // Don't change?
-  int dUdL_bins = 2001; // # of whole bins that fit in range [dUdL_min, dUdL_max]
+  int dUdL_bins = 2501; // # of whole bins that fit in range [dUdL_min, dUdL_max]
   real dUdL_max = 4500;
   real dUdL_min = -500;
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
@@ -194,11 +191,7 @@ public:
   void calc_imp(System* system);
   void sub_imp_dGdL(System* system, cudaStream_t stream); // adds -dG_imp to dU_msld based on site
 
-  // On the fly enhanced sampling
-  void init_meta(System* system);
-  void add_sample_meta(System *system);
-  void get_force_meta(System* system, bool calcEnergy);
-
+  // Enhanced sampling
   void init_abf(System* system);
   void add_sample_abf(System *system);
   void getpotential_abf(System* system, real* potential_grid);

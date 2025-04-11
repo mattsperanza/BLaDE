@@ -68,8 +68,6 @@ Msld::Msld() {
   kThetaIndeBias=NULL;
   kThetaIndeBias_d=NULL;
 
-  meta_histogram_d=NULL;
-  meta_index_d=NULL;
   oss_histogram_d=NULL;
   oss_index_d=NULL;
 
@@ -433,47 +431,39 @@ void parse_msld(char *line,System *system)
     system->selections->dump();
   } else if (strcmp(token, "oss") == 0) {
     system->msld->oss=io_nextb(line);
-  } else if (strcmp(token, "oss_abf") == 0){
-    system->msld->oss_abf=io_nextb(line);
-    if (system->msld->oss_abf) {
-      system->msld->abf = true;
-      if (!system->msld->oss) {
-        printf("Need to set oss flag before setting oss_abf!\n");
-        exit(1);
-      }
-    }
+    system->msld->oss_abf = system->msld->oss;
+    system->msld->abf = system->msld->oss;
   } else if (strcmp(token, "bias_mag") == 0) {
     system->msld->gaussian_weight=io_nextf(line);
+  } else if (strcmp(token, "L_bins") == 0){
+    system->msld->L_oss_bins=io_nexti(line);
+  } else if (strcmp(token, "dUdL_bins") == 0){
+    system->msld->dUdL_bins=io_nexti(line);
+  } else if (strcmp(token, "dUdL_max") == 0){
+    system->msld->dUdL_max=io_nextf(line);
+  } else if (strcmp(token, "dUdL_min") == 0){
+    system->msld->dUdL_min=io_nextf(line);
   } else if (strcmp(token, "L_std") == 0) {
     system->msld->L_std=io_nextf(line);
-    system->msld->L_search = 3.0*(system->msld->L_std/system->msld->L_resolution); // ~4 L std in each direction
+  } else if (strcmp(token, "dUdL_std") == 0){
+    system->msld->dUdL_std=io_nextf(line);
   } else if (strcmp(token, "mir_Lmin") == 0){
     system->msld->mirror_Lmin=io_nextb(line);
   } else if (strcmp(token, "mir_Lmax") == 0){
     system->msld->mirror_Lmax=io_nextb(line);
-  } else if (strcmp(token, "dUdL_std") == 0){
-    system->msld->dUdL_std=io_nextf(line);
-    system->msld->dUdL_search = 3.0*(system->msld->dUdL_std/system->msld->dUdL_resolution); // ~4 dUdL std in each direction
   } else if (strcmp(token, "temper") == 0) {
     system->msld->temper=io_nextb(line);
   } else if (strcmp(token, "temper_amount") == 0) {
     system->msld->tempering=io_nextf(line);
   } else if (strcmp(token, "min_bias") == 0){
     system->msld->temper_min=io_nextf(line);
-  } else if (strcmp(token, "umbrella_abf") == 0) {
-    system->msld->abf=io_nextb(line);
-    if (system->msld->abf) {
-      system->msld->oss_abf = false;
-    }
   } else if (strcmp(token, "tracking_only") == 0){
     system->msld->tracking_only=io_nextb(line);
     if (system->msld->tracking_only) {
       system->msld->abf = true;
     }
-  } else if (strcmp(token, "meta") == 0) {
-    system->msld->meta=io_nextb(line);
-  } else if (strcmp(token, "G_imp") == 0){
-    system->msld->G_imp=io_nextb(line);
+  } else if (strcmp(token, "G_imp_scale") == 0){
+    system->msld->dG_imp_scale=io_nextf(line);
   } else if (strcmp(token, "update_fe") == 0) {
     system->msld->update_fe_surface=io_nextb(line);
   } else if (strcmp(token, "sample_freq") == 0){
@@ -751,9 +741,6 @@ void Msld::initialize(System *system)
   if ((abf || tracking_only || oss_abf) && !abf_histogram_d) {
     init_abf(system);
   }
-  if (meta && !meta_histogram_d) {
-    init_meta(system);
-  }
   if (oss && !oss_histogram_d) {
     init_oss(system);
     calc_imp(system);
@@ -864,149 +851,9 @@ void Msld::sub_imp_dGdL(System *system, cudaStream_t stream) {
   State *s = system->state;
   int shMem = 0;
   if (!G_imp){ return; }
-  // TODO: Potential add into lambda forces since it is a constant and cancels in the free energy calculation?
-  // See note about G_imp_bins to understand why -1
-  sub_imp<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem, stream>>>(blockCount-1, -system->state->leapParms1->kT, s->lambda_fd, lambdaSite_d, s->lambdaForce_d, dG_imp_d, G_imp_bins-1);
+  // Exaggerates implicit constraint effect
+  sub_imp<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem, stream>>>(blockCount-1, -system->state->leapParms1->kT*dG_imp_scale, s->lambda_fd, lambdaSite_d, s->lambdaForce_d, dG_imp_d, G_imp_bins-1);
 }
-
-
-
-void Msld::init_meta(System* system){
-  int nL = blockCount-1;
-  int index[nL];
-  int n_edges = L_meta_bins;
-  for (int i = 0; i < nL; i++) {
-    index[i] = i*n_edges;
-  }
-  cudaMalloc(&meta_index_d, nL*sizeof(int));
-  cudaMemcpy(meta_index_d, index, nL*sizeof(int), cudaMemcpyDefault);
-  cudaMalloc(&meta_histogram_d, nL*n_edges*sizeof(real));
-  cudaMemset(meta_histogram_d, 0, nL*n_edges*sizeof(real));
-  cudaMalloc(&dGdL_d, nL*n_edges*sizeof(real));
-  cudaMemset(dGdL_d, 0, nL*n_edges*sizeof(real));
-}
-
-void __global__ add_sample_meta_kernel(
-  real kT, int nL, real* lambdas,
-  real weight, real tempering,
-  real* histogram, int* hist_indices, real* hist_potential,
-  int L_bins, real L_max, real L_min, bool temper) {
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i < nL) {
-    int X =  get_histogram_index(lambdas[i+1], L_bins, L_max, L_min);
-    int index = hist_indices[i] + X;
-    real sum = 0.0;
-    for (int j = 0; j < nL; j++) {
-      sum += exp(-hist_potential[j] / kT);
-    }
-    real factorDecouple = exp(-hist_potential[i] / kT) / sum;
-    real factorTemper = temper ? exp(-hist_potential[i] / (tempering*kT)) : 1.0;
-    if (X >= 0 && X < L_bins) {
-      histogram[index] += weight * factorDecouple * factorTemper;
-    }
-  }
-}
-
-// Only gets called if meta=true
-void Msld::add_sample_meta(System *system) {
-  cudaStream_t stream = 0;
-  Run *r = system->run;
-  State *s = system->state;
-  int shMem = 0;
-  if (system->run) {
-    stream=system->run->metaBias;
-  }
-
-  add_sample_meta_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
-    s->leapParms1->kT, blockCount-1, s->lambda_fd,
-    gaussian_weight, tempering,
-    meta_histogram_d, meta_index_d, hist_potential_d,
-    L_meta_bins, L_max, L_min, temper);
-}
-
-void __global__ getforce_meta_kernel(
-  int nL, real* lambdas, real* dGdL, real* hist_potential,
-  int* hist_indices, real* histogram,
-  int L_bins, real L_max, real L_min,
-  real L_std, int L_search,
-  bool mirror_Lmin, bool mirror_Lmax) {
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if(i<nL) {
-    real bias = 0.0;
-    real L_force = 0.0;
-    int X = get_histogram_index(lambdas[i+1], L_bins, L_max, L_min);
-    for (int j = X-L_search; j <= X+L_search; j++) {
-      int L_index = j;
-      real mirrorFactor = 1.0;
-      if (mirror_Lmin) {
-        L_index = (L_index < 0) ? -L_index : L_index;
-        mirrorFactor = (L_index == 0) ? 2.0 : 1.0;
-      }
-      if (mirror_Lmax) {
-        L_index = (L_index >= L_bins) ? L_bins - 1 - (L_index - (L_bins - 1)) : L_index;
-        mirrorFactor = (mirror_Lmin && L_index == 0) || L_index == L_bins - 1 ? 2.0 : 1.0;
-      }
-
-      if (L_index < 0 && L_index >= L_bins) { continue; }
-      real L_resolution = (L_max-L_min)/(L_bins-1.0);
-      real L_center = L_min + j*L_resolution;
-      real L_distance = (lambdas[i+1] - L_center) / L_std;
-      real L_gaussian = exp(-.5*L_distance*L_distance);
-      int index = hist_indices[i] + j;
-      real weight = mirrorFactor * histogram[index];
-      real tmp_bias = weight * L_gaussian;
-      bias += tmp_bias;
-      L_force += -L_distance/L_std * tmp_bias;
-    }
-    atomicAdd(&dGdL[i+1], L_force);
-    atomicAdd(&hist_potential[i], bias);
-  }
-}
-
-void __global__ getforce_pb_meta(int nL, real kT, real* hist_potential, real* dGdL, real* lambdaForce, real_e* energy) {
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i < nL) {
-    real denom = 0.0;
-    for (int j = 0; j < nL; j++) {
-      denom += exp(-hist_potential[j] / kT);
-    }
-    real pbFactor = exp(-hist_potential[i] / kT) / denom;
-    atomicAdd(&lambdaForce[i+1], pbFactor * dGdL[i+1]);
-    if (energy && i==0) {
-      atomicAdd(energy, -kT*log(denom));
-    }
-  }
-}
-
-void Msld::get_force_meta(System *system, bool calcEnergy) {
-  cudaStream_t stream = 0;
-  Run *r = system->run;
-  State *s = system->state;
-  real_e *pEnergy = NULL;
-  int shMem = 0;
-
-  if (r->calcTermFlag[eebias] == false) return;
-  if (calcEnergy) {
-    shMem = BLMS*sizeof(real)/32;
-    pEnergy=s->energy_d+eebias;
-  }
-  if (system->run) {
-    stream=system->run->metaBias;
-  }
-
-  getforce_meta_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
-    blockCount-1, s->lambda_fd, dGdL_d, hist_potential_d,
-    meta_index_d, meta_histogram_d, L_meta_bins,
-    L_max, L_min, L_std, L_search,
-    mirror_Lmin, mirror_Lmax);
-
-  // Combine lambda forces into PB meta-dynamics
-  getforce_pb_meta<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
-    blockCount-1, system->state->leapParms1->kT,
-    hist_potential_d, dGdL_d,
-    s->lambdaForce_d, pEnergy);
-}
-
 
 void reset_abf(System* system){
   Msld* m = system->msld;
@@ -1188,7 +1035,7 @@ void Msld::add_sample_abf(System* system){
         real factor = exp(-U / (tempering*system->state->leapParms1->kT)) * 100;
         printf("minFL: %5.2f, ", temper[i]);
         printf("tempering: %5.2f %%\n", factor);
-        if(factor <= 30){
+        if(factor <= final_temper){
           resetCount++;
         }
         printf("\n");
@@ -1213,12 +1060,11 @@ void Msld::add_sample_abf(System* system){
       printf("\n\n");
       count += blocksPerSite[site+1];
     }
-    if(resetCount == count && !reset){ // all are ready to get reset
+    if(resetCount == count && abs(gaussian_weight) > 1e-5){ // all are ready to get reset
       printf("\n\nResetting storage of weights & counts! Setting gaussian_weight to zero! Adding dG_imp!\n\n");
-      //reset_abf(system);
+      reset_abf(system);
       gaussian_weight = 0.0;
       G_imp = true;
-      reset = true;
     }
   }
 }
@@ -1330,6 +1176,12 @@ void Msld::init_oss(System* system){
     cudaMemset(dGdF_d, 0, blockCount*sizeof(real));
     cudaMalloc(&dGdL_d, blockCount*sizeof(real));
     cudaMemset(dGdL_d, 0, blockCount*sizeof(real));
+
+    // Set variables consistant with user input
+    real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
+    real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
+    int L_search = 3.0*(L_std/L_resolution); // ~3 L std in each direction
+    int dUdL_search = 3.0*(dUdL_std/dUdL_resolution); // ~3 dUdL std in each direction
 }
 
 __global__ void add_sample_hist_kernel(

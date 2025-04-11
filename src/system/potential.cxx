@@ -1578,7 +1578,7 @@ void Potential::calc_force(int step,System *system) {
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
-  if ((system->msld->oss || system->msld->abf || system->msld->meta) && system->msld->update_fe_surface) { // Need energy to add sample for <dU/dL> weighting
+  if ((system->msld->oss || system->msld->abf) && system->msld->update_fe_surface) { // Need energy to add sample for <dU/dL> weighting
     calcEnergy = calcEnergy || step % system->msld->sample_freq == 0;
   }
 #ifdef REPLICAEXCHANGE
@@ -1646,23 +1646,7 @@ void Potential::calc_force(int step,System *system) {
 
   // cudaEventRecord(r->forceComplete,r->updateStream);
 
-  // ABF, META, & OSS Calculations -> meta & oss at same time not allowed right now
-  gpuCheck(cudaPeekAtLastError());
-  if (system->msld->meta) {
-    cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->metaBias);
-    system->msld->sub_imp_dGdL(system, system->run->metaBias);
-    cudaMemsetAsync(system->msld->step_force_d, 0.0, (system->state->lambdaCount-1)*sizeof(real), system->run->metaBias);
-    cudaMemsetAsync(system->msld->dGdL_d, 0, system->msld->blockCount*sizeof(real), r->metaBias);
-    cudaMemsetAsync(system->msld->hist_potential_d, 0.0, (system->msld->blockCount-1)*sizeof(real), r->metaBias);
-    gpuCheck(cudaPeekAtLastError());
-    system->msld->get_force_meta(system, calcEnergy);
-    gpuCheck(cudaPeekAtLastError());
-    if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
-      system->msld->add_sample_meta(system);
-      gpuCheck(cudaPeekAtLastError());
-    }
-    cudaEventRecord(r->metaBiasComplete, r->metaBias);
-  }
+  // ABF & OSS Calculations
   if (system->msld->oss) {
     // Wait on lambda force calc being complete
     cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
@@ -1671,7 +1655,7 @@ void Potential::calc_force(int step,System *system) {
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
     // Reset Storage
     cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->ossBias);
-    system->msld->sub_imp_dGdL(system, system->run->ossBias);
+    system->msld->sub_imp_dGdL(system, system->run->ossBias); // don't want this to show up in estimations
     cudaMemsetAsync(system->msld->step_force_d, 0, (system->state->lambdaCount-1)*sizeof(real), system->run->ossBias);
     cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
     cudaMemsetAsync(system->msld->dGdL_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
@@ -1719,8 +1703,7 @@ void Potential::calc_force(int step,System *system) {
   if (system->msld->abf) {
     // Wait on lambda force calc
     cudaStreamWaitEvent(r->abfBias, r->ossBiasComplete, 0);
-    cudaStreamWaitEvent(r->abfBias, r->metaBiasComplete, 0);
-    if (!system->msld->oss && !system->msld->meta) {
+    if (!system->msld->oss) {
       // Wait for force to get in
       cudaStreamWaitEvent(r->abfBias, r->nbdirectComplete, 0);
       cudaStreamWaitEvent(r->abfBias, r->nbrecipComplete, 0);

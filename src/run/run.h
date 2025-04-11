@@ -101,9 +101,6 @@ class Run {
   // ABF stream
   cudaStream_t abfBias;
   cudaEvent_t abfBiasComplete;
-  // Meta stream
-  cudaStream_t metaBias;
-  cudaEvent_t metaBiasComplete;
   // OSS streams
   cudaEvent_t ossForceBegin;
   cudaStream_t ossBias;
