@@ -73,15 +73,8 @@ Msld::Msld() {
 
   abf_index_d=NULL;
   abf_histogram_d=NULL;
-  ensemble_dUdL_d=NULL;
-  ensemble_dUdL2_d=NULL;
   weights_d=NULL;
-  weighted_dUdL_d=NULL;
-  weighted_dUdL2_d=NULL;
   offsets_d=NULL;
-  average_dUdL_d=NULL;
-  ensemble_var_d=NULL;
-
 
   softBonds.clear();
   atomRestraints.clear();
@@ -861,17 +854,7 @@ void reset_abf(System* system){
   int n_edges = m->L_abf_bins;
   cudaMemset(m->abf_histogram_d, 0, nL*n_edges*sizeof(real));
   cudaMemset(m->offsets_d, 0, nL*n_edges*sizeof(real)); // bias always > offset at beginning
-  cudaMemset(m->ensemble_dUdL_d, 0, nL*n_edges*sizeof(real));
-  cudaMemset(m->ensemble_dUdL2_d, 0, nL*n_edges*sizeof(real));
-  cudaMemset(m->ensemble_var_d, 0, nL*n_edges*sizeof(real));
   cudaMemset(m->weights_d, 0, nL*n_edges*sizeof(real));
-  cudaMemset(m->partition_functions, 0, nL*sizeof(real));
-  cudaMemset(m->partition_offsets, 0, nL*sizeof(real));
-  cudaMemset(m->weighted_dUdL_d, 0, nL*n_edges*sizeof(real));
-  cudaMemset(m->weighted_dUdL2_d, 0, nL*n_edges*sizeof(real));
-  cudaMemset(m->average_dUdL_d, 0, nL*n_edges*sizeof(real));
-  cudaMemset(m->average_dUdL2_d, 0, nL*n_edges*sizeof(real));
-  cudaMemset(m->ave_var_d, 0, nL*n_edges*sizeof(real));
 }
 
 void Msld::init_abf(System* system){
@@ -885,29 +868,16 @@ void Msld::init_abf(System* system){
   cudaMemcpy(abf_index_d, index, nL*sizeof(int), cudaMemcpyHostToDevice);
   cudaMalloc(&abf_histogram_d, nL*n_edges*sizeof(real));
   cudaMalloc(&offsets_d, nL*n_edges*sizeof(real));
-  cudaMalloc(&ensemble_dUdL_d, nL*n_edges*sizeof(real));
-  cudaMalloc(&ensemble_dUdL2_d, nL*n_edges*sizeof(real));
-  cudaMalloc(&ensemble_var_d, nL*n_edges*sizeof(real));
   cudaMalloc(&weights_d, nL*n_edges*sizeof(real));
-  cudaMalloc(&partition_functions, nL*sizeof(real));
-  cudaMalloc(&partition_offsets, nL*sizeof(real));
-  cudaMalloc(&weighted_dUdL_d, nL*n_edges*sizeof(real));
-  cudaMalloc(&weighted_dUdL2_d, nL*n_edges*sizeof(real));
-  cudaMalloc(&average_dUdL_d, nL*n_edges*sizeof(real));
-  cudaMalloc(&average_dUdL2_d, nL*n_edges*sizeof(real));
-  cudaMalloc(&ave_var_d, nL*n_edges*sizeof(real));
   reset_abf(system); // init mem to zeros
 }
 
 __global__ void add_sample_abf_kernel(
-  real kT, real nFull, int nL,
+  real kT, int nL,
   real* lambdas, real* dU_msld, real* hist_potential,
   real* histogram_counts, int* hist_indices, 
-  int num_bins, real L_max, real L_min, real* offsets,
-  real* partition, real* partition_offset,
-  real* weights, real* weighted_dU_dL, real* weighted_dUdL2,
-  real* ensemble_dUdL, real* ensemble_dUdL2, real* variance,
-  real* average_dUdL, real* average_dUdL2, real* ave_var) {
+  int num_bins, real L_max, real L_min, 
+  real* offsets, real* weights) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if(i<nL) {
     // PBMeta Bias
@@ -920,10 +890,6 @@ __global__ void add_sample_abf_kernel(
     int bin = get_histogram_index(lambda, num_bins, L_max, L_min); 
     int hist_bin = bin + hist_indices[i];
     real dUdL = dU_msld[i+1]; // lambdaForce before biasing forces
-    // Uniform Estimations
-    average_dUdL[hist_bin] = (average_dUdL[hist_bin] * histogram_counts[hist_bin] + dUdL) / (histogram_counts[hist_bin] + 1);
-    average_dUdL2[hist_bin] = (average_dUdL2[hist_bin] * histogram_counts[hist_bin] + dUdL*dUdL) / (histogram_counts[hist_bin] + 1);
-    ave_var[hist_bin] = average_dUdL2[hist_bin] - pow(average_dUdL[hist_bin], 2);
     histogram_counts[hist_bin] += 1;
     real beta = 1 / kT;
     real bias = beta * potEnergy;
@@ -931,26 +897,8 @@ __global__ void add_sample_abf_kernel(
       real correction = exp(offsets[hist_bin]-bias); // exp(U-old)*exp(old-new) = exp(U-new)
       offsets[hist_bin] = bias;
       weights[hist_bin] *= correction;
-      weighted_dU_dL[hist_bin] *= correction;
-      weighted_dUdL2[hist_bin] *= correction;
     }
     weights[hist_bin] += exp(bias - offsets[hist_bin]);
-    weighted_dU_dL[hist_bin] += dUdL * exp(bias - offsets[hist_bin]);
-    weighted_dUdL2[hist_bin] += dUdL*dUdL * exp(bias - offsets[hist_bin]);
-    if (bias >= partition_offset[i]) {
-      real correction = exp(partition_offset[i]-bias);
-      offsets[i] = bias;
-      partition[i] *= correction;
-    }
-    partition[i] += exp(bias - partition_offset[i]);
-    // The offset we defined cancels in this calculation
-    // sum(Fl*exp(g(L, dU))) / sum(exp(g(L, dU))
-    ensemble_dUdL[hist_bin] = weighted_dU_dL[hist_bin] / weights[hist_bin];
-    ensemble_dUdL2[hist_bin] = weighted_dUdL2[hist_bin] / weights[hist_bin];
-    if (histogram_counts[hist_bin] < nFull) {
-      ensemble_dUdL[hist_bin] = histogram_counts[hist_bin] / nFull * ensemble_dUdL[hist_bin];
-    }
-    variance[hist_bin] = ensemble_dUdL2[hist_bin] - pow(ensemble_dUdL[hist_bin], 2);
   }
 }
 
@@ -966,13 +914,10 @@ void Msld::add_sample_abf(System* system){
   }
 
   add_sample_abf_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
-    s->leapParms1->kT, nFull, blockCount-1,
+    s->leapParms1->kT, blockCount-1,
     s->lambda_fd, dU_msld_d, hist_potential_d,
     abf_histogram_d, abf_index_d, L_abf_bins, L_max, L_min,
-    offsets_d, partition_functions, partition_offsets,
-    weights_d, weighted_dUdL_d, weighted_dUdL2_d,
-    ensemble_dUdL_d, ensemble_dUdL2_d, ensemble_var_d,
-    average_dUdL_d, average_dUdL2_d, ave_var_d);
+    offsets_d, weights_d);
 
   // Logging for testing
   // Copy to host and print out info
@@ -984,14 +929,10 @@ void Msld::add_sample_abf(System* system){
     real Z[blockCount-1], Z_off[blockCount-1], temper[blockCount-1];
     int indices[blockCount-1], oss_indices[blockCount-1];
     cudaMemcpy(counts, abf_histogram_d, len*sizeof(real), cudaMemcpyDeviceToHost);
-    cudaMemcpy(ens_dUdL, ensemble_dUdL_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     cudaMemcpy(oss_ens_dUdL, oss_ensemble_dUdL_d, lenOss*sizeof(real), cudaMemcpyDeviceToHost);
-    cudaMemcpy(ave_dUdL, average_dUdL_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     cudaMemcpy(weights, weights_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     cudaMemcpy(offsets, offsets_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     cudaMemcpy(indices, abf_index_d, (blockCount-1)*sizeof(int), cudaMemcpyDeviceToHost);
-    cudaMemcpy(Z, partition_functions, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
-    cudaMemcpy(Z_off, partition_offsets, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
     cudaMemcpy(oss_Z, oss_Z_d, lenOss*sizeof(real), cudaMemcpyDefault);
     cudaMemcpy(oss_Z_off, oss_Z_offset_d, lenOss*sizeof(real), cudaMemcpyDefault);
     if (oss) {
@@ -1143,8 +1084,8 @@ void Msld::getforce_abf(System *system, bool calcEnergy) {
   }
 
   // Change which <dU/dL> we use for ABF forces
-  real* dUdL = oss_abf ? oss_ensemble_dUdL_d : ensemble_dUdL_d;
-  int bins = oss_abf ? L_oss_bins : L_abf_bins;
+  real* dUdL = oss_ensemble_dUdL_d;
+  int bins = L_oss_bins;
   getforce_abf_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->lambda_fd, s->lambdaForce_d, step_force_d,
     bins, L_max, L_min, dUdL,
@@ -1223,6 +1164,7 @@ void Msld::add_sample_hist(System* system) {
   }
 
   if (system->run->step % 10000*system->msld->sample_freq == 0 && temper) {
+    write_histogram_file(system, "hist_restart.txt", false);
     system->msld->get_tempering_hist(system); // Evaluates potential on grid everywhere
   }
 

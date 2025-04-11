@@ -113,18 +113,8 @@ public:
   int L_abf_bins = 51; // this is also the max index (51 leads to >.99 as last bin)
   int* abf_index_d; // index into abf histogram
   real* abf_histogram_d; // counts in bin -> also used for 1D meta
-  real* ensemble_dUdL_d; // <dU/dL> from umbrella re-weighting of PBMetaD
-  real* ensemble_dUdL2_d;
-  real* ensemble_var_d;
   real* weights_d;
-  real* partition_functions;
-  real* partition_offsets;
-  real* weighted_dUdL_d;
-  real* weighted_dUdL2_d;
   real* offsets_d;
-  real* average_dUdL_d;
-  real* average_dUdL2_d;
-  real* ave_var_d;
 
   int thetaCollBiasCount;
   real *kThetaCollBias;

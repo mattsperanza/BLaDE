@@ -691,7 +691,7 @@ void Run::test(char *line,char *token,System *system)
     }
     return;
   } else if (testType=="print_histogram") {
-    write_histogram_file(system, "histograms.txt");
+    write_histogram_file(system, "histograms.txt", true);
     return;
   } else {
     fatal(__FILE__,__LINE__,"Error: test type %s does not match alchemical, spatial, oss_force, or oss_energy_cons \n",testType.c_str());

@@ -426,13 +426,9 @@ void write_checkpoint_file(const char *fnm,System *system)
 }
 
 // Written by ChatGPT so expect errors
-void write_histogram_file(System* system, std::string file_name) {
+void write_histogram_file(System* system, std::string file_name, bool potential) {
   // Print path to file
   char cwd[1024];
-  if (getcwd(cwd, sizeof(cwd)) != nullptr) {
-    std::cout << "Writing bias potentials to: " << cwd << "/" << file_name << std::endl;
-  }
-
   std::ofstream file(file_name);
   if (!file) {
     std::cerr << "Error: Unable to open file " << file_name << " for writing." << std::endl;
@@ -443,10 +439,9 @@ void write_histogram_file(System* system, std::string file_name) {
   file << "# Num_Lambdas: " << nL << "\n";
 
   if (system->msld->abf) {
-    printf("Writing ABF to file!\n");
     int bins = system->msld->oss_abf ? system->msld->L_oss_bins : system->msld->L_abf_bins;
     real* abf_potential = (real*)malloc(bins * nL * sizeof(real));
-    real* dUdL_d = system->msld->oss_abf ? system->msld->oss_ensemble_dUdL_d : system->msld->ensemble_dUdL_d;
+    real* dUdL_d = system->msld->oss_ensemble_dUdL_d;
     cudaMemcpy(abf_potential, dUdL_d, bins * nL * sizeof(real), cudaMemcpyDefault);
 
     file << "# ABF <dU/dL>\n";
@@ -460,7 +455,6 @@ void write_histogram_file(System* system, std::string file_name) {
   }
 
   if (system->msld->oss) {
-    printf("Writing histogram to file!\n");
     int L_bins = system->msld->L_oss_bins;
     real L_max = system->msld->L_max;
     real L_min = system->msld->L_min;
@@ -469,9 +463,12 @@ void write_histogram_file(System* system, std::string file_name) {
     real dUdL_min = system->msld->dUdL_min;
 
     real* hist_potential = (real*)malloc(L_bins * dUdL_bins * nL * sizeof(real));
-    system->msld->getpotential_hist(system);
-    printf("Done with histogram potential evaluation!\n");
-    cudaMemcpy(hist_potential, system->msld->oss_potential_d, L_bins * dUdL_bins * nL * sizeof(real), cudaMemcpyDeviceToHost);
+    if(potential){
+      system->msld->getpotential_hist(system);
+      cudaMemcpy(hist_potential, system->msld->oss_potential_d, L_bins * dUdL_bins * nL * sizeof(real), cudaMemcpyDeviceToHost);
+    } else {
+      cudaMemcpy(hist_potential, system->msld->oss_histogram_d, L_bins * dUdL_bins * nL * sizeof(real), cudaMemcpyDeviceToHost);
+    }
 
     file << "# Histogram Potential\n";
     for (int i = 0; i < nL; i++) {
@@ -488,7 +485,6 @@ void write_histogram_file(System* system, std::string file_name) {
   }
 
   file.close();
-  std::cout << "Finished writing bias potentials." << std::endl;
 }
 
 void read_checkpoint_file(const char *fnm,System *system)
