@@ -33,13 +33,23 @@ class Run {
   std::string fnmNRG;
   std::string fnmCPI;
   std::string fnmCPO;
+  std::string pathMTD;
+  std::string fnmMTD_LMD;
+  std::string fnmMTD_dUdL;
+  std::string fnmMTD_HIST;
+  std::string fnmMTD_ABF;
   XDRFILE *fpXTC;
   XDRFILE *fpXLMD;
   FILE *fpLMD;
   FILE *fpNRG;
+  FILE *fpMTD_LMD;
+  FILE *fpMTD_dUdL;
+  FILE *fpMTD_HIST;
+  FILE *fpMTD_ABF;
   int freqXTC;
   int freqLMD;
   int freqNRG;
+  int freqMTD=10;
   bool hrLMD;
   bool prettyXTC;
 

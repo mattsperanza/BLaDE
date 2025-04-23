@@ -424,8 +424,9 @@ void parse_msld(char *line,System *system)
     system->selections->dump();
   } else if (strcmp(token, "oss") == 0) {
     system->msld->oss=io_nextb(line);
-    system->msld->oss_abf = system->msld->oss;
-    system->msld->abf = system->msld->oss;
+  } else if (strcmp(token, "oss_abf") == 0){
+    system->msld->oss_abf=io_nextb(line);
+    system->msld->abf=system->msld->oss_abf;
   } else if (strcmp(token, "bias_mag") == 0) {
     system->msld->gaussian_weight=io_nextf(line);
   } else if (strcmp(token, "L_bins") == 0){
@@ -450,13 +451,13 @@ void parse_msld(char *line,System *system)
     system->msld->tempering=io_nextf(line);
   } else if (strcmp(token, "min_bias") == 0){
     system->msld->temper_min=io_nextf(line);
+  } else if (strcmp(token, "final_temper") == 0){
+    system->msld->final_temper = io_nextf(line);
   } else if (strcmp(token, "tracking_only") == 0){
     system->msld->tracking_only=io_nextb(line);
     if (system->msld->tracking_only) {
       system->msld->abf = true;
     }
-  } else if (strcmp(token, "G_imp_scale") == 0){
-    system->msld->dG_imp_scale=io_nextf(line);
   } else if (strcmp(token, "update_fe") == 0) {
     system->msld->update_fe_surface=io_nextb(line);
   } else if (strcmp(token, "sample_freq") == 0){
@@ -728,15 +729,19 @@ void Msld::initialize(System *system)
 
   // Thermodynamic Integration/Metadynamics/OST variables
   cudaMalloc(&dU_msld_d, blockCount*sizeof(real)); // lambda force prior to biasing
+  dU_msld = (real*)malloc(blockCount*sizeof(real));
   cudaMalloc(&step_force_d, (blockCount-1)*sizeof(real));
   cudaMalloc(&hist_potential_d, (blockCount-1)*sizeof(real)); // use blockCount so that it is indexed same as lambda array
+  cudaMalloc(&abf_TI_d, (blockCount-1)*sizeof(real));
   cudaMemset(hist_potential_d, 0, (blockCount-1)*sizeof(real));
+  cudaMemset(abf_TI_d, 0, (blockCount-1)*sizeof(real));
+  hist_potential = (real*)malloc((blockCount-1)*sizeof(real));
+  abf_TI = (real*)malloc((blockCount-1)*sizeof(real));
   if ((abf || tracking_only || oss_abf) && !abf_histogram_d) {
     init_abf(system);
   }
   if (oss && !oss_histogram_d) {
     init_oss(system);
-    calc_imp(system);
   }
 
   // Atom restraints
@@ -789,63 +794,10 @@ static int histogram_index(real val, int num_bins, real max, real min) {
   return round(tmp/resolution);
 }
 
-void Msld::calc_imp(System *system) {
-  int bins = system->msld->G_imp_bins;
-  int nSample = 10000000; // 10 mil
-  int c = system->msld->fnex;
-  int nSite = system->msld->siteCount;
-  cudaMalloc(&dG_imp_d, nSite*bins*sizeof(real));
-  real dx = 1.0 / (bins-1);
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_real_distribution<real> dist(0.0, 1.0);
-  real dG[(bins-1)*nSite];
-  for (int ii = 0; ii < nSite-1; ii++) {
-    int nDim = system->msld->blocksPerSite[ii+1];
-    int start = (bins-1)*ii;
-    real histogram[bins];
-    memset(histogram, 0, bins*sizeof(real));
-    for (int i = 0; i < nSample; i++) {
-      real ti[nDim], unli[nDim], li[nDim], sum_unli = 0.0;
-      for (int j = 0; j < nDim; j++) {
-        ti[j] = dist(gen);
-        unli[j] = exp(c * sin(M_PI * ti[j] - M_PI/2));
-        sum_unli += unli[j];
-      }
-      for (int j = 0; j < nDim; j++) {
-        li[j] = unli[j] / sum_unli;
-        int index = histogram_index(li[j], bins, 1.0, 0.0);
-        histogram[index] += 1;
-      }
-    }
-
-    printf("dG_imp/kT for site %d: [ ", ii+1);
-    for (int i = 0; i < bins-1; i++) {
-      real dG_i = (log(histogram[i+1]) - log(histogram[i])) / dx;
-      dG[start + i] = dG_i;
-      printf("%f, ", dG[start+i]);
-    }
-    printf(" ]\n");
-  }
-  cudaMemcpy(dG_imp_d, dG, (bins-1)*nSite*sizeof(real), cudaMemcpyDefault);
-}
-
-void __global__ sub_imp(int nL, real kT, real* lambdas, int* lambda_site, real* dU_msld, real* dG_imp, int dG_bins) {
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i < nL) {
-    int idx = (lambda_site[i+1]-1)*dG_bins + (int)(lambdas[i+1]*dG_bins);
-    // -G_imp = kT*ln(p)
-    atomicAdd(&dU_msld[i+1], kT*dG_imp[idx]);
-  }
-}
-
-void Msld::sub_imp_dGdL(System *system, cudaStream_t stream) {
-  Run *r = system->run;
-  State *s = system->state;
-  int shMem = 0;
-  if (!G_imp){ return; }
-  // Exaggerates implicit constraint effect
-  sub_imp<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem, stream>>>(blockCount-1, -system->state->leapParms1->kT*dG_imp_scale, s->lambda_fd, lambdaSite_d, s->lambdaForce_d, dG_imp_d, G_imp_bins-1);
+void Msld::recv_meta(){
+  cudaMemcpy(hist_potential, hist_potential_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(abf_TI, abf_TI_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(dU_msld, dU_msld_d, blockCount*sizeof(real), cudaMemcpyDefault);
 }
 
 void reset_abf(System* system){
@@ -910,7 +862,7 @@ void Msld::add_sample_abf(System* system){
   int shMem = 0;
 
   if (system->run) { // need to wait for energy
-    stream=system->run->abfBias;
+    stream=system->run->ossBias;
   }
 
   add_sample_abf_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
@@ -972,9 +924,9 @@ void Msld::add_sample_abf(System* system){
         TI[i] = sum;
         printf("TI 0->1 = %f \n", TI[i]);
         if(oss){
-        real U = max(0.0, temper[i] - temper_min);
+        real U = max(0.0, temper[count + i] - temper_min);
         real factor = exp(-U / (tempering*system->state->leapParms1->kT)) * 100;
-        printf("minFL: %5.2f, ", temper[i]);
+        printf("minFL: %5.2f, ", temper[count + i]);
         printf("tempering: %5.2f %%\n", factor);
         if(factor <= final_temper){
           resetCount++;
@@ -1002,17 +954,16 @@ void Msld::add_sample_abf(System* system){
       count += blocksPerSite[site+1];
     }
     if(resetCount == count && abs(gaussian_weight) > 1e-5){ // all are ready to get reset
-      printf("\n\nResetting storage of weights & counts! Setting gaussian_weight to zero! Adding dG_imp!\n\n");
+      printf("\n\nResetting storage of weights & counts! Setting gaussian_weight to zero! \n\n");
       reset_abf(system);
       gaussian_weight = 0.0;
-      G_imp = true;
     }
   }
 }
 
 // This is done on GPU just to avoid moving data back and forth
 __global__ void getforce_abf_kernel(
-  real* lambdas, real* lambdaForce, real* step_force,
+  real* lambdas, real* lambdaForce, real* TI,
   int num_bins, real L_max, real L_min,
   real* ensemble_dUdL,
   real_e *energy, int nL)
@@ -1045,20 +996,22 @@ __global__ void getforce_abf_kernel(
     }
     dUdL_abf = -dUdL_abf; // we add -'ve of <dU/dL>
     atomicAdd(&lambdaForce[i+1], dUdL_abf);
-    atomicAdd(&step_force[i], dUdL_abf);
-    if (energy) {
-      int start = i*num_bins;
-      for (int j = 0; j < bin - 1; j++) { 
-        real factor = j == 0 ? .5 : 1;
-        lEnergy += factor*(ensemble_dUdL[start+j] + ensemble_dUdL[start+j+1])*(.5/(num_bins-1));
+    int start = i*num_bins;
+    real e = 0; // = -TI
+    for (int j = 0; j < num_bins - 1; j++) { 
+      real factor = j == 0 ? .5 : 1;
+      e += factor*(ensemble_dUdL[start+j] + ensemble_dUdL[start+j+1])*(.5/(num_bins-1));
+      if(j == bin - 1){
+        lEnergy = e;
+        if(dist > 0){
+          lEnergy += (ensemble_dUdL[histBin] + dUdL_abf)*(.5/(num_bins-1));
+        } else {
+          lEnergy += (ensemble_dUdL[histBin-1] + dUdL_abf)*(.5/(num_bins-1));
+        }
       }
-      if(dist > 0){
-        lEnergy += (ensemble_dUdL[histBin] + dUdL_abf)*(.5/(num_bins-1));
-      } else {
-        lEnergy += (ensemble_dUdL[histBin-1] + dUdL_abf)*(.5/(num_bins-1));
-      }
-      lEnergy = -lEnergy; // We add -<dU/dL> to the force
     }
+    lEnergy = -lEnergy; // We add -<dU/dL> to the force
+    TI[i] = -e; // -TI
   }
 
   if (energy) {
@@ -1080,14 +1033,14 @@ void Msld::getforce_abf(System *system, bool calcEnergy) {
     pEnergy=s->energy_d+eebias;
   }
   if (system->run) {
-    stream=system->run->abfBias;
+    stream=system->run->ossBias;
   }
 
   // Change which <dU/dL> we use for ABF forces
   real* dUdL = oss_ensemble_dUdL_d;
   int bins = L_oss_bins;
   getforce_abf_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
-    s->lambda_fd, s->lambdaForce_d, step_force_d,
+    s->lambda_fd, s->lambdaForce_d, abf_TI_d,
     bins, L_max, L_min, dUdL,
     pEnergy, blockCount-1);
 }
@@ -1126,8 +1079,8 @@ void Msld::init_oss(System* system){
 }
 
 __global__ void add_sample_hist_kernel(
-  real kT, int nL, real* lambdas, real* dU_msld, real* hist_potential,
-  real weight, real tempering, real temper_min, real* minL_maxdUdL_d,
+  real kT, int nL, real* lambdas, int* lambdaSites, int* subsPerSite, real* dU_msld, real* hist_potential,
+  real weight, real tempering, real temper_min, real* minL_maxdUdL,
   real* histogram, int* hist_indices,
   int L_bins, real L_max, real L_min, 
   int dUdL_bins, real dUdL_max, real dUdL_min,
@@ -1138,13 +1091,10 @@ __global__ void add_sample_hist_kernel(
     int X =  get_histogram_index(lambdas[i+1], L_bins, L_max, L_min);
     int Y = get_histogram_index(dU_msld[i+1], dUdL_bins, dUdL_max, dUdL_min);
     int index = hist_indices[i] + X*dUdL_bins + Y;
-    real sum = 0.0;
-    for (int j = 0; j < nL; j++) {
-      sum += exp(-hist_potential[j] / kT);
-    }
-    real factorDecouple = exp(-hist_potential[i] / kT) / sum;
+    int site = lambdaSites[i+1];
+    real factorDecouple = 1.0/nL;
     // TODO: Try other tempering
-    real potential = max(0.0, minL_maxdUdL_d[i] - temper_min);
+    real potential = max(0.0, minL_maxdUdL[i] - temper_min);
     real factorTemper = temper ? exp(-potential / (tempering*kT)) : 1.0;
     if (X >= 0 && X < L_bins && Y >= 0 && Y < dUdL_bins) {
       histogram[index] += weight * factorDecouple * factorTemper;
@@ -1169,7 +1119,7 @@ void Msld::add_sample_hist(System* system) {
   }
 
   add_sample_hist_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
-    s->leapParms1->kT, blockCount-1, s->lambda_fd, dU_msld_d, hist_potential_d,
+    s->leapParms1->kT, blockCount-1, s->lambda_fd, lambdaSite_d, blocksPerSite_d, dU_msld_d, hist_potential_d,
     gaussian_weight, tempering, temper_min, minL_maxdUdL_d, oss_histogram_d, oss_index_d,
     L_oss_bins, L_max, L_min, dUdL_bins, dUdL_max, dUdL_min,
     temper);
@@ -1239,18 +1189,16 @@ __global__ void getforce_hist_kernel(
   }
 }
 
-__global__ void getforce_pb_oss(int nL, real kT, real dUdL_max, real* hist_potential, real* dGdF, real* dGdL, real* lambdaForce, real* dU_msld, real_e* energy) {
+__global__ void getforce_pb_oss(int nL, real kT, real dUdL_max, 
+  real* hist_potential, real* dGdF, real* dGdL, 
+  real* lambdas, int* lambdaSites, int* subsPerSite, 
+  real* lambdaForce, real* dU_msld, real_e* energy) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
-    real denom = 0.0;
-    for (int j = 0; j < nL; j++) {
-      denom += exp(-hist_potential[j] / kT);
-    }
-    real pbFactor = exp(-hist_potential[i] / kT) / denom;
-    atomicAdd(&lambdaForce[i+1], pbFactor * dGdL[i+1]);
-    dGdF[i+1] *= pbFactor;
+    atomicAdd(&lambdaForce[i+1], hist_potential[i] + lambdas[i+1]*dGdL[i+1]);
+    dGdF[i+1] *= lambdas[i+1]; 
     if (energy && i==0) {
-      atomicAdd(energy, -kT*log(denom));
+      //atomicAdd(energy, -kT*log(sum));
     }
   }
 }
@@ -1292,6 +1240,7 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
   getforce_pb_oss<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     blockCount-1, system->state->leapParms1->kT, dUdL_max,
     hist_potential_d, dGdF_d, dGdL_d,
+    s->lambda_fd, lambdaSite_d, blocksPerSite_d,
     s->lambdaForce_d, dU_msld_d, pEnergy);
 }
 

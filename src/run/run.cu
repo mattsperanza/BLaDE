@@ -41,12 +41,20 @@ Run::Run(System *system)
   fnmXTC="default.xtc";
   fnmLMD="default.lmd";
   fnmNRG="default.nrg";
+  fnmMTD_LMD = "oss_lmd.dat"; 
+  fnmMTD_dUdL = "oss_dUdL.dat";
+  fnmMTD_HIST = "oss_hist.dat";
+  fnmMTD_ABF = "oss_abf.dat";
   fnmCPI="";
   fnmCPO="default.cpt";
   fpXTC=NULL;
   fpXLMD=NULL;
   fpLMD=NULL;
   fpNRG=NULL;
+  fpMTD_LMD=NULL;
+  fpMTD_dUdL=NULL;
+  fpMTD_HIST=NULL;
+  fpMTD_ABF=NULL;
   freqXTC=1000;
   freqLMD=10;
   freqNRG=10;
@@ -330,6 +338,22 @@ void Run::set_variable(char *line,char *token,System *system)
     if (fpNRG) fclose(fpNRG);
     fpNRG=NULL;
     fnmNRG=io_nexts(line);
+  } else if (strcmp(token,"fnmMTD_LMD")==0) {
+    if (fpMTD_LMD) fclose(fpMTD_LMD);
+    fpMTD_LMD=NULL;
+    fnmMTD_LMD=io_nexts(line);
+  } else if (strcmp(token,"fnmMTD_dUdL")==0) {
+    if (fpMTD_dUdL) fclose(fpMTD_dUdL);
+    fpMTD_dUdL=NULL;
+    fnmMTD_dUdL=io_nexts(line);
+  } else if (strcmp(token,"fnmMTD_HIST")==0) {
+    if (fpMTD_HIST) fclose(fpMTD_HIST);
+    fpMTD_HIST=NULL;
+    fnmMTD_HIST=io_nexts(line);
+  } else if (strcmp(token,"fnmMTD_ABF")==0) {
+    if (fpMTD_ABF) fclose(fpMTD_ABF);
+    fpMTD_ABF=NULL;
+    fnmMTD_ABF=io_nexts(line);
   } else if (strcmp(token,"fnmcpi")==0) {
     fnmCPI=io_nexts(line);
   } else if (strcmp(token,"fnmcpo")==0) {
@@ -340,6 +364,8 @@ void Run::set_variable(char *line,char *token,System *system)
     freqLMD=io_nexti(line);
   } else if (strcmp(token,"freqnrg")==0) {
     freqNRG=io_nexti(line);
+  } else if (strcmp(token, "freqmtd") == 0){
+    freqMTD=io_nexti(line);
   } else if (strcmp(token,"hrlmd")==0) {
     hrLMD=io_nextb(line);
   } else if (strcmp(token,"prettyxtc")==0) {
@@ -792,6 +818,10 @@ void Run::dynamics_initialize(System *system)
 #ifdef REPLICAEXCHANGE
   if (!fpREx && freqREx>0) fpREx=fpopen(fnmREx.c_str(),"w");
 #endif
+  if (!fpMTD_LMD) fpMTD_LMD=fpopen(fnmMTD_LMD.c_str(),"w");
+  if (!fpMTD_dUdL) fpMTD_dUdL=fpopen(fnmMTD_dUdL.c_str(),"w");
+  if (!fpMTD_HIST) fpMTD_HIST=fpopen(fnmMTD_HIST.c_str(),"w");
+  if (!fpMTD_ABF) fpMTD_ABF=fpopen(fnmMTD_ABF.c_str(),"w");
 
   // Finish setting up MSLD
   system->msld->initialize(system);

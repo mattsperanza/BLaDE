@@ -61,11 +61,11 @@ public:
   real* dGdF_d;
   real* dGdL_d; // this is used for both meta and oss
   real* dU_msld_d;
-  bool G_imp = false; // flag of whether we subtract dG_imp from forces to account for OSS bias
-  real* dG_imp_d; // -kbT*ln(p) where p is probability of a lambda bin uses 10 million samples
-  int G_imp_bins = 101; // dG_imp has this-1 bins
-  real dG_imp_scale = .2; // scale forces from dG_imp by this to avoid over trapping (oss doesn't fill well completely)
+  real* dU_msld;
   real* hist_potential_d; // [blockCount] potential from metadynamics
+  real* hist_potential;
+  real* abf_TI_d; // [blockCount] potential from abf
+  real* abf_TI;
   real* step_force_d; // force from bias
   // Just in case we get ideas for later
   real L_max = 1.0;
@@ -89,9 +89,9 @@ public:
 
   // Meta options
   bool temper = true;
-  real tempering = 4.0; // constant for decay of bias magnitude
+  real tempering = 3.0; // constant for decay of bias magnitude
   real temper_min = 1.0; // add at least 1 kcal/mol (felt) bias for every l bin before tempering
-  real final_temper = 20; // Percent of tempering before zeroing out gaussian_weight - set to zero to never do it
+  real final_temper = 20; // Percent of tempering before zeroing out gaussian_weight - zero never ends 
   real gaussian_weight = .01; // TODO: Determine if this should be higher
 
   // Don't change?
@@ -100,8 +100,8 @@ public:
   real dUdL_min = -500;
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
-  real L_std = 2.0*L_resolution;
-  real dUdL_std = 2.0*dUdL_resolution;
+  real L_std = 2.0*L_resolution; // .01
+  real dUdL_std = 2.0*dUdL_resolution; // 4
   int L_search = 3.0*(L_std/L_resolution); // ~3 L std in each direction
   int dUdL_search = 3.0*(dUdL_std/dUdL_resolution); // ~3 dUdL std in each direction
 
@@ -177,10 +177,6 @@ public:
   void getforce_atomRestraints(System *system,bool calcEnergy);
   void getforce_chargeRestraints(System *system,bool calcEnergy);
 
-  // Implicit constraints entropy
-  void calc_imp(System* system);
-  void sub_imp_dGdL(System* system, cudaStream_t stream); // adds -dG_imp to dU_msld based on site
-
   // Enhanced sampling
   void init_abf(System* system);
   void add_sample_abf(System *system);
@@ -192,6 +188,8 @@ public:
   void get_tempering_hist(System* system);
   void getpotential_hist(System* system);
   void getforce_hist(System *system, bool calcEnergy);
+
+  void recv_meta();
 };
 
 void parse_msld(char *line,System *system);
