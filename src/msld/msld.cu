@@ -427,10 +427,14 @@ void parse_msld(char *line,System *system)
   } else if (strcmp(token, "oss_abf") == 0){
     system->msld->oss_abf=io_nextb(line);
     system->msld->abf=system->msld->oss_abf;
+  } else if (strcmp(token, "abf") == 0){
+    system->msld->abf=io_nextb(line);
   } else if (strcmp(token, "bias_mag") == 0) {
     system->msld->gaussian_weight=io_nextf(line);
-  } else if (strcmp(token, "L_bins") == 0){
+  } else if (strcmp(token, "L_oss_bins") == 0){
     system->msld->L_oss_bins=io_nexti(line);
+  } else if (strcmp(token, "L_abf_bins") == 0){
+    system->msld->L_abf_bins=io_nexti(line);
   } else if (strcmp(token, "dUdL_bins") == 0){
     system->msld->dUdL_bins=io_nexti(line);
   } else if (strcmp(token, "dUdL_max") == 0){
@@ -821,6 +825,7 @@ void Msld::init_abf(System* system){
   cudaMalloc(&abf_histogram_d, nL*n_edges*sizeof(real));
   cudaMalloc(&offsets_d, nL*n_edges*sizeof(real));
   cudaMalloc(&weights_d, nL*n_edges*sizeof(real));
+  cudaMalloc(&average_dUdL_d, nL*n_edges*sizeof(real));
   reset_abf(system); // init mem to zeros
 }
 
@@ -829,7 +834,7 @@ __global__ void add_sample_abf_kernel(
   real* lambdas, real* dU_msld, real* hist_potential,
   real* histogram_counts, int* hist_indices, 
   int num_bins, real L_max, real L_min, 
-  real* offsets, real* weights) {
+  real* offsets, real* weights, real* average_dUdL) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if(i<nL) {
     // PBMeta Bias
@@ -842,7 +847,9 @@ __global__ void add_sample_abf_kernel(
     int bin = get_histogram_index(lambda, num_bins, L_max, L_min); 
     int hist_bin = bin + hist_indices[i];
     real dUdL = dU_msld[i+1]; // lambdaForce before biasing forces
+    average_dUdL[hist_bin] = average_dUdL[hist_bin]*histogram_counts[hist_bin] + dUdL;
     histogram_counts[hist_bin] += 1;
+    average_dUdL[hist_bin] /= histogram_counts[hist_bin];
     real beta = 1 / kT;
     real bias = beta * potEnergy;
     if (bias >= offsets[hist_bin]) { // largest boltzmann weight = 1
@@ -869,20 +876,22 @@ void Msld::add_sample_abf(System* system){
     s->leapParms1->kT, blockCount-1,
     s->lambda_fd, dU_msld_d, hist_potential_d,
     abf_histogram_d, abf_index_d, L_abf_bins, L_max, L_min,
-    offsets_d, weights_d);
+    offsets_d, weights_d, average_dUdL_d);
 
   // Logging for testing
   // Copy to host and print out info
   if (system->run->step % 10000 == 0){
     int len = (blockCount-1)*L_abf_bins;
     int lenOss = (blockCount-1)*L_oss_bins;
-    real counts[len], ens_dUdL[len], ave_dUdL[len], weights[len], offsets[len];
+    real counts[len], ens_dUdL[len], ave_dUdL[len], weights[len], offsets[len], average_dUdL[len];
     real oss_ens_dUdL[lenOss], oss_Z[lenOss], oss_Z_off[lenOss];
-    real Z[blockCount-1], Z_off[blockCount-1], temper[blockCount-1];
+    real Z[blockCount-1], Z_off[blockCount-1], temper[blockCount-1], bias[blockCount-1];
     int indices[blockCount-1], oss_indices[blockCount-1];
     cudaMemcpy(counts, abf_histogram_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     cudaMemcpy(oss_ens_dUdL, oss_ensemble_dUdL_d, lenOss*sizeof(real), cudaMemcpyDeviceToHost);
     cudaMemcpy(weights, weights_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+    cudaMemcpy(average_dUdL, average_dUdL_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+    cudaMemcpy(bias, abf_TI_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
     cudaMemcpy(offsets, offsets_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     cudaMemcpy(indices, abf_index_d, (blockCount-1)*sizeof(int), cudaMemcpyDeviceToHost);
     cudaMemcpy(oss_Z, oss_Z_d, lenOss*sizeof(real), cudaMemcpyDefault);
@@ -891,12 +900,11 @@ void Msld::add_sample_abf(System* system){
       cudaMemcpy(temper, minL_maxdUdL_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
     }
     int count = 0; // Start of site
-    int resetCount = 0; // Reset weights after all tempering < #%
+    int resetCount = 0; // Reset weights after all tempering < final_temper%
     system->state->recv_lambda();
     printf("Step: %ld\n", system->run->step);
     for (int site = 0; site < siteCount-1; site++) {
       real fractionPhysical = 0.0;
-      real TI[blocksPerSite[site+1]];
       real p[blocksPerSite[site+1]];
       // Sampling info
       real samples = 0;
@@ -907,8 +915,13 @@ void Msld::add_sample_abf(System* system){
         if (tracking_only) {
           printf("Tracking only mode!!\n");
         }
-        int physical = counts[start+system->msld->L_abf_bins-1];
-        printf("Count >= %3.2f: %d / ", 1.0 - .5/(system->msld->L_abf_bins-1.0), physical);
+        real width = 1.0/(L_abf_bins-1);
+        int bins = ceil(.01/width);
+        int physical = 0;
+        for(int j = 0; j < bins; j++){
+          physical+=counts[start+L_abf_bins-1-j];
+        }
+        printf("Count >= .99: %d / ", physical);
         fractionPhysical += physical;
         samples = 0;
         for (int j = 0; j < L_abf_bins; j++) {
@@ -916,22 +929,15 @@ void Msld::add_sample_abf(System* system){
         }
         printf("%d\n", (int) samples);
         real sum = 0;
-        for (int j = 0; j < L_oss_bins-1; j++) {
-          real factor = j == 0 || j == L_oss_bins-2 ? .5 : 1.0;
-          real width = factor * (L_max - L_min) / (L_oss_bins-1.0);
-          sum += width * (oss_ens_dUdL[start_oss + j] + oss_ens_dUdL[start_oss + j+1]) / 2.0;
-        }
-        TI[i] = sum;
-        printf("TI 0->1 = %f \n", TI[i]);
         if(oss){
-        real U = max(0.0, temper[count + i] - temper_min);
-        real factor = exp(-U / (tempering*system->state->leapParms1->kT)) * 100;
-        printf("minFL: %5.2f, ", temper[count + i]);
-        printf("tempering: %5.2f %%\n", factor);
-        if(factor <= final_temper){
-          resetCount++;
-        }
-        printf("\n");
+          real U = max(0.0, temper[count + i] - temper_min);
+          real factor = exp(-U / (tempering*system->state->leapParms1->kT)) * 100;
+          printf("minFL: %5.2f, ", temper[count + i]);
+          printf("tempering: %5.2f %%\n", factor);
+          if(factor <= final_temper){
+            resetCount++;
+          }
+          printf("\n");
         }
       }
       fractionPhysical /= samples;
@@ -946,7 +952,7 @@ void Msld::add_sample_abf(System* system){
         // pj/pi = (wj/wi)*(Zi/Zj) -> Z's are the same
         real rel_weight = weights[jdx] * exp(offsets[jdx]-offsets[idx]) / weights[idx];
         real logProb = -system->state->leapParms1->kT*log(rel_weight);
-        real dG = logProb + TI[j] - TI[0]; // bias by -TI with abf (TI defined per site)
+        real dG = logProb - (bias[count + j] - bias[count]); 
         printf("%6.3f, ", dG);
       }
       printf(" ]\n");
@@ -954,8 +960,7 @@ void Msld::add_sample_abf(System* system){
       count += blocksPerSite[site+1];
     }
     if(resetCount == count && abs(gaussian_weight) > 1e-5){ // all are ready to get reset
-      printf("\n\nResetting storage of weights & counts! Setting gaussian_weight to zero! \n\n");
-      reset_abf(system);
+      printf("\n\nSetting gaussian_weight to zero! \n\n");
       gaussian_weight = 0.0;
     }
   }
@@ -1037,8 +1042,8 @@ void Msld::getforce_abf(System *system, bool calcEnergy) {
   }
 
   // Change which <dU/dL> we use for ABF forces
-  real* dUdL = oss_ensemble_dUdL_d;
-  int bins = L_oss_bins;
+  real* dUdL = oss_abf ? oss_ensemble_dUdL_d : average_dUdL_d;
+  int bins = oss_abf ? L_oss_bins : L_abf_bins;
   getforce_abf_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->lambda_fd, s->lambdaForce_d, abf_TI_d,
     bins, L_max, L_min, dUdL,
@@ -1092,8 +1097,16 @@ __global__ void add_sample_hist_kernel(
     int Y = get_histogram_index(dU_msld[i+1], dUdL_bins, dUdL_max, dUdL_min);
     int index = hist_indices[i] + X*dUdL_bins + Y;
     int site = lambdaSites[i+1];
-    real factorDecouple = 1.0/nL;
-    // TODO: Try other tempering
+    int skip = 0;
+    for (int j = 1; j < site; j++){
+      skip += subsPerSite[j];
+    }
+    real sum = 0;
+    for (int j = 0; j < subsPerSite[site]; j++){
+      sum += exp(-hist_potential[skip+j]/kT);
+    }
+    //real factorDecouple = exp(-hist_potential[i])/sum;
+    real factorDecouple = 1.0 / nL;
     real potential = max(0.0, minL_maxdUdL[i] - temper_min);
     real factorTemper = temper ? exp(-potential / (tempering*kT)) : 1.0;
     if (X >= 0 && X < L_bins && Y >= 0 && Y < dUdL_bins) {
@@ -1195,9 +1208,29 @@ __global__ void getforce_pb_oss(int nL, real kT, real dUdL_max,
   real* lambdaForce, real* dU_msld, real_e* energy) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
+    int site = lambdaSites[i+1];
+    int skip = 0;
+    for (int j = 1; j < site; j++){
+      skip += subsPerSite[j];
+    }
+    real sum = 0;
+    for (int j = 0; j < subsPerSite[site]; j++){
+      sum += exp(-hist_potential[skip+j]/kT);
+    }
+    real pb = exp(-hist_potential[i] / kT) / sum;
+    //atomicAdd(&lambdaForce[i+1], pb*dGdL[i+1]);
+    //dGdF[i+1] *= pb; 
     atomicAdd(&lambdaForce[i+1], hist_potential[i] + lambdas[i+1]*dGdL[i+1]);
     dGdF[i+1] *= lambdas[i+1]; 
+    __syncthreads();
     if (energy && i==0) {
+      real pot = 0; 
+      for(int j = 0; j < nL; j++){
+        pot += lambdas[j+1]*hist_potential[j];
+      }
+      for (int j = 0; j<nL; j++){
+        hist_potential[j] = pot;
+      }
       //atomicAdd(energy, -kT*log(sum));
     }
   }

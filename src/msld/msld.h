@@ -115,6 +115,7 @@ public:
   real* abf_histogram_d; // counts in bin -> also used for 1D meta
   real* weights_d;
   real* offsets_d;
+  real* average_dUdL_d;
 
   int thetaCollBiasCount;
   real *kThetaCollBias;

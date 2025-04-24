@@ -1691,7 +1691,7 @@ void Potential::calc_force(int step,System *system) {
       cudaEventRecord(r->ossRecipComplete, r->ossRecip);
       cudaStreamWaitEvent(r->updateStream, r->ossRecipComplete, 0);
     }
-    if (system->msld->oss_abf) {
+    if (system->msld->abf) {
       system->msld->getforce_abf(system, calcEnergy);
       if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
         system->msld->add_sample_abf(system);
