@@ -482,7 +482,7 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
   if (system->msld->abf) {
     int bins = system->msld->oss_abf ? system->msld->L_oss_bins : system->msld->L_abf_bins;
     real* abf_potential = (real*)malloc(bins * nL * sizeof(real));
-    real* dUdL_d = system->msld->oss_ensemble_dUdL_d;
+    real* dUdL_d = system->msld->oss_abf ? system->msld->oss_ensemble_dUdL_d : system->msld->average_dUdL_d;
     cudaMemcpy(abf_potential, dUdL_d, bins * nL * sizeof(real), cudaMemcpyDefault);
 
     file << "# ABF <dU/dL>\n";

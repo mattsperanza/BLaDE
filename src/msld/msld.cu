@@ -734,7 +734,6 @@ void Msld::initialize(System *system)
   // Thermodynamic Integration/Metadynamics/OST variables
   cudaMalloc(&dU_msld_d, blockCount*sizeof(real)); // lambda force prior to biasing
   dU_msld = (real*)malloc(blockCount*sizeof(real));
-  cudaMalloc(&step_force_d, (blockCount-1)*sizeof(real));
   cudaMalloc(&hist_potential_d, (blockCount-1)*sizeof(real)); // use blockCount so that it is indexed same as lambda array
   cudaMalloc(&abf_TI_d, (blockCount-1)*sizeof(real));
   cudaMemset(hist_potential_d, 0, (blockCount-1)*sizeof(real));
@@ -959,9 +958,9 @@ void Msld::add_sample_abf(System* system){
       printf("\n\n");
       count += blocksPerSite[site+1];
     }
-    if(resetCount == count && abs(gaussian_weight) > 1e-5){ // all are ready to get reset
-      printf("\n\nSetting gaussian_weight to zero! \n\n");
-      gaussian_weight = 0.0;
+    if(resetCount == count){ 
+      printf("\nEnding all bias updates!\n\n");
+      update_fe_surface = false;
     }
   }
 }
@@ -983,7 +982,7 @@ __global__ void getforce_abf_kernel(
     int bin = get_histogram_index(lambda, num_bins, L_max, L_min);
     int histBin = bin + i*num_bins;
     // Lerp implementation of ABF 
-    real res = 1.0/(num_bins-1); // first and last are half bins so -1 total bins in range [L_max, L_min)
+    real res = 1.0/(num_bins-1.0); 
     real center = bin*res;
     real dUdL = ensemble_dUdL[histBin];
     real dist = lambda-center;
@@ -1004,14 +1003,13 @@ __global__ void getforce_abf_kernel(
     int start = i*num_bins;
     real e = 0; // = -TI
     for (int j = 0; j < num_bins - 1; j++) { 
-      real factor = j == 0 ? .5 : 1;
-      e += factor*(ensemble_dUdL[start+j] + ensemble_dUdL[start+j+1])*(.5/(num_bins-1));
+      e += (ensemble_dUdL[start+j] + ensemble_dUdL[start+j+1])*(.5/(num_bins-1.0));
       if(j == bin - 1){
         lEnergy = e;
         if(dist > 0){
-          lEnergy += (ensemble_dUdL[histBin] + dUdL_abf)*(.5/(num_bins-1));
+          lEnergy += (ensemble_dUdL[histBin] + dUdL_abf)*(.5/(num_bins-1.0));
         } else {
-          lEnergy += (ensemble_dUdL[histBin-1] + dUdL_abf)*(.5/(num_bins-1));
+          lEnergy += (ensemble_dUdL[histBin-1] + dUdL_abf)*(.5/(num_bins-1.0));
         }
       }
     }

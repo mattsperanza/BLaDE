@@ -66,7 +66,6 @@ public:
   real* hist_potential;
   real* abf_TI_d; // [blockCount] potential from abf
   real* abf_TI;
-  real* step_force_d; // force from bias
   // Just in case we get ideas for later
   real L_max = 1.0;
   real L_min = 0.0;
@@ -89,10 +88,10 @@ public:
 
   // Meta options
   bool temper = true;
-  real tempering = 3.0; // constant for decay of bias magnitude
+  real tempering = 1.0; // constant for decay of bias magnitude
   real temper_min = 1.0; // add at least 1 kcal/mol (felt) bias for every l bin before tempering
-  real final_temper = 20; // Percent of tempering before zeroing out gaussian_weight - zero never ends 
-  real gaussian_weight = .01; // TODO: Determine if this should be higher
+  real final_temper = 10; // Percent of tempering in all blocks before ending sampling
+  real gaussian_weight = .01; 
 
   // Don't change?
   int dUdL_bins = 2501; // # of whole bins that fit in range [dUdL_min, dUdL_max]

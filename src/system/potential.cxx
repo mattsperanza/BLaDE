@@ -1653,19 +1653,29 @@ void Potential::calc_force(int step,System *system) {
     cudaStreamWaitEvent(r->ossBias, r->nbrecipComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
-    // Reset Storage
+    // Get force field forces
     cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->ossBias);
-    cudaMemsetAsync(system->msld->step_force_d, 0, (system->state->lambdaCount-1)*sizeof(real), system->run->ossBias);
+    // Calculate & subtract abf from lambdaForce 
+    if (system->msld->abf) { // TODO: Make sure that oss_abf not possible
+      system->msld->getforce_abf(system, calcEnergy);
+      if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
+        system->msld->add_sample_abf(system);
+      }
+      // Recopy forces such that OSS sees dU_msld - ABF
+      if (!system->msld->oss_abf) {
+        cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->ossBias);
+      }
+    }
+    // Calculate dGdF from histogram
+    cudaMemsetAsync(system->msld->hist_potential_d, 0, (system->msld->blockCount-1)*sizeof(real), r->ossBias);
     cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
     cudaMemsetAsync(system->msld->dGdL_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
-    cudaMemsetAsync(system->msld->hist_potential_d, 0, (system->msld->blockCount-1)*sizeof(real), r->ossBias);
-    // Calculate dGdF from histogram
     system->msld->getforce_hist(system,calcEnergy);
     if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
       system->msld->add_sample_hist(system);
     }
-    cudaEventRecord(r->ossBiasComplete, r->ossBias);
     // Wait on calculation of dGdF then add OSS forces directly into force array
+    cudaEventRecord(r->ossBiasComplete, r->ossBias);
     if (system->id == helper) {
       cudaStreamWaitEvent(r->ossBonded, r->ossBiasComplete, 0);
       getforce_bond_oss(system);
@@ -1690,12 +1700,6 @@ void Potential::calc_force(int step,System *system) {
       getforce_ewald_oss(system);
       cudaEventRecord(r->ossRecipComplete, r->ossRecip);
       cudaStreamWaitEvent(r->updateStream, r->ossRecipComplete, 0);
-    }
-    if (system->msld->abf) {
-      system->msld->getforce_abf(system, calcEnergy);
-      if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
-        system->msld->add_sample_abf(system);
-      }
     }
   }
 
