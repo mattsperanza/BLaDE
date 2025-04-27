@@ -414,7 +414,7 @@ void print_dynamics_output(int step,System *system)
       system->state->recv_energy();
       print_nrg(step,system);
     }
-    if (step % system->run->freqMTD == 0 && system->msld->oss){
+    if (step % system->run->freqMTD == 0 && system->msld->oss && !system->msld->update_fe_surface){
       system->state->recv_lambda();
       system->msld->recv_meta();
       print_meta(step, system);

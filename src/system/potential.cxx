@@ -1578,8 +1578,8 @@ void Potential::calc_force(int step,System *system) {
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
-  if ((system->msld->oss || system->msld->abf) && system->msld->update_fe_surface) { // Need energy to add sample for <dU/dL> weighting
-    calcEnergy = calcEnergy || step % system->msld->sample_freq == 0;
+  if ((system->msld->oss || system->msld->abf)) { // Need energy to add sample for <dU/dL> weighting
+    calcEnergy = calcEnergy || step % system->msld->sample_freq ==0 || step % system->run->freqMTD == 0;
   }
 #ifdef REPLICAEXCHANGE
   if (system->run->freqREx>0) {
