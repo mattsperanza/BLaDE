@@ -115,6 +115,7 @@ public:
   real* weights_d;
   real* offsets_d;
   real* average_dUdL_d;
+  real* weighted_dUdL_d;
   real* dABF_dL_d; // [nBlock-1] slope of ABF lerp
 
   int thetaCollBiasCount;

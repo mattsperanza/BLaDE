@@ -811,6 +811,7 @@ void reset_abf(System* system){
   cudaMemset(m->abf_histogram_d, 0, nL*n_edges*sizeof(real));
   cudaMemset(m->offsets_d, 0, nL*n_edges*sizeof(real)); // bias always > offset at beginning
   cudaMemset(m->weights_d, 0, nL*n_edges*sizeof(real));
+  cudaMemset(m->weighted_dUdL_d, 0, nL*n_edges*sizeof(real));
   cudaMemset(m->average_dUdL_d, 0,nL*n_edges*sizeof(real));
   cudaMemset(m->dABF_dL_d, 0,nL*sizeof(real));
 }
@@ -828,6 +829,8 @@ void Msld::init_abf(System* system){
   cudaMalloc(&offsets_d, nL*n_edges*sizeof(real));
   cudaMalloc(&weights_d, nL*n_edges*sizeof(real));
   cudaMalloc(&average_dUdL_d, nL*n_edges*sizeof(real));
+  cudaMalloc(&weights_d, nL*n_edges*sizeof(real));
+  cudaMalloc(&weighted_dUdL_d, nL*n_edges*sizeof(real));
   cudaMalloc(&dABF_dL_d, nL*sizeof(real));
   reset_abf(system); // init mem to zeros
 }
@@ -837,15 +840,10 @@ __global__ void add_sample_abf_kernel(
   real* lambdas, real* dU_msld, real* hist_potential,
   real* histogram_counts, int* hist_indices, 
   int num_bins, real L_max, real L_min, 
-  real* offsets, real* weights, real* average_dUdL) {
+  real* offsets, real* weights, real* weighted_dUdL, real* average_dUdL) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if(i<nL) {
-    // PBMeta Bias
-    real sum = 0;
-    for (int j = 0; j < nL; j++) {
-      sum += exp(-hist_potential[j]/kT);
-    }
-    real potEnergy = -kT*log(sum);
+    real pot = hist_potential[0]; // hist_pot in every element
     real lambda = lambdas[i+1];
     int bin = get_histogram_index(lambda, num_bins, L_max, L_min); 
     int hist_bin = bin + hist_indices[i];
@@ -854,13 +852,15 @@ __global__ void add_sample_abf_kernel(
     histogram_counts[hist_bin] += 1;
     average_dUdL[hist_bin] /= histogram_counts[hist_bin];
     real beta = 1 / kT;
-    real bias = beta * potEnergy;
+    real bias = beta * pot;
     if (bias >= offsets[hist_bin]) { // largest boltzmann weight = 1
       real correction = exp(offsets[hist_bin]-bias); // exp(U-old)*exp(old-new) = exp(U-new)
       offsets[hist_bin] = bias;
       weights[hist_bin] *= correction;
     }
     weights[hist_bin] += exp(bias - offsets[hist_bin]);
+    weighted_dUdL[hist_bin] += dUdL*exp(bias - offsets[hist_bin]);
+    //average_dUdL[hist_bin] = weighted_dUdL[hist_bin] / weights[hist_bin];
   }
 }
 
@@ -879,7 +879,7 @@ void Msld::add_sample_abf(System* system){
     s->leapParms1->kT, blockCount-1,
     s->lambda_fd, dU_msld_d, hist_potential_d,
     abf_histogram_d, abf_index_d, L_abf_bins, L_max, L_min,
-    offsets_d, weights_d, average_dUdL_d);
+    offsets_d, weights_d, weighted_dUdL_d, average_dUdL_d);
 
   // Logging for testing
   // Copy to host and print out info
@@ -1101,16 +1101,12 @@ __global__ void add_sample_hist_kernel(
     int Y = get_histogram_index(dU_msld[i+1], dUdL_bins, dUdL_max, dUdL_min);
     int index = hist_indices[i] + X*dUdL_bins + Y;
     int site = lambdaSites[i+1];
-    int skip = 0;
-    for (int j = 1; j < site; j++){
-      skip += subsPerSite[j];
-    }
+    // PB Meta over every block
     real sum = 0;
-    // PB Meta over each site
-    for (int j = 0; j < subsPerSite[site]; j++){
-      sum += exp(-lambdas[skip+j+1]*hist_potential[skip+j]/kT);
+    for (int j = 0; j < nL; j++){
+      sum += exp(-hist_potential[j]/kT);
     }
-    real factorDecouple = exp(-lambdas[i+1]*hist_potential[i])/sum;
+    real factorDecouple = exp(-hist_potential[i])/sum;
     real potential = max(0.0, minL_maxdUdL[i] - temper_min);
     real factorTemper = temper ? exp(-potential / (tempering*kT)) : 1.0;
     if (X >= 0 && X < L_bins && Y >= 0 && Y < dUdL_bins) {
@@ -1209,36 +1205,24 @@ __global__ void getforce_hist_kernel(
 __global__ void getforce_pb_oss(int nL, real kT, real dUdL_max, 
   real* hist_potential, real* dGdF, real* dGdL, 
   real* lambdas, int* lambdaSites, int* subsPerSite, 
-  real* lambdaForce, real* dU_msld, bool oss_abf, real* dABF_dl, bool update_fe, real_e* energy) {
+  real* lambdaForce, real* dU_msld, bool sub_abf, real* dABF_dl, bool update_fe, real_e* energy) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
-    int site = lambdaSites[i+1];
-    int skip = 0;
-    for (int j = 1; j < site; j++){
-      skip += subsPerSite[j];
-    }
     real sum = 0;
-    // PB Meta over every site 
-    for (int j = 0; j < subsPerSite[site]; j++){
-      sum += exp(-lambdas[skip+j+1]*hist_potential[skip+j]/kT);
+    for (int j = 0; j < nL; j++){ 
+      sum += exp(-hist_potential[j]/kT);
     }
-    // Switch to concurrent after bias updates are finished??
-    real pb = exp(-lambdas[i+1]*hist_potential[i] / kT) / sum;
-    if (!oss_abf){ // if we subtracted ABF from dU/dL
+    real pb = exp(-hist_potential[i] / kT) / sum;
+
+    // If we subtracted ABF from dU/dL before OSS sampling
+    if (sub_abf){ 
       dGdL[i+1] -= dGdF[i+1]*dABF_dl[i];
     }
-    atomicAdd(&lambdaForce[i+1], pb*(hist_potential[i] + lambdas[i+1]*dGdL[i+1]));
-    dGdF[i+1] *= pb*lambdas[i+1]; 
-    hist_potential[i] = -kT*log(sum) / subsPerSite[site];
-    __syncthreads();
+
+    // Add forces
+    atomicAdd(&lambdaForce[i+1], (hist_potential[i] + lambdas[i+1]*dGdL[i+1]));
+    dGdF[i+1] *= lambdas[i+1]; 
     if (energy && i==0) {
-      real pot = 0;
-      for(int j = 0; j < nL; j++){
-        pot += hist_potential[j];
-      }
-      for (int j = 0; j<nL; j++){
-        hist_potential[j] = pot;
-      }
       //atomicAdd(energy, -kT*log(sum));
     }
   }
@@ -1282,7 +1266,7 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
     blockCount-1, system->state->leapParms1->kT, dUdL_max,
     hist_potential_d, dGdF_d, dGdL_d,
     s->lambda_fd, lambdaSite_d, blocksPerSite_d,
-    s->lambdaForce_d, dU_msld_d, oss_abf, dABF_dL_d, update_fe_surface, pEnergy);
+    s->lambdaForce_d, dU_msld_d, !oss_abf && abf, dABF_dL_d, update_fe_surface, pEnergy);
 }
 
 __global__ void getpotential_hist_kernel(
