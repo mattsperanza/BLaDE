@@ -1655,15 +1655,16 @@ void Potential::calc_force(int step,System *system) {
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
     // Get force field forces
     cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->ossBias);
+    // Subtract ALF forces and reset alf force mem
+    system->msld->sub_alf(system->msld->dU_msld_d, system->msld->dU_alf_d, system->msld->blockCount, r->ossBias);
+    cudaMemsetAsync(system->msld->dU_alf_d, 0, system->msld->blockCount*sizeof(real));
     // Calculate & subtract abf from lambdaForce 
-    if (system->msld->abf) { // TODO: Make sure that oss_abf not possible
-      system->msld->getforce_abf(system, calcEnergy);
+    if (system->msld->abf) { 
+      if(!system->msld->tracking_only){
+        system->msld->getforce_abf(system, calcEnergy);
+      }
       if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
         system->msld->add_sample_abf(system);
-      }
-      // Recopy forces such that OSS sees dU_msld - ABF
-      if (!system->msld->oss_abf) {
-        cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, system->run->ossBias);
       }
     }
     // Calculate dGdF from histogram
@@ -1673,6 +1674,11 @@ void Potential::calc_force(int step,System *system) {
     system->msld->getforce_hist(system,calcEnergy);
     if (system->msld->update_fe_surface && step % system->msld->sample_freq == 0 && step != 0) {
       system->msld->add_sample_hist(system);
+    }
+    // End Bias updates after a certain amount of time
+    if(system->run->step >= system->msld->update_steps && system->msld->update_fe_surface){
+      printf("\nEnding all bias updates!\n\n");
+      system->msld->update_fe_surface = false;
     }
     // Wait on calculation of dGdF then add OSS forces directly into force array
     cudaEventRecord(r->ossBiasComplete, r->ossBias);

@@ -58,8 +58,10 @@ public:
   // FE Estimation Variables -> need to be on/off before msld::init is called
   bool update_fe_surface = true; // add samples to abf/meta/oss
   int sample_freq = 10;
+  int update_steps = 500000; // timesteps of sampling while updating FE surface
   real* dGdF_d;
   real* dGdL_d; // this is used for both meta and oss
+  real* dU_alf_d;
   real* dU_msld_d;
   real* dU_msld;
   real* hist_potential_d; // [blockCount] potential from metadynamics
@@ -88,7 +90,7 @@ public:
 
   // Meta options
   bool temper = true; // Using defaults, bias stops at ~2 kcal min per block
-  real tempering = 1.0; // constant for decay of bias magnitude
+  real tempering = 2.0; // constant for decay of bias magnitude
   real temper_min = 1.0; // add at least 1 kcal/mol (felt) bias for every l bin before tempering
   real final_temper = 20; // Percent of tempering in all blocks before ending sampling
   real gaussian_weight = .01; 
@@ -178,6 +180,8 @@ public:
   void getforce_thetaBias(System *system,bool calcEnergy);
   void getforce_atomRestraints(System *system,bool calcEnergy);
   void getforce_chargeRestraints(System *system,bool calcEnergy);
+
+  void sub_alf(real* dU_msld_d, real* dU_alf_d, int len, cudaStream_t stream);
 
   // Enhanced sampling
   void init_abf(System* system);

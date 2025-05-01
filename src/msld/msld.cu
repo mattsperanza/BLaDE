@@ -462,6 +462,8 @@ void parse_msld(char *line,System *system)
     if (system->msld->tracking_only) {
       system->msld->abf = true;
     }
+  } else if (strcmp(token, "update_steps") == 0){
+    system->msld->update_steps=io_nexti(line);
   } else if (strcmp(token, "update_fe") == 0) {
     system->msld->update_fe_surface=io_nextb(line);
   } else if (strcmp(token, "sample_freq") == 0){
@@ -733,6 +735,7 @@ void Msld::initialize(System *system)
 
   // Thermodynamic Integration/Metadynamics/OST variables
   cudaMalloc(&dU_msld_d, blockCount*sizeof(real)); // lambda force prior to biasing
+  cudaMalloc(&dU_alf_d, blockCount*sizeof(real));
   dU_msld = (real*)malloc(blockCount*sizeof(real));
   cudaMalloc(&hist_potential_d, (blockCount-1)*sizeof(real)); // use blockCount so that it is indexed same as lambda array
   cudaMalloc(&abf_TI_d, (blockCount-1)*sizeof(real));
@@ -801,6 +804,19 @@ void Msld::recv_meta(){
   cudaMemcpy(hist_potential, hist_potential_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(abf_TI, abf_TI_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(dU_msld, dU_msld_d, blockCount*sizeof(real), cudaMemcpyDefault);
+}
+
+
+__global__ void sub_alf_kernel(real* dU_msld, real* dU_alf, int nL){
+  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  if(i<nL) { // Once per element
+    dU_msld[i] -= dU_alf[i];
+  }
+}
+
+
+void Msld::sub_alf(real* dU_msld_d, real* dU_alf_d, int len, cudaStream_t stream){
+  sub_alf_kernel<<<(len+BLMS-1)/BLMS,BLMS,0,stream>>>(dU_msld_d, dU_alf_d, len);
 }
 
 // Don't use this
@@ -881,7 +897,6 @@ void Msld::add_sample_abf(System* system){
     abf_histogram_d, abf_index_d, L_abf_bins, L_max, L_min,
     offsets_d, weights_d, weighted_dUdL_d, average_dUdL_d);
 
-  // Logging for testing
   // Copy to host and print out info
   if (system->run->step % 10000 == 0){
     int len = (blockCount-1)*L_abf_bins;
@@ -900,7 +915,7 @@ void Msld::add_sample_abf(System* system){
     cudaMemcpy(oss_Z, oss_Z_d, lenOss*sizeof(real), cudaMemcpyDefault);
     cudaMemcpy(oss_Z_off, oss_Z_offset_d, lenOss*sizeof(real), cudaMemcpyDefault);
     if (oss) {
-      cudaMemcpy(temper, minL_maxdUdL_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
+      cudaMemcpy(temper, hist_potential_d, (blockCount-1)*sizeof(real), cudaMemcpyDefault);
     }
     int count = 0; // Start of site
     int resetCount = 0; // Reset weights after all tempering < final_temper%
@@ -937,10 +952,6 @@ void Msld::add_sample_abf(System* system){
           real factor = exp(-U / (tempering*system->state->leapParms1->kT)) * 100;
           printf("minFL: %5.2f, ", temper[count + i]);
           printf("tempering: %5.2f %%\n", factor);
-          if(factor <= final_temper){
-            resetCount++;
-          }
-          printf("\n");
         }
       }
       fractionPhysical /= samples;
@@ -961,10 +972,6 @@ void Msld::add_sample_abf(System* system){
       printf(" ]\n");
       printf("\n\n");
       count += blocksPerSite[site+1];
-    }
-    if(resetCount == count){ 
-      printf("\nEnding all bias updates!\n\n");
-      update_fe_surface = false;
     }
   }
 }
@@ -1100,14 +1107,13 @@ __global__ void add_sample_hist_kernel(
     int X =  get_histogram_index(lambdas[i+1], L_bins, L_max, L_min);
     int Y = get_histogram_index(dU_msld[i+1], dUdL_bins, dUdL_max, dUdL_min);
     int index = hist_indices[i] + X*dUdL_bins + Y;
-    int site = lambdaSites[i+1];
     // PB Meta over every block
     real sum = 0;
     for (int j = 0; j < nL; j++){
       sum += exp(-hist_potential[j]/kT);
     }
     real factorDecouple = exp(-hist_potential[i])/sum;
-    real potential = max(0.0, minL_maxdUdL[i] - temper_min);
+    real potential = max(0.0, hist_potential[i] - temper_min);
     real factorTemper = temper ? exp(-potential / (tempering*kT)) : 1.0;
     if (X >= 0 && X < L_bins && Y >= 0 && Y < dUdL_bins) {
       histogram[index] += weight * factorDecouple * factorTemper;
@@ -1220,8 +1226,8 @@ __global__ void getforce_pb_oss(int nL, real kT, real dUdL_max,
     }
 
     // Add forces
-    atomicAdd(&lambdaForce[i+1], (hist_potential[i] + lambdas[i+1]*dGdL[i+1]));
-    dGdF[i+1] *= lambdas[i+1]; 
+    atomicAdd(&lambdaForce[i+1], pb*dGdL[i+1]);
+    dGdF[i+1] *= pb; 
     if (energy && i==0) {
       //atomicAdd(energy, -kT*log(sum));
     }
@@ -1488,7 +1494,7 @@ void Msld::calc_thetaForce_from_lambdaForce(cudaStream_t stream,System *system)
   }
 }
 
-__global__ void getforce_fixedBias_kernel(real *lambda,real *lambdaBias,real_f *lambdaForce,real_e *energy,int blockCount)
+__global__ void getforce_fixedBias_kernel(real *lambda,real *lambdaBias,real_f *lambdaForce, real* dU_alf, real_e *energy,int blockCount)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   extern __shared__ real sEnergy[];
@@ -1496,6 +1502,7 @@ __global__ void getforce_fixedBias_kernel(real *lambda,real *lambdaBias,real_f *
 
   if (i<blockCount) {
     atomicAdd(&lambdaForce[i],lambdaBias[i]);
+    atomicAdd(&dU_alf[i],lambdaBias[i]);
     if (energy) {
       lEnergy=lambdaBias[i]*lambda[i];
     }
@@ -1526,10 +1533,10 @@ void Msld::getforce_fixedBias(System *system,bool calcEnergy)
     stream=system->run->biaspotStream;
   }
 
-  getforce_fixedBias_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(s->lambda_fd,lambdaBias_d,s->lambdaForce_d,pEnergy,blockCount);
+  getforce_fixedBias_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(s->lambda_fd,lambdaBias_d,s->lambdaForce_d, dU_alf_d, pEnergy,blockCount);
 }
 
-__global__ void getforce_variableBias_kernel(real *lambda,real_f *lambdaForce,real_e *energy,int variableBiasCount,struct VariableBias *variableBias)
+__global__ void getforce_variableBias_kernel(real *lambda,real_f *lambdaForce, real* dU_alf, real_e *energy,int variableBiasCount,struct VariableBias *variableBias)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   struct VariableBias vb;
@@ -1610,7 +1617,11 @@ __global__ void getforce_variableBias_kernel(real *lambda,real_f *lambdaForce,re
       fj=0;
     }
     atomicAdd(&lambdaForce[vb.i],fi);
-    if (fj) atomicAdd(&lambdaForce[vb.j],fj);
+    atomicAdd(&dU_alf[vb.i],fi);
+    if (fj) { 
+      atomicAdd(&lambdaForce[vb.j],fj); 
+      atomicAdd(&dU_alf[vb.j],fj);
+    }
   }
 
   // Energy, if requested
@@ -1639,7 +1650,7 @@ void Msld::getforce_variableBias(System *system,bool calcEnergy)
   }
 
   if (variableBiasCount>0) {
-    getforce_variableBias_kernel<<<(variableBiasCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(s->lambda_fd,s->lambdaForce_d,pEnergy,variableBiasCount,variableBias_d);
+    getforce_variableBias_kernel<<<(variableBiasCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(s->lambda_fd,s->lambdaForce_d, dU_alf_d, pEnergy,variableBiasCount,variableBias_d);
   }
 }
 
