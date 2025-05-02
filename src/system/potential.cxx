@@ -1592,7 +1592,6 @@ void Potential::calc_force(int step,System *system) {
   // s->set_fd(system); // should have already been called
   reset_force(system,calcEnergy);
 
-  gpuCheck(cudaPeekAtLastError());
   cudaEventRecord(r->forceBegin,r->updateStream);
 
   if (system->id==helper) {
@@ -1604,7 +1603,6 @@ void Potential::calc_force(int step,System *system) {
     getforce_cmap(system,calcEnergy);
     getforce_nb14(system,calcEnergy);
     getforce_nbex(system,calcEnergy);
-    gpuCheck(cudaPeekAtLastError());
     cudaEventRecord(r->bondedComplete,r->bondedStream);
     cudaStreamWaitEvent(r->updateStream,r->bondedComplete,0);
   }
@@ -1612,9 +1610,7 @@ void Potential::calc_force(int step,System *system) {
   if (system->id==0) {
     cudaStreamWaitEvent(r->nbrecipStream,r->forceBegin,0);
     getforce_ewaldself(system,calcEnergy);
-    gpuCheck(cudaPeekAtLastError());
     getforce_ewald(system,calcEnergy);
-    gpuCheck(cudaPeekAtLastError());
     system->rngGPU->rand_normal(s->leapState->N,s->leapState->random,r->nbrecipStream);
     cudaEventRecord(r->nbrecipComplete,r->nbrecipStream);
     cudaStreamWaitEvent(r->updateStream,r->nbrecipComplete,0);
@@ -1627,10 +1623,8 @@ void Potential::calc_force(int step,System *system) {
     system->msld->getforce_thetaBias(system,calcEnergy);
     system->msld->getforce_atomRestraints(system,calcEnergy);
     system->msld->getforce_chargeRestraints(system,calcEnergy);
-    gpuCheck(cudaPeekAtLastError());
     getforce_noe(system,calcEnergy);
     getforce_harm(system,calcEnergy);
-    gpuCheck(cudaPeekAtLastError());
     cudaEventRecord(r->biaspotComplete,r->biaspotStream);
     cudaStreamWaitEvent(r->updateStream,r->biaspotComplete,0);
   }
@@ -1638,7 +1632,6 @@ void Potential::calc_force(int step,System *system) {
   if (system->domdec->id>=0) {
     cudaStreamWaitEvent(r->nbdirectStream,r->forceBegin,0);
     getforce_nbdirect(system,calcEnergy);
-    gpuCheck(cudaPeekAtLastError());
     cudaEventRecord(r->nbdirectComplete,r->nbdirectStream);
     cudaStreamWaitEvent(r->updateStream,r->nbdirectComplete,0);
   }
@@ -1695,7 +1688,7 @@ void Potential::calc_force(int step,System *system) {
         cudaEventRecord(r->ossRecipComplete, r->ossRecip);
         cudaStreamWaitEvent(r->updateStream, r->ossRecipComplete, 0);
       }
-    }
+    } 
   }
 
   calc_virtual_force(system);

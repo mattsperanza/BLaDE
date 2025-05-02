@@ -841,7 +841,7 @@ void Msld::recv_meta(){
 void Msld::log_sampling(System* system, int step){
   State* s = system->state;
   Run* r = system->run;
-  if(r->step % (sample_freq*10000) != 0 || r->step == 0){
+  if(r->step % (sample_freq*1000) != 0 || r->step == 0){
     return;
   }
 
@@ -889,7 +889,7 @@ void Msld::log_sampling(System* system, int step){
       printf("]\n\n");
     }
     fractionPhysical /= samples;
-    printf("\nSite fraction Physical: %f\n", fractionPhysical);
+    printf("Site fraction Physical: %f\n\n", fractionPhysical);
     prev_subs += blocksPerSite[site];
   }
 }
@@ -950,7 +950,7 @@ void Msld::add_sample(System* system, int step) { // Step = 0 during NPT steps
     stream=system->run->ossBias;
   }
 
-  if(step % sample_freq != 0 || step == 0){ // miss first sample
+  if(step % sample_freq != 0 || step == 0){ 
     return;
   }
 
