@@ -37,7 +37,6 @@ class Run {
   std::string fnmMTD_LMD;
   std::string fnmMTD_dUdL;
   std::string fnmMTD_HIST;
-  std::string fnmMTD_ABF;
   XDRFILE *fpXTC;
   XDRFILE *fpXLMD;
   FILE *fpLMD;
@@ -45,7 +44,6 @@ class Run {
   FILE *fpMTD_LMD;
   FILE *fpMTD_dUdL;
   FILE *fpMTD_HIST;
-  FILE *fpMTD_ABF;
   int freqXTC;
   int freqLMD;
   int freqNRG;
@@ -108,9 +106,6 @@ class Run {
   cudaEvent_t communicate;
   cudaEvent_t *communicate_omp;
 
-  // ABF stream
-  cudaStream_t abfBias;
-  cudaEvent_t abfBiasComplete;
   // OSS streams
   cudaEvent_t ossForceBegin;
   cudaStream_t ossBias;

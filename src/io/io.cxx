@@ -389,12 +389,6 @@ void print_meta(int step, System* system){
     fprintf(fp, "%f ", system->msld->hist_potential[i]);
   }
   fprintf(fp, "\n\n");
-
-  fp=system->run->fpMTD_ABF;
-  for(int i = 0; i < system->msld->blockCount-1; i++){
-    fprintf(fp, "%f ", system->msld->abf_TI[i]);
-  }
-  fprintf(fp, "\n\n");
   fflush(NULL);
 }
 
@@ -476,26 +470,25 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
     return;
   }
 
-  int nL = system->state->lambdaCount - 1;
-  file << "# Num_Lambdas: " << nL << "\n";
-
-  if (system->msld->abf) {
-    int bins = system->msld->oss_abf ? system->msld->L_oss_bins : system->msld->L_abf_bins;
-    real* abf_potential = (real*)malloc(bins * nL * sizeof(real));
-    real* dUdL_d = system->msld->oss_abf ? system->msld->oss_ensemble_dUdL_d : system->msld->average_dUdL_d;
-    cudaMemcpy(abf_potential, dUdL_d, bins * nL * sizeof(real), cudaMemcpyDefault);
-
+  if (system->msld->oss) {
+    // Print average dUdL
+    int nL = system->state->lambdaCount - 1;
+    file << "# Num_Lambdas: " << nL << "\n";
+  
+    int bins = system->msld->L_1D_bins;
+    real* dUdL = (real*)malloc(bins * nL * sizeof(real));
+    real* dUdL_d = system->msld->average_dUdL_d;
+    cudaMemcpy(dUdL, dUdL_d, bins * nL * sizeof(real), cudaMemcpyDefault);
+  
     file << "# ABF <dU/dL>\n";
     for (int i = 0; i < nL; i++) {
       file << "# Lambda " << i << " Bins " << bins << "\n";
       for (int j = 0; j < bins; j++) {
-          file << i << ", " << j << ", " << abf_potential[i * bins + j] << "\n";
+          file << i << ", " << j << ", " << dUdL[i * bins + j] << "\n";
       }
     }
-    free(abf_potential);
-  }
+    free(dUdL);
 
-  if (system->msld->oss) {
     int L_bins = system->msld->L_oss_bins;
     real L_max = system->msld->L_max;
     real L_min = system->msld->L_min;

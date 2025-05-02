@@ -44,7 +44,6 @@ Run::Run(System *system)
   fnmMTD_LMD = "oss_lmd.dat"; 
   fnmMTD_dUdL = "oss_dUdL.dat";
   fnmMTD_HIST = "oss_hist.dat";
-  fnmMTD_ABF = "oss_abf.dat";
   fnmCPI="";
   fnmCPO="default.cpt";
   fpXTC=NULL;
@@ -54,7 +53,6 @@ Run::Run(System *system)
   fpMTD_LMD=NULL;
   fpMTD_dUdL=NULL;
   fpMTD_HIST=NULL;
-  fpMTD_ABF=NULL;
   freqXTC=1000;
   freqLMD=10;
   freqNRG=10;
@@ -126,7 +124,6 @@ Run::Run(System *system)
   nbdirectStream=0;
   nbrecipStream=0;
 
-  abfBias=0;
   ossBias=0;
   ossBonded=0;
   ossDirect=0;
@@ -137,8 +134,6 @@ Run::Run(System *system)
   cudaStreamCreate(&biaspotStream);
   cudaStreamCreate(&nbdirectStream);
   cudaStreamCreate(&nbrecipStream);
-  // ABF Bias Streams
-  cudaStreamCreate(&abfBias);
   // Orthogonal Bias streams
   cudaStreamCreate(&ossBias);
   cudaStreamCreate(&ossBonded);
@@ -159,8 +154,6 @@ Run::Run(System *system)
   // cudaEventCreate(&forceComplete);
   cudaEventCreate(&communicate);
 
-  // ABF Bias Events
-  cudaEventCreate(&abfBiasComplete);
   // Orthogonal Bias events
   cudaEventCreate(&ossForceBegin);
   cudaEventCreate(&ossBiasComplete);
@@ -350,10 +343,6 @@ void Run::set_variable(char *line,char *token,System *system)
     if (fpMTD_HIST) fclose(fpMTD_HIST);
     fpMTD_HIST=NULL;
     fnmMTD_HIST=io_nexts(line);
-  } else if (strcmp(token,"fnmMTD_ABF")==0) {
-    if (fpMTD_ABF) fclose(fpMTD_ABF);
-    fpMTD_ABF=NULL;
-    fnmMTD_ABF=io_nexts(line);
   } else if (strcmp(token,"fnmcpi")==0) {
     fnmCPI=io_nexts(line);
   } else if (strcmp(token,"fnmcpo")==0) {
@@ -707,7 +696,7 @@ void Run::test(char *line,char *token,System *system)
     test_OST_force(system);
     return;
   } else if (testType=="oss_energy_cons") {
-    if(system->msld->oss || system->msld->abf){
+    if(system->msld->oss){
       test_OSS_conservation(system);
     } else {
       printf("OSS or ABF boolean not set!!!\n");
@@ -821,7 +810,6 @@ void Run::dynamics_initialize(System *system)
   if (!fpMTD_LMD) fpMTD_LMD=fpopen(fnmMTD_LMD.c_str(),"w");
   if (!fpMTD_dUdL) fpMTD_dUdL=fpopen(fnmMTD_dUdL.c_str(),"w");
   if (!fpMTD_HIST) fpMTD_HIST=fpopen(fnmMTD_HIST.c_str(),"w");
-  if (!fpMTD_ABF) fpMTD_ABF=fpopen(fnmMTD_ABF.c_str(),"w");
 
   // Finish setting up MSLD
   system->msld->initialize(system);

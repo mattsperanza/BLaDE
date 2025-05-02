@@ -56,69 +56,49 @@ public:
   struct VariableBias *variableBias_d;
 
   // FE Estimation Variables -> need to be on/off before msld::init is called
-  bool update_fe_surface = true; // add samples to abf/meta/oss
+  bool update_fe_surface = true; // add samples to oss histogram
+  bool tracking_only = false; // Collect samples in 1D & 2D, but don't use/calculate atomic/lambda forces
   int sample_freq = 10;
   int update_steps = 500000; // timesteps of sampling while updating FE surface
-  real* dGdF_d;
-  real* dGdL_d; // this is used for both meta and oss
-  real* dU_alf_d;
-  real* dU_msld_d;
-  real* dU_msld;
-  real* hist_potential_d; // [blockCount] potential from metadynamics
-  real* hist_potential;
-  real* abf_TI_d; // [blockCount] potential from abf
-  real* abf_TI;
-  // Just in case we get ideas for later
+  real* dU_alf_d; // [blockCount]
+  real* dU_msld_d; // [blockCount]
+  real* dU_msld; // [blockCount]
+
+  // 1D histogramming and tracking of dU/dL distribution
+  int L_1D_bins = 51; // this is also the max index (51 leads to >.99 as last bin)
+  real* histogram_1D_d; // [nL * L_1D_bins] counts in bin 
+  real* average_dUdL_d; // [nL * L_1D_bins]
+  real* average_dUdL2_d; // [nL * L_1D_bins]
+  real* variance_dUdL_d; // [nL * L_1D_bins]
+
+  // Histogram (2D meta) - uniform binning - nL = blockCount-1
+  bool oss = false; // Perform Orthogonal Space Sampling calculations
+  real* oss_histogram_d; // [nL * L_oss_bins * dUdL_bins] stores sum of gaussian prefactors
+  real* oss_potential_d; // [nL * L_oss_bins * dUdL_bins]
+  real* dGdF_d; // [blockCount] Derivative of gaussians w.r.t. lambda force
+  real* dGdL_d; // [blockCount] Derivative of gaussians w.r.t. lambda
+  real* hist_potential_d; // [blockCount-1] potential from 2d metadynamics
+  real* hist_potential; // [blockCount-1]
+
+  // Grid & Meta Params (free means it is a free parameter)
+  int L_oss_bins = 201; // free - # of whole bins that fit in range [L_min, L_max]
+  int dUdL_bins = 2501; // free - # of whole bins that fit in range [dUdL_min, dUdL_max]
   real L_max = 1.0;
   real L_min = 0.0;
-
-  // Meta - uniform binning - use abf histogram?
-  bool mirror_Lmin = true;
-  bool mirror_Lmax = true;
-
-  // Histogram (2D meta) - uniform binning
-  bool oss = false; // Perform Orthogonal Space Sampling force calculations
-  bool oss_abf = false; // Use <dU/dL> from integration over histogram for ABF force
-  int L_oss_bins = 201; // # of whole bins that fit in range [L_min, L_max]
-  real* oss_ensemble_dUdL_d;
-  real* oss_Z_d;
-  real* oss_Z_offset_d;
-  real* minL_maxdUdL_d; // tempering for each histogram
-  real* oss_histogram_d; // stores sum of prefactors
-  real* oss_potential_d; // same size as histogram
-  int* oss_index_d; // index into lambda's histogram
-
-  // Meta options
-  bool temper = true; // Using defaults, bias stops at ~2 kcal min per block
-  real tempering = 2.0; // constant for decay of bias magnitude
-  real temper_min = 1.0; // add at least 1 kcal/mol (felt) bias for every l bin before tempering
-  real final_temper = 20; // Percent of tempering in all blocks before ending sampling
-  real gaussian_weight = .01; 
-
-  // Don't change?
-  int dUdL_bins = 2501; // # of whole bins that fit in range [dUdL_min, dUdL_max]
-  real dUdL_max = 4500;
-  real dUdL_min = -500;
+  real dUdL_max = 4000; // free 
+  real dUdL_min = -1000; // free
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
-  real L_std = 2.0*L_resolution; // .01
-  real dUdL_std = 2.0*dUdL_resolution; // 4
-  int L_search = 3.0*(L_std/L_resolution); // ~3 L std in each direction
-  int dUdL_search = 3.0*(dUdL_std/dUdL_resolution); // ~3 dUdL std in each direction
-
-  // LERP ABF - uniform binning - separate from histogram estimation
-  bool abf = false;
-  bool tracking_only = false; // Don't apply ABF bias if this is true -> dominates abf & oss_abf flag, says nothing about oss hist or meta
-  bool reset = false;
-  int nFull = 200; // Not used
-  int L_abf_bins = 151; // this is also the max index (51 leads to >.99 as last bin)
-  int* abf_index_d; // index into abf histogram
-  real* abf_histogram_d; // counts in bin -> also used for 1D meta
-  real* weights_d;
-  real* offsets_d;
-  real* average_dUdL_d;
-  real* weighted_dUdL_d;
-  real* dABF_dL_d; // [nBlock-1] slope of ABF lerp
+  real L_std = 2.0*L_resolution; // free - .01
+  real dUdL_std = 2.0*dUdL_resolution; // free - 4
+  int L_search = 3.0*(L_std/L_resolution); 
+  int dUdL_search = 3.0*(dUdL_std/dUdL_resolution); 
+  bool temper = true; // Using defaults (2 kcal = .43, 4 kcal = .08, 6 kcal = .01)
+  real tempering = 2.0; // free - exp(-max(0, pot - min) / kBT*tempering)
+  real temper_min = 1.0; // free 
+  bool mirror_Lmin = true; // free 
+  bool mirror_Lmax = true; // free
+  real gaussian_weight = .01; // free
 
   int thetaCollBiasCount;
   real *kThetaCollBias;
@@ -183,17 +163,13 @@ public:
 
   void sub_alf(real* dU_msld_d, real* dU_alf_d, int len, cudaStream_t stream);
 
-  // Enhanced sampling
-  void init_abf(System* system);
-  void add_sample_abf(System *system);
-  void getpotential_abf(System* system, real* potential_grid);
-  void getforce_abf(System *system, bool calcEnergy);
-
+  // OSS Functions
   void init_oss(System* system);
-  void add_sample_hist(System *system);
-  void get_tempering_hist(System* system);
+  void reset_1D(System* system);
+  void add_sample(System *system, int step);
   void getpotential_hist(System* system);
   void getforce_hist(System *system, bool calcEnergy);
+  void log_sampling(System *system, int step);
 
   void recv_meta();
 };
