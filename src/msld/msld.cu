@@ -841,7 +841,7 @@ void Msld::recv_meta(){
 void Msld::log_sampling(System* system, int step){
   State* s = system->state;
   Run* r = system->run;
-  if(r->step % (sample_freq*1000) != 0 || r->step == 0){
+  if(step % (sample_freq*1000) != 0 || step == 0){
     return;
   }
 
@@ -931,7 +931,7 @@ __global__ void add_sample_hist_kernel(
     for (int j = 0; j < nL; j++){
       sum += exp(-hist_potential[j]/kT);
     }
-    real factorDecouple = exp(-hist_potential[i])/sum;
+    real factorDecouple = 1.0 / nL; //exp(-hist_potential[i])/sum;
     real potential = max(0.0, hist_potential[i] - temper_min);
     real factorTemper = temper ? exp(-potential / (tempering*kT)) : 1.0;
     if (X >= 0 && X < L_bins && Y >= 0 && Y < dUdL_bins) {
@@ -961,9 +961,10 @@ void Msld::add_sample(System* system, int step) { // Step = 0 during NPT steps
 
   if (update_fe_surface){
     // Only write restarts while dropping gaussians
-    if (step % (sample_freq*10000) == 0 && step != 0){ 
-      printf("Writing Restart File!\n");
+    if (step % (sample_freq*1000) == 0 && step != 0){ 
+      printf("Writing Restart & Potential Files!\n");
       write_histogram_file(system, "hist_restart.txt", false);
+      write_histogram_file(system, "hist_potential.txt", true);
     }
     add_sample_hist_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
       s->leapParms1->kT, blockCount-1, s->lambda_fd, lambdaSite_d, 
@@ -994,6 +995,10 @@ __global__ void getforce_hist_kernel(
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
     int X = get_histogram_index(lambdas[iL+1], L_bins, L_max, L_min);
     int Y = get_histogram_index(dU_msld[iL+1], dUdL_bins, dUdL_max, dUdL_min);
+    real effective_max = 300.0;
+    if (dU_msld[iL+1] > effective_max){ // As if on 300.0
+      Y = get_histogram_index(effective_max, dUdL_bins, dUdL_max, dUdL_min);
+    }
     int j = X - L_search + iSearch;
     if (j >= X-L_search && j <= X+L_search) {
       int L_index = j;
@@ -1026,8 +1031,13 @@ __global__ void getforce_hist_kernel(
 
           real tmp_bias = weight * L_gaussian * dUdL_gaussian;
           local_bias += tmp_bias;
+          // dUdL & L distances already include 1 div by respective std
           local_dUdL_force += -dUdL_distance/dUdL_std * tmp_bias;
           local_L_force += -L_distance/L_std * tmp_bias;
+        }
+        if (dU_msld[iL+1] > effective_max){ 
+          local_dUdL_force = 0; // No longer a function of dUdL
+          // Still feels lambda forces as if at 300.0
         }
         atomicAdd(&dGdF[iL+1], local_dUdL_force);
         atomicAdd(&dGdL[iL+1], local_L_force);
@@ -1040,20 +1050,35 @@ __global__ void getforce_hist_kernel(
 __global__ void getforce_pb_oss(
   int nL, real kT, 
   real* hist_potential, real* dGdF, real* dGdL, 
-  real* lambdaForce, real_e* energy) {
+  real* lambdas, real* lambdaForce, real* dU_msld, real_e* energy) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
-    real sum = 0;
-    for (int j = 0; j < nL; j++){ 
-      sum += exp(-hist_potential[j]/kT);
+    // PBMeta
+    //if (dU_msld[i+1] > end){ // Infinate wall at 300
+    //  hist_potential[i] += 1e9;
+    //}
+    //real sum = 0;
+    //for (int j = 0; j < nL; j++){ 
+    //  sum += exp(-hist_potential[j]/kT);
+    //}
+    //real pb = exp(-hist_potential[i] / kT) / sum;
+
+    // Harmonic Restraint at top end of histogram
+    real end = 500.0; // Histogram ceil "ends" at 300
+    real U = 0;
+    if (dU_msld[i+1] > end){
+      real k = 1.0 / 10000.0;
+      U += .5 * k * pow(dU_msld[i+1] - end, 2);
+      real dU = k * (dU_msld[i+1] - end);
+      dGdF[i+1] += dU;
     }
-    real pb = exp(-hist_potential[i] / kT) / sum;
 
     // Add forces
+    real pb = 1.0 / nL;
     atomicAdd(&lambdaForce[i+1], pb*dGdL[i+1]);
     dGdF[i+1] *= pb; 
     if (energy && i==0) {
-      atomicAdd(energy, -kT*log(sum));
+      //atomicAdd(energy, -kT*log(sum));
     }
   }
 }
@@ -1096,7 +1121,7 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
   getforce_pb_oss<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     blockCount-1, system->state->leapParms1->kT, 
     hist_potential_d, dGdF_d, dGdL_d,
-    s->lambdaForce_d, pEnergy);
+    s->lambda_fd, s->lambdaForce_d, dU_msld_d, pEnergy);
 }
 
 __global__ void getpotential_hist_kernel(
@@ -1122,6 +1147,12 @@ __global__ void getpotential_hist_kernel(
     if (X >= L_bins || Y >= dUdL_bins) continue;
     real X_center = L_min + X * X_res;
     real Y_center = dUdL_min + Y * Y_res;
+    real effective_max = 300.0;
+    int Y_id = Y; // Put bias is correct location
+    if (Y_center > effective_max){ // Eval at 300.0
+      Y = get_histogram_index(effective_max, dUdL_bins, dUdL_max, dUdL_min);
+      Y_center = dUdL_min + Y * Y_res;
+    }
     real bias = 0.0;
     for (int j = X - L_search; j <= X + L_search; j++) {
       int L_index = j;
@@ -1150,7 +1181,7 @@ __global__ void getpotential_hist_kernel(
         bias += weight * L_gaussian * dUdL_gaussian;
       }
     }
-    int grid_index = iL*dUdL_bins*L_bins + X*dUdL_bins + Y;
+    int grid_index = iL*dUdL_bins*L_bins + X*dUdL_bins + Y_id;
     potential_grid[grid_index] = bias;
   }
 }

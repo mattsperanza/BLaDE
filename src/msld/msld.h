@@ -85,14 +85,14 @@ public:
   int dUdL_bins = 2501; // free - # of whole bins that fit in range [dUdL_min, dUdL_max]
   real L_max = 1.0;
   real L_min = 0.0;
-  real dUdL_max = 4000; // free 
-  real dUdL_min = -1000; // free
+  real dUdL_max = 1000; // free 
+  real dUdL_min = -500; // free
   real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
   real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
-  real L_std = 2.0*L_resolution; // free - .01
-  real dUdL_std = 2.0*dUdL_resolution; // free - 4
-  int L_search = 3.0*(L_std/L_resolution); 
-  int dUdL_search = 3.0*(dUdL_std/dUdL_resolution); 
+  real L_std = .01; // free
+  real dUdL_std = 4; // free
+  int L_search = 5.0*(L_std/L_resolution); 
+  int dUdL_search = 5.0*(dUdL_std/dUdL_resolution); 
   bool temper = true; // Using defaults (2 kcal = .43, 4 kcal = .08, 6 kcal = .01)
   real tempering = 2.0; // free - exp(-max(0, pot - min) / kBT*tempering)
   real temper_min = 1.0; // free 
