@@ -417,6 +417,16 @@ void parse_msld(char *line,System *system)
 // NYI - charge restraints, put Q in initialize
   } else if (strcmp(token,"print")==0) {
     system->selections->dump();
+  } else if (strcmp(token, "GaMD_total") == 0){
+    system->msld->GaMD_total=io_nextb(line);
+  } else if (strcmp(token, "GaMD_torsion") == 0){
+    system->msld->GaMD_torsion=io_nextb(line);
+  } else if (strcmp(token, "GaMD_init_steps") == 0){ // These next two need to be set in order
+    system->msld->init_steps=io_nexti(line);
+  } else if (strcmp(token, "GaMD_equil_steps") == 0){
+    system->msld->equil_steps=system->msld->init_steps+io_nexti(line);
+  } else if (strcmp(token, "GaMD_low_threshold") == 0){
+    system->msld->GaMD_low_threshold=io_nextb(line);
   } else if (strcmp(token, "oss") == 0) {
     system->msld->oss=io_nextb(line);
   } else if (strcmp(token, "bias_mag") == 0) {
@@ -733,6 +743,33 @@ void Msld::initialize(System *system)
     init_oss(system);
   }
 
+  // GaMD
+  int nAtoms = system->structure->atomCount;
+  int nL = system->msld->blockCount;
+  int DOF = nAtoms*3 + nL;
+  cudaMalloc(&GaMD_torsion_force_d, DOF*sizeof(real));
+  cudaMemset(GaMD_torsion_force_d, 0, DOF*sizeof(real));
+  cudaMalloc(&GaMD_alchem_force_d, DOF*sizeof(real));
+  cudaMemset(GaMD_alchem_force_d, 0, DOF*sizeof(real));
+  cudaMalloc(&alchem_energy_d, sizeof(real));
+  alchem_energy = (real*) malloc(sizeof(real));
+  *alchem_energy = 0;
+  memset(GaMD_bias_added, 0, GaMD_modes*sizeof(real));
+  if(GaMD_total || GaMD_torsion || GaMD_alchem){
+    memset(total_p_stats, 0, num_GaMD_stats*sizeof(double));
+    total_p_stats[0] = 1e9; // Min starts at large value
+    total_p_stats[1] = -1e9; // Max starts at small value
+    total_p_stats[4] = 6; // Max std of boost
+    memset(torsion_p_stats, 0, num_GaMD_stats*sizeof(double));
+    torsion_p_stats[0] = 1e9; // Min starts at large value
+    torsion_p_stats[1] = -1e9; // Max starts at small value
+    torsion_p_stats[4] = 6;
+    memset(alchem_p_stats, 0, num_GaMD_stats*sizeof(double));
+    alchem_p_stats[0] = 1e9; // Min starts at large value
+    alchem_p_stats[1] = -1e9; // Max starts at small value
+    alchem_p_stats[4] = 6;
+  }
+
   // Atom restraints
   atomRestraintCount=atomRestraints.size();
   if (atomRestraintCount>0) {
@@ -758,6 +795,181 @@ void Msld::initialize(System *system)
     atomsByBlock[atomBlock[i]].insert(i);
   }
 }
+
+void Msld::gamd_reset(System* system){
+  GaMD_samples = 0;
+  for (int i = 0; i < num_GaMD_stats-3; i++){ // Don't reset sigmaV0, E, or k 
+    total_p_stats[i] = 0;
+    torsion_p_stats[i] = 0;
+    alchem_p_stats[i] = 0;
+  }
+  total_p_stats[0] = 1e9; 
+  total_p_stats[1] = -1e9; 
+  torsion_p_stats[0] = 1e9; 
+  torsion_p_stats[1] = -1e9; 
+  alchem_p_stats[0] = 1e9; 
+  alchem_p_stats[1] = -1e9; 
+}
+
+void update_E_k(bool conservative, int num_samples, double* stats){
+  // [Vmin, Vmax, Vavg, M2, Vstd_max, E, k]
+  real Vmin = stats[0];
+  real Vmax = stats[1];
+  real Vavg = stats[2];
+  real Vstd = sqrt(stats[3]/num_samples);
+  real Vstd_max = stats[4];
+  if (conservative){ // Weaker bias
+    stats[5] = Vmax;
+    real k0p = (Vstd_max / Vstd) * (Vmax - Vmin) / (Vmax - Vavg);
+    stats[6] = min(1.0, k0p); 
+  } else { // Stronger bias
+    real k0pp = (1.0 - Vstd_max/Vstd) * (Vmax - Vmin) / (Vavg - Vmin);
+    if (k0pp > 0 && k0pp <= 1.0){
+      stats[5] = Vmin + (Vmax-Vmin)/k0pp;
+      stats[6] = k0pp; 
+    } else { // Back to conservative
+      stats[5] = Vmax;
+      real k0p = (Vstd_max / Vstd) * (Vmax - Vmin) / (Vmax - Vavg);
+      stats[6] = min(1.0, k0p);
+    }
+  }
+  stats[6] /= Vmax - Vmin;
+}
+
+void update_stats(real V_sample, double* V_stats, int n_samples, bool conservative, bool calc_E_k){
+  // Max/Min
+  if (V_sample > V_stats[1]){
+    V_stats[1] = V_sample;
+  }
+  if (V_sample < V_stats[0]){
+    V_stats[0] = V_sample;
+  }
+  // Avg/Std
+  real Vdiff = V_sample - V_stats[2];
+  real Vavg = V_stats[2]*n_samples;
+  Vavg += V_sample;
+  Vavg /= n_samples + 1;
+  V_stats[2] = Vavg;
+  V_stats[3] += Vdiff*(V_sample-Vavg);
+  // Harmonic Params
+  if (calc_E_k){
+    update_E_k(conservative, n_samples, V_stats);
+  }
+}
+
+void Msld::gamd_update(System* system, bool calc_E_k) {
+  // [Vmin, Vmax, Vavg, M2, Vstd_max, E, k]
+  if (GaMD_total){
+    real V = system->state->energy[eepotential];
+    if (GaMD_torsion){ V -= system->state->energy[eedihe] + system->state->energy[eeimpr]; }
+    if (GaMD_alchem){ V -= *system->msld->alchem_energy; }
+    update_stats(V, total_p_stats, GaMD_samples, GaMD_low_threshold, calc_E_k);
+  }
+  if (GaMD_torsion){
+    real V = system->state->energy[eedihe] + system->state->energy[eeimpr];
+    update_stats(V, torsion_p_stats, GaMD_samples, GaMD_low_threshold, calc_E_k);
+  }
+  // NYI
+  if (GaMD_alchem){}
+
+  GaMD_samples++;
+}
+
+void __global__ gamd_kernel(
+  int len, 
+  real dBoost_total, real dBoost_torsion, real dBoost_alchem, 
+  real* force, 
+  real* torsion_force, bool remove_torsion, 
+  real* alchem_force, bool remove_alchem) {
+  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  if(i<len) { 
+    real remaining_force = force[i];
+    // Remove separate biases
+    remaining_force -= remove_torsion ? torsion_force[i] : 0;
+    remaining_force -= remove_alchem ? alchem_force[i] : 0;
+    force[i] += remaining_force*dBoost_total; 
+    force[i] += torsion_force[i]*dBoost_torsion;
+    // Potential overlap between torsion & this term
+    force[i] += alchem_force[i]*dBoost_alchem;
+  }
+}
+
+// Already waited on energy & gradient
+void Msld::getforce_gamd(System* system) {
+  cudaStream_t stream = system->run->gamdBias;
+  memset(GaMD_bias_added, 0, GaMD_modes*sizeof(real));
+  real dBoost_total = 0;
+  real dBoost_torsion = 0;
+  real dBoost_alchem = 0;
+  // stats: [Vmin, Vmax, Vavg, M2, Vstd_max, E, k]
+  if(GaMD_total){
+    // Calculate total potential without other variables we are biasing with 
+    real V = system->state->energy[eepotential];
+    if (GaMD_torsion){ V -= system->state->energy[eedihe] + system->state->energy[eeimpr]; }
+    if (GaMD_alchem){ V -= *system->msld->alchem_energy; }
+    real dV = V - total_p_stats[5];
+    real boost = 0;
+    if (dV < 0){
+      boost = .5*total_p_stats[6]*dV*dV;
+      GaMD_bias_added[0] = boost;
+      dBoost_total = total_p_stats[6]*dV;
+    }
+  }
+  if(GaMD_torsion){
+    real V = system->state->energy[eedihe] + system->state->energy[eeimpr];
+    real dV = V - torsion_p_stats[5];
+    real boost = 0;
+    if (dV < 0){
+      boost = .5*torsion_p_stats[6]*dV*dV;
+      GaMD_bias_added[1] = boost;
+      dBoost_torsion = torsion_p_stats[6]*dV;
+    }
+  }
+  if(GaMD_alchem){
+    // NYI
+  }
+
+  // Logging
+  if (system->run->step % 1000 == 0){
+    printf("Potential Energy: %f\n", system->state->energy[eepotential]);
+    if (GaMD_total){
+      real V = system->state->energy[eepotential];
+      if (GaMD_torsion){ V -= system->state->energy[eedihe] + system->state->energy[eeimpr]; }
+      if (GaMD_alchem){ V -= *system->msld->alchem_energy; }
+      printf("Potential (w/o extra): %f, Boost: %f, total_p_stats: [ ", V, GaMD_bias_added[0]);
+      for(int i = 0; i < num_GaMD_stats; i++){
+        printf("%f, ", total_p_stats[i]);
+      }
+      printf(" ]\n");
+    }
+    if (GaMD_torsion){
+      real V = system->state->energy[eedihe] + system->state->energy[eeimpr];
+      printf("Torsion Potential: %f, Boost: %f, torsion_p_stats: [ ", V, GaMD_bias_added[1]);
+      for(int i = 0; i < num_GaMD_stats; i++){
+        printf("%f, ", torsion_p_stats[i]);
+      }
+      printf(" ]\n");
+    }
+    printf("\n");
+  }
+
+  // TODO: Add boosts to total potential
+
+  // Subtract torsion and alchem forces from total force array
+  int nAtoms = system->state->atomCount;
+  int nL = system->msld->blockCount;
+  int DOF = nAtoms*3 + nL;
+  gamd_kernel<<<(DOF+BLMS-1)/BLMS,BLMS,0,stream>>>(
+    DOF, dBoost_total, dBoost_torsion, dBoost_alchem,
+    (real*) system->state->force_d, 
+    GaMD_torsion_force_d, GaMD_torsion,
+    GaMD_alchem_force_d, GaMD_alchem);
+
+  // Reset force arrays
+  cudaMemset(GaMD_torsion_force_d, 0, DOF*sizeof(real));
+  cudaMemset(GaMD_alchem_force_d, 0, DOF*sizeof(real));
+}
+
 
 // Subtract ALF bias forces from dU_msld to get true dU_msld
 __global__ void sub_alf_kernel(real* dU_msld, real* dU_alf, int nL){

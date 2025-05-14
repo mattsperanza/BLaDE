@@ -100,6 +100,25 @@ public:
   bool mirror_Lmax = true; // free
   real gaussian_weight = .01; // free
 
+  // GaMD Parameters - 3 Stages: [0, init), [init,equil), [equil, nStep)
+  real* alchem_energy; // Internal energy of alchemical system
+  real* alchem_energy_d;
+  real init_steps=1000000;
+  real equil_steps=init_steps+1000000;
+  bool GaMD_total = false;
+  bool GaMD_torsion = false;
+  bool GaMD_alchem = false;
+  bool GaMD_low_threshold = true;
+  const static int num_GaMD_stats = 7;
+  const static int GaMD_modes = 3;
+  int GaMD_samples = 0;
+  double total_p_stats[num_GaMD_stats]; // [Vmin, Vmax, Vavg, Vstd, Vstd_max, E, k]
+  double torsion_p_stats[num_GaMD_stats];
+  double alchem_p_stats[num_GaMD_stats]; // Would prefer not do do this as it requires second codepath
+  real GaMD_bias_added[GaMD_modes]; // [dV_total, dV_torsion, dV_alchem]
+  real* GaMD_torsion_force_d; // Force just due to torsions
+  real* GaMD_alchem_force_d; // Force just due to alchemical interactions
+
   int thetaCollBiasCount;
   real *kThetaCollBias;
   real *kThetaCollBias_d;
@@ -162,6 +181,11 @@ public:
   void getforce_chargeRestraints(System *system,bool calcEnergy);
 
   void sub_alf(real* dU_msld_d, real* dU_alf_d, int len, cudaStream_t stream);
+
+  // GaMD Functions
+  void gamd_update(System* system, bool update_E_k);
+  void gamd_reset(System* system);
+  void getforce_gamd(System* system);
 
   // OSS Functions
   void init_oss(System* system);

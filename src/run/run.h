@@ -117,6 +117,10 @@ class Run {
   cudaStream_t ossRecip;
   cudaEvent_t ossRecipComplete;
 
+  // GaMD streams
+  cudaStream_t gamdBias;
+  cudaEvent_t gamdBiasComplete;
+
 
   Run(System *system);
   ~Run();

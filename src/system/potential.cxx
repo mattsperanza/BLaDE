@@ -1578,8 +1578,11 @@ void Potential::calc_force(int step,System *system) {
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
-  if ((system->msld->oss)) { // Need energy to add sample for <dU/dL> weighting
+  if (system->msld->oss) { // Need energy to add sample for <dU/dL> weighting
     calcEnergy = calcEnergy || step % system->msld->sample_freq == 0 || step % system->run->freqMTD == 0;
+  }
+  if (system->msld->GaMD_total || system->msld->GaMD_torsion || system->msld->GaMD_alchem){
+    calcEnergy = true;
   }
 #ifdef REPLICAEXCHANGE
   if (system->run->freqREx>0) {
@@ -1638,6 +1641,36 @@ void Potential::calc_force(int step,System *system) {
 
 
   // cudaEventRecord(r->forceComplete,r->updateStream);
+
+  if (system->msld->GaMD_total){ // Always requires potential energies
+    // Wait on V
+    cudaStreamWaitEvent(r->gamdBias, r->nbdirectComplete, 0);
+    cudaStreamWaitEvent(r->gamdBias, r->nbrecipComplete, 0);
+    cudaStreamWaitEvent(r->gamdBias, r->biaspotComplete, 0);
+    cudaStreamWaitEvent(r->gamdBias, r->bondedComplete, 0);
+    // Every step of this requires potential energy
+    system->state->recv_energy();
+    cudaMemcpy(system->msld->alchem_energy, system->msld->alchem_energy_d, sizeof(real), cudaMemcpyDefault);
+    if (system->run->step < system->msld->init_steps){
+      if (system->run->step == system->msld->init_steps - 1){ // Last step
+        system->msld->gamd_update(system, true);
+        system->msld->gamd_reset(system);
+      } else {
+        system->msld->gamd_update(system, false);
+      }
+    }
+    else if (system->run->step < system->msld->equil_steps){
+      real equil_left = 
+      (system->msld->equil_steps - system->run->step) 
+      / (system->msld->equil_steps - system->msld->init_steps);
+      bool update = equil_left < .75; // Quarter of equil spent rebuilding stats not updating E or k 
+      system->msld->gamd_update(system, update);
+      system->msld->getforce_gamd(system);
+    } else {
+      system->msld->getforce_gamd(system);
+    }
+    cudaStreamWaitEvent(r->updateStream, r->gamdBiasComplete, 0);
+  }
 
   if (system->msld->oss) {
     // Wait on dU/dL

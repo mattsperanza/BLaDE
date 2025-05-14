@@ -128,6 +128,8 @@ Run::Run(System *system)
   ossBonded=0;
   ossDirect=0;
   ossRecip=0;
+
+  gamdBias=0
 #else
   cudaStreamCreate(&updateStream);
   cudaStreamCreate(&bondedStream);
@@ -139,6 +141,8 @@ Run::Run(System *system)
   cudaStreamCreate(&ossBonded);
   cudaStreamCreate(&ossDirect);
   cudaStreamCreate(&ossRecip);
+  // GaMD Streams
+  cudaStreamCreate(&gamdBias);
 
   // Set priorities if desired:
   // int low,high;
@@ -160,6 +164,9 @@ Run::Run(System *system)
   cudaEventCreate(&ossBondedComplete);
   cudaEventCreate(&ossDirectComplete);
   cudaEventCreate(&ossRecipComplete);
+
+  // GaMD Bias Event
+  cudaEventCreate(&gamdBiasComplete);
 
 
   if (system->idCount>0) {

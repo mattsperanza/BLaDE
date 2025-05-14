@@ -342,7 +342,8 @@ __device__ void function_torsion(ImprPotential ip,real phi,real *fphi,real *lE,b
 
 // getforce_dihe_kernel<<<(N+BLBO-1)/BLBO,BLBO,shMem,p->bondedStream>>>(N,p->dihes_d,(real3*)s->position_d,(real3*)s->force_d,s->orthBox,m->lambda_d,m->lambdaForce_d,pEnergy);
 template <bool flagBox,class TorsionPotential,bool soft,typename box_type>
-__global__ void getforce_torsion_kernel(int torsionCount,TorsionPotential *torsions,real3 *position,real3_f *force,box_type box,real *lambda,real_f *lambdaForce,real softExp,real_e *energy)
+__global__ void getforce_torsion_kernel(int torsionCount,TorsionPotential *torsions,real3 *position,
+  real3_f *force, real3_f *torsion_force, box_type box,real *lambda,real_f *lambdaForce,real softExp,real_e *energy)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   int ii,jj,kk,ll;
@@ -428,6 +429,7 @@ __global__ void getforce_torsion_kernel(int torsionCount,TorsionPotential *torsi
     rjkinv2=1/(rjk*rjk);
     fi=real3_scale<real3>(-ftorsion*rjk*minv2,mvec);
     at_real3_inc(&force[ii], fi);
+    at_real3_inc(&torsion_force[ii], fi); // GaMD
 
     fk=real3_scale<real3>(-ftorsion*rjk*ninv2,nvec);
     p=real3_dot<real>(drij,drjk)*rjkinv2;
@@ -436,12 +438,15 @@ __global__ void getforce_torsion_kernel(int torsionCount,TorsionPotential *torsi
     real3_scaleinc(&fj,-q,fk);
     fl=real3_scale<real3>(-1,fk);
     at_real3_inc(&force[ll], fl);
+    at_real3_inc(&torsion_force[ll], fl); // GaMD
 
     real3_dec(&fk,fj);
     at_real3_inc(&force[kk], fk);
+    at_real3_inc(&torsion_force[kk], fk); // GaMD
 
     real3_dec(&fj,fi);
     at_real3_inc(&force[jj], fj);
+    at_real3_inc(&torsion_force[jj], fj); // GaMD
   }
 
   // Energy, if requested
@@ -470,9 +475,15 @@ void getforce_diheT(System *system,box_type box,bool calcEnergy)
   }
 
   N=p->diheCount;
-  if (N>0) getforce_torsion_kernel <flagBox,DihePotential,false> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->dihes_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,1,pEnergy);
+  if (N>0) getforce_torsion_kernel <flagBox,DihePotential,false> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>
+    (N,p->dihes_d,(real3*)s->position_fd,
+    (real3_f*)s->force_d,(real3_f*)system->msld->GaMD_torsion_force_d,
+    box,s->lambda_fd,s->lambdaForce_d,1,pEnergy);
   N=p->softDiheCount;
-  if (N>0) getforce_torsion_kernel <flagBox,DihePotential,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->softDihes_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,softExp,pEnergy);
+  if (N>0) getforce_torsion_kernel <flagBox,DihePotential,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>
+    (N,p->softDihes_d,(real3*)s->position_fd,
+    (real3_f*)s->force_d, (real3_f*)system->msld->GaMD_torsion_force_d,
+    box,s->lambda_fd,s->lambdaForce_d,softExp,pEnergy);
 }
 
 void getforce_dihe(System *system,bool calcEnergy)
@@ -503,9 +514,15 @@ void getforce_imprT(System *system,box_type box,bool calcEnergy)
   }
 
   N=p->imprCount;
-  if (N>0) getforce_torsion_kernel <flagBox,ImprPotential,false> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->imprs_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,1,pEnergy);
+  if (N>0) getforce_torsion_kernel <flagBox,ImprPotential,false> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>
+    (N,p->imprs_d,(real3*)s->position_fd,
+    (real3_f*)s->force_d, (real3_f*) system->msld->GaMD_torsion_force_d,
+    box,s->lambda_fd,s->lambdaForce_d,1,pEnergy);
   N=p->softImprCount;
-  if (N>0) getforce_torsion_kernel <flagBox,ImprPotential,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->softImprs_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,softExp,pEnergy);
+  if (N>0) getforce_torsion_kernel <flagBox,ImprPotential,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>
+    (N,p->softImprs_d,(real3*)s->position_fd,
+    (real3_f*)s->force_d, (real3_f*) system->msld->GaMD_torsion_force_d,
+    box,s->lambda_fd,s->lambdaForce_d,softExp,pEnergy);
 }
 
 void getforce_impr(System *system,bool calcEnergy)
