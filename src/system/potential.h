@@ -314,6 +314,7 @@ class Potential {
 
   void reset_force(System *system,bool calcEnergy);
   void calc_force(int step,System *system);
+  void enhanced_sampling(System* system, bool calcEnergy, int step);
 };
 
 #endif

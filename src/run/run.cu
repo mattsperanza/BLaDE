@@ -139,8 +139,8 @@ Run::Run(System *system)
   // Orthogonal Bias streams
   cudaStreamCreate(&ossBias);
   cudaStreamCreate(&ossBonded);
-  cudaStreamCreate(&ossDirect);
-  cudaStreamCreate(&ossRecip);
+  cudaStreamCreate(&alchemDirect);
+  cudaStreamCreate(&alchemRecip);
   // GaMD Streams
   cudaStreamCreate(&gamdBias);
 
@@ -162,8 +162,8 @@ Run::Run(System *system)
   cudaEventCreate(&ossForceBegin);
   cudaEventCreate(&ossBiasComplete);
   cudaEventCreate(&ossBondedComplete);
-  cudaEventCreate(&ossDirectComplete);
-  cudaEventCreate(&ossRecipComplete);
+  cudaEventCreate(&alchemDirectComplete);
+  cudaEventCreate(&alchemRecipComplete);
 
   // GaMD Bias Event
   cudaEventCreate(&gamdBiasComplete);

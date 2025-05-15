@@ -467,7 +467,7 @@ void getforce_nbdirectTTTT(System *system,box_type box,bool calcEnergy)
 #endif
     system->domdec->blockExcls_d,system->run->cutoffs,d->localPosition_d,d->localForce_d,box,s->lambda_fd,s->lambdaForce_d,pEnergy);
 
-  //TODO: Check if this is valid assumption
+  // TODO: Check if this is valid assumption
   if (system->msld->oss && !system->msld->tracking_only) return;
   system->domdec->unpack_forces(system);
 }

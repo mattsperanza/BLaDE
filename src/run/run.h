@@ -112,10 +112,12 @@ class Run {
   cudaEvent_t ossBiasComplete;
   cudaStream_t ossBonded;
   cudaEvent_t ossBondedComplete;
-  cudaStream_t ossDirect;
-  cudaEvent_t ossDirectComplete;
-  cudaStream_t ossRecip;
-  cudaEvent_t ossRecipComplete;
+
+  // Alchem Loops Stream - only wait on vanilla forces if oss
+  cudaStream_t alchemDirect;
+  cudaEvent_t alchemDirectComplete;
+  cudaStream_t alchemRecip;
+  cudaEvent_t alchemRecipComplete;
 
   // GaMD streams
   cudaStream_t gamdBias;

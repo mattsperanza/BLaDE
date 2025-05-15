@@ -869,9 +869,10 @@ void Msld::gamd_update(System* system, bool calc_E_k) {
     real V = system->state->energy[eedihe] + system->state->energy[eeimpr];
     update_stats(V, torsion_p_stats, GaMD_samples, GaMD_low_threshold, calc_E_k);
   }
-  // NYI
-  if (GaMD_alchem){}
-
+  if (GaMD_alchem){
+    real V = *system->msld->alchem_energy;
+    update_stats(V, alchem_p_stats, GaMD_samples, GaMD_low_threshold, calc_E_k);
+  }
   GaMD_samples++;
 }
 
@@ -926,7 +927,14 @@ void Msld::getforce_gamd(System* system) {
     }
   }
   if(GaMD_alchem){
-    // NYI
+    real V = *system->msld->alchem_energy;
+    real dV = V - alchem_p_stats[5];
+    real boost = 0;
+    if (dV < 0){
+      boost = .5*alchem_p_stats[6]*dV*dV;
+      GaMD_bias_added[2] = boost;
+      dBoost_alchem = alchem_p_stats[6]*dV;
+    }
   }
 
   // Logging
@@ -949,6 +957,15 @@ void Msld::getforce_gamd(System* system) {
         V, sqrt(torsion_p_stats[3] / GaMD_samples), GaMD_bias_added[1]);
       for(int i = 0; i < num_GaMD_stats; i++){
         printf("%f, ", torsion_p_stats[i]);
+      }
+      printf(" ]\n");
+    }
+    if (GaMD_alchem){
+      real V = *system->msld->alchem_energy;
+      printf("Alchem Potential: %f +/- %f, Boost: %f, alchem_p_stats: [ ", 
+        V, sqrt(alchem_p_stats[3] / GaMD_samples), GaMD_bias_added[2]);
+      for(int i = 0; i < num_GaMD_stats; i++){
+        printf("%f, ", alchem_p_stats[i]);
       }
       printf(" ]\n");
     }

@@ -56,17 +56,18 @@ static __forceinline__ __device__ float fasterfc(float a)
 
 template <bool flagBox, bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
 __global__ void getforce_exclusion_pair_kernel_oss(
-    int pairCount,NbExPotential *pairs,Cutoffs cutoffs,
-    real3 *position,real3_f *force,box_type box,
-    real *lambda,real_f *lambdaForce,
-    real *dGdF)
-{
+  int pairCount,NbExPotential *pairs,Cutoffs cutoffs,
+    real3 *position,real3_f *force, real3_f *alchemForce, box_type box,
+    real *lambda,real_f *lambdaForce, real_f *lambdaForce_extra,
+    real *dGdF, real* alchem_energy) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   int ii,jj;
   real r;
   real3 dr;
   NbExPotential pp;
   real3 xi,xj;
+  real lEnergy = 0;
+  extern __shared__ real sEnergy[];
   int b[2];
 
   if (i<pairCount) {
@@ -90,51 +91,66 @@ __global__ void getforce_exclusion_pair_kernel_oss(
       real dGdFi = dGdF[b[0]];
       real dGdFjtmp = dGdF[b[1]];
       // Force storage
+      real fij_ost=0;
+      real fli_ost=0;
+      real fljtmp_ost=0;
+      real eij=0;
       real fij=0;
       real fli=0;
-      real fljtmp=0;
+      real flj=0;
 
       // NbExclusion correction - never soft-cored so we can just use fij
       real rinv=1/r;
       real br=cutoffs.betaEwald*r;
       real kqq=kELECTRIC*pp.qxq;
-      fij=kqq*(erff(br)*rinv-((real)1.128379167095513)*cutoffs.betaEwald*expf(-br*br))*rinv;
+      real fij_tmp=kqq*(erff(br)*rinv-((real)1.128379167095513)*cutoffs.betaEwald*expf(-br*br))*rinv;
       real uij=-kqq*erff(br)*rinv;
+      lEnergy = li*ljtmp*uij;
+      fij = li*ljtmp*fij_tmp;
+      fli = ljtmp*uij;
+      flj = li*uij;
 
       // OST Derivatives - lixlij is always just li*lj for ewald?
-      real dU_drij_dli = ljtmp*fij;
-      real dU_drij_dlj = bjtmp ? li*fij : 0;
+      real dU_drij_dli = ljtmp*fij_tmp;
+      real dU_drij_dlj = bjtmp ? li*fij_tmp : 0;
       real dU_dlami_dlamj = bi && bjtmp ? uij : 0;
 
       // Forces redef
-      fij = dGdFi * dU_drij_dli + dGdFjtmp * dU_drij_dlj;
-      fli = dGdFjtmp * dU_dlami_dlamj;
-      fljtmp = dGdFi * dU_dlami_dlamj; // this doesn't over-count due to product rule
+      fij_ost = dGdFi * dU_drij_dli + dGdFjtmp * dU_drij_dlj;
+      fli_ost = dGdFjtmp * dU_dlami_dlamj;
+      fljtmp_ost = dGdFi * dU_dlami_dlamj; // this doesn't over-count due to product rule
 
       // Lambda and spatial forces
-      atomicAdd(&lambdaForce[b[0]], fli);
+      atomicAdd(&lambdaForce[b[0]], fli_ost);
+      atomicAdd(&lambdaForce_extra[b[0]], fli);
       if (b[1]) {
-        atomicAdd(&lambdaForce[b[1]], fljtmp);
+        atomicAdd(&lambdaForce[b[1]], fljtmp_ost);
+        atomicAdd(&lambdaForce_extra[b[1]], flj);
       }
-      at_real3_scaleinc(&force[ii], fij/r,dr);
-      at_real3_scaleinc(&force[jj],-fij/r,dr);
+      at_real3_scaleinc(&force[ii], fij_ost/r,dr);
+      at_real3_scaleinc(&force[jj],-fij_ost/r,dr);
+      at_real3_scaleinc(&alchemForce[ii], fij/r,dr);
+      at_real3_scaleinc(&alchemForce[jj],-fij/r,dr);
     }
   }
+  real_sum_reduce(lEnergy,sEnergy,alchem_energy);
 }
 
 
 template <bool flagBox, bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
 __global__ void getforce_14pair_kernel_oss(
     int pairCount,Nb14Potential *pairs,Cutoffs cutoffs,
-    real3 *position,real3_f *force,box_type box,
-    real *lambda,real_f *lambdaForce,
-    real *dGdF)
+    real3 *position,real3_f *force, real3_f *alchemForce, box_type box,
+    real *lambda,real_f *lambdaForce, real_f *lambdaForce_extra,
+    real *dGdF, real* alchem_energy)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   int ii,jj;
   real r;
   real3 dr;
   Nb14Potential pp;
+  real lEnergy=0;
+  extern __shared__ real sEnergy[];
   real3 xi,xj;
   int b[2];
   real rEff,dredr,dredll; // Soft core stuff
@@ -169,9 +185,13 @@ __global__ void getforce_14pair_kernel_oss(
       dlixlj_dli_dlj = bi && bjtmp ? 1 : 0;
 
       // Force storage
+      real fij_ost=0;
+      real fli_ost=0;
+      real fljtmp_ost=0;
+      real eij=0;
       real fij=0;
       real fli=0;
-      real fljtmp=0;
+      real flj=0;
 
       if (r<cutoffs.rCut){
         rEff=r;
@@ -244,6 +264,11 @@ __global__ void getforce_14pair_kernel_oss(
           d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
           d2Up_dlami_dlamj += dlixlj_dli_dlj * U_dir;
           // Accumulate later... or do I need to use special soft-core variables
+          // Vanilla forces & energy
+          eij += lixljtmp*U_dir;
+          fij += lixljtmp*dU_drijp_tmp*drijp_drij;
+          fli += dlixlj_dli*U_dir;
+          flj += dlixlj_dlj*U_dir;
 
           // Coulomb - soft-cored - lixlj * e14/rEff
           rinv = 1/rEff; // Corrected above change to go back to soft-coring
@@ -255,6 +280,10 @@ __global__ void getforce_14pair_kernel_oss(
           d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
           d2Up_dlami_dlamj += dlixlj_dli_dlj * U_dir;
           // Accumulate later...
+          eij += lixljtmp*U_dir;
+          fij += lixljtmp*dU_drijp_tmp*drijp_drij;
+          fli += dlixlj_dli*U_dir;
+          flj += dlixlj_dlj*U_dir;
         }
         else {
           //TODO: Implement this path
@@ -296,6 +325,10 @@ __global__ void getforce_14pair_kernel_oss(
           d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
           d2Up_dlami_dlamj += dlixlj_dli_dlj * U_dir;
           // Accumulate later...
+          eij += lixljtmp*U_dir;
+          fij += lixljtmp*dU_drijp_tmp*drijp_drij;
+          fli += dlixlj_dli*U_dir;
+          flj += dlixlj_dlj*U_dir;
         }
         else { // Not soft-cored
           if ( !usevdWSwitch ) { // Force Switch
@@ -309,9 +342,14 @@ __global__ void getforce_14pair_kernel_oss(
             real d2U_drij_dlamj = dlixlj_dlj * fij_tmp;
             real d2U_dli_dlj = dlixlj_dli_dlj * eij_tmp;
             // No soft-core = direct accumulation
-            fij += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
-            fli += dGdFjtmp * d2U_dli_dlj;
-            fljtmp += dGdFi * d2U_dli_dlj;
+            fij_ost += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
+            fli_ost += dGdFjtmp * d2U_dli_dlj;
+            fljtmp_ost += dGdFi * d2U_dli_dlj;
+            // Vanilla Potential & Forces
+            eij += lixljtmp*eij_tmp;
+            fij += lixljtmp*fij_tmp;
+            fli += dlixlj_dli*eij_tmp;
+            flj += dlixlj_dli*eij_tmp; 
           } else { // Potential Switch
             real c2ofnb=cutoffs.rCut*cutoffs.rCut;
             real c2onnb=cutoffs.rSwitch*cutoffs.rSwitch;
@@ -329,9 +367,14 @@ __global__ void getforce_14pair_kernel_oss(
             real d2U_drij_dlamj = dlixlj_dlj * fij_tmp;
             real d2U_dli_dlj = dlixlj_dli_dlj * eij_tmp;
             // No soft-core = direct accumulation
-            fij += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
-            fli += dGdFjtmp * d2U_dli_dlj;
-            fljtmp += dGdFi * d2U_dli_dlj;
+            fij_ost += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
+            fli_ost += dGdFjtmp * d2U_dli_dlj;
+            fljtmp_ost += dGdFi * d2U_dli_dlj;
+            // Vanilla Potential & Forces
+            eij += lixljtmp*eij_tmp;
+            fij += lixljtmp*fij_tmp;
+            fli += dlixlj_dli*eij_tmp;
+            flj += dlixlj_dli*eij_tmp;
           }
         }
 
@@ -339,34 +382,35 @@ __global__ void getforce_14pair_kernel_oss(
         real fij_ost = 0;
         real d2U_drij_dlami = dU_drijp*d2rijp_drij_dlami + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami) * drijp_drij;
         real d2U_drij_dlamj = dU_drijp*d2rijp_drij_dlamj + (d2U_drijp_dlamj + d2U_drijp2*drijp_dlamj) * drijp_drij;
-        // Interaction feels i, j, or both histograms
-        fij_ost = dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
 
         // OST lambda force:
         real fli_ost = 0;
         real fljtmp_ost = 0;
-        // Only exists for alc-alc interactions
         real d2U_dlami_dlamj = d2Up_dlami_dlamj +
           d2U_drijp_dlamj*drijp_dlami + dU_drijp*d2rijp_dlami_dlamj + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami) * drijp_dlamj;
-        // Missing first term from previous - these are definitely not zero with soft-coring - exist for every alc-___ interaction
         real d2U_dlami2 = d2U_drijp_dlami*drijp_dlami + dU_drijp * d2rijp_dlami2 + (d2U_drijp_dlami + d2U_drijp2 * drijp_dlami)*drijp_dlami;
         real d2U_dlamj2 = d2U_drijp_dlamj*drijp_dlamj + dU_drijp * d2rijp_dlamj2 + (d2U_drijp_dlamj + d2U_drijp2 * drijp_dlamj)*drijp_dlamj;
-        fli_ost = dGdFi*d2U_dlami2 + dGdFjtmp*d2U_dlami_dlamj;
-        fljtmp_ost = dGdFi*d2U_dlami_dlamj + dGdFjtmp*d2U_dlamj2;
 
-        // Accumulate ost forces
-        fij += fij_ost;
-        fli += fli_ost;
-        fljtmp += fljtmp_ost;
-        atomicAdd(&lambdaForce[b[0]], fli);
+        // OSS Forces
+        fij_ost += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
+        fli_ost += dGdFi*d2U_dlami2 + dGdFjtmp*d2U_dlami_dlamj;
+        fljtmp_ost += dGdFi*d2U_dlami_dlamj + dGdFjtmp*d2U_dlamj2;
+
+        // OSS & Vanilla forces
+        atomicAdd(&lambdaForce[b[0]], fli_ost);
+        atomicAdd(&lambdaForce_extra[b[0]], fli);
         if (b[1]) {
-          atomicAdd(&lambdaForce[b[1]], fljtmp);
+          atomicAdd(&lambdaForce[b[1]], fljtmp_ost);
+          atomicAdd(&lambdaForce_extra[b[1]], flj);
         }
-        at_real3_scaleinc(&force[ii], fij/r,dr);
-        at_real3_scaleinc(&force[jj],-fij/r,dr);
+        at_real3_scaleinc(&force[ii], fij_ost/r,dr);
+        at_real3_scaleinc(&force[jj],-fij_ost/r,dr);
+        at_real3_scaleinc(&alchemForce[ii], fij/r,dr);
+        at_real3_scaleinc(&alchemForce[jj],-fij/r,dr);
       }
     }
   }
+  real_sum_reduce(lEnergy,sEnergy,alchem_energy);
 }
 
 template <bool flagBox,bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
@@ -376,16 +420,17 @@ void getforce_nb14TTTT_oss(System *system,box_type box)
   State *s=system->state;
   Run *r=system->run;
   int N=p->nb14Count;
-  int shMem=0;
+  int shMem=BLBO*sizeof(real)/32;
 
   if (r->calcTermFlag[eenb14]==false) return;
 
   if (N==0) return;
 
-  getforce_14pair_kernel_oss<flagBox,useSoftCore,usevdWSwitch,usePME> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
+  getforce_14pair_kernel_oss<flagBox,useSoftCore,usevdWSwitch,usePME> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->alchemRecip>>>(
       N,p->nb14s_d,system->run->cutoffs,(real3*)s->position_fd,
-      (real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,
-      system->msld->dGdF_d);
+      (real3_f*)s->force_d,(real3_f*)(system->msld->GaMD_alchem_force_d+system->msld->blockCount),box,
+      s->lambda_fd,s->lambdaForce_d, (real_f*)system->msld->GaMD_alchem_force_d, 
+      system->msld->dGdF_d, system->msld->alchem_energy_d);
 }
 
 template <bool flagBox,bool useSoftCore,bool usevdWSwitch,typename box_type>
@@ -436,18 +481,19 @@ void getforce_nbexT_oss(System *system,box_type box)
   State *s=system->state;
   Run *r=system->run;
   int N=p->nbexCount;
-  int shMem=0;
+  int shMem=BLBO*sizeof(real)/32;
 
   if (N==0) return;
 
   if (r->usePME==false) return;
   if (r->calcTermFlag[eenbrecipexcl]==false) return;
 
-  // Never use soft cores for nbex, they're already soft.
-  getforce_exclusion_pair_kernel_oss<flagBox,false,false,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
-      N,p->nbexs_d,system->run->cutoffs,(real3*)s->position_fd,
-      (real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,
-      system->msld->dGdF_d);
+  // Ewald already soft-cored
+  getforce_exclusion_pair_kernel_oss<flagBox,false,false,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->alchemRecip>>>(
+    N,p->nbexs_d,system->run->cutoffs,(real3*)s->position_fd,
+      (real3_f*)s->force_d,(real3_f*)(system->msld->GaMD_alchem_force_d+system->msld->blockCount),box,
+      s->lambda_fd,s->lambdaForce_d, (real_f*)system->msld->GaMD_alchem_force_d, 
+      system->msld->dGdF_d, system->msld->alchem_energy_d);
 }
 
 void getforce_nbex_oss(System *system)

@@ -7,6 +7,7 @@
 #include "system/potential.h"
 #include "run/run.h"
 #include "main/real3.h"
+#include "msld/msld.h""
 
 
 
@@ -429,7 +430,11 @@ void Domdec::pack_positions(System *system)
   }
 }
 
-__global__ void unpack_forces_kernel(int blockCount,int *blockBounds,int *localToGlobal,real3_f *force,real3_f *localForce)
+__global__ void unpack_forces_kernel(
+  int blockCount,int *blockBounds,int *localToGlobal,
+  real3_f *force,real3_f *localForce,
+  real3_f *alchemForce, real3_f *localAlchemForce
+)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   int iBlock=i/32;
@@ -441,6 +446,7 @@ __global__ void unpack_forces_kernel(int blockCount,int *blockBounds,int *localT
     iLocal+=(i&31);
     if ((i&31)<atomsInBlock) {
       at_real3_inc(&force[localToGlobal[iLocal]],localForce[i]);
+      at_real3_inc(&alchemForce[localToGlobal[iLocal]],localAlchemForce[i]);
     }
   }
 }
@@ -450,7 +456,10 @@ void Domdec::unpack_forces(System *system)
   Run *r=system->run;
   int N=blockCount[idCount];
   if (id>=0) {
-    unpack_forces_kernel<<<(32*N+BLUP-1)/BLUP,BLUP,0,r->nbdirectStream>>>(N,blockBounds_d,localToGlobal_d,(real3_f*)system->state->force_d,localForce_d);
+    unpack_forces_kernel<<<(32*N+BLUP-1)/BLUP,BLUP,0,r->nbdirectStream>>>
+      (N,blockBounds_d,localToGlobal_d,
+      (real3_f*)system->state->force_d,localForce_d,
+      (real3_f*)(system->msld->GaMD_alchem_force_d+system->msld->blockCount), localAlchemForce_d);
   }
 }
 
@@ -459,6 +468,9 @@ void Domdec::unpack_forces_oss(System *system)
   Run *r=system->run;
   int N=blockCount[idCount];
   if (id>=0) {
-    unpack_forces_kernel<<<(32*N+BLUP-1)/BLUP,BLUP,0,r->ossDirect>>>(N,blockBounds_d,localToGlobal_d,(real3_f*)system->state->force_d,localForce_d);
+    unpack_forces_kernel<<<(32*N+BLUP-1)/BLUP,BLUP,0,r->alchemDirect>>>
+      (N,blockBounds_d,localToGlobal_d,
+      (real3_f*)system->state->force_d,localForce_d, 
+      (real3_f*)(system->msld->GaMD_alchem_force_d+system->msld->blockCount),localAlchemForce_d);
   }
 }

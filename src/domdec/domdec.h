@@ -58,6 +58,7 @@ class Domdec {
   int *globalToLocal_d;
   real3 *localPosition_d;
   real3_f *localForce_d;
+  real3_f *localAlchemForce_d; // Place alchemical forces
   struct NbondPotential *localNbonds_d;
 // For sorting atoms into blocks
   int2 domainDiv;

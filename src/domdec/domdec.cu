@@ -50,6 +50,7 @@ Domdec::~Domdec()
   if (localToGlobal_d) cudaFree(localToGlobal_d);
   if (globalToLocal_d) cudaFree(globalToLocal_d);
   if (localPosition_d) cudaFree(localPosition_d);
+  if (localAlchemForce_d) cudaFree(localAlchemForce_d);
   if (localForce_d) cudaFree(localForce_d);
   if (localNbonds_d) cudaFree(localNbonds_d);
   if (blockSort_d) cudaFree(blockSort_d);
@@ -140,6 +141,7 @@ void Domdec::initialize(System *system)
   // See also localForce_d size in src/system/potential.cxx
   cudaMalloc(&localPosition_d,32*maxBlocks*sizeof(real3));
   cudaMalloc(&localForce_d,32*maxBlocks*sizeof(real3_f));
+  cudaMalloc(&localAlchemForce_d, 32*maxBlocks*sizeof(real3_f)); // corresponds to system->msld->GaMD_alchem_forces_d
   cudaMalloc(&localNbonds_d,32*maxBlocks*sizeof(struct NbondPotential));
   cudaMalloc(&blockSort_d,(globalCount+1)*sizeof(struct DomdecBlockSort));
   cudaMalloc(&blockToken_d,(globalCount+1)*sizeof(struct DomdecBlockToken));

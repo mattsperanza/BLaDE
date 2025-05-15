@@ -16,18 +16,27 @@
 
 __global__ void getforce_ewaldself_kernel_oss(
   int atomCount,real *charge,real prefactor,
-  int *atomBlock,real_f *lambdaForce,
-  real* dGdF)
+  int *atomBlock,real *lambdas, 
+  real_f *lambdaForce, real_f *lambdaForce_extra,
+  real* dGdF, real* alchem_energy)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
-  real q;
+  real q, l;
   int b;
+  real lEnergy=0;
+  extern __shared__ real sEnergy[];
+
   if (i<atomCount && atomBlock[i]) {
     q=charge[i];
     b=atomBlock[i];
+    l=lambdas[b];
+    lEnergy = prefactor*l*l*q*q;
+    real dU_dli = 2*prefactor*l*q*q;
     real d2U_dli2 = 2*prefactor*q*q;
     atomicAdd(&lambdaForce[b], dGdF[b]*d2U_dli2);
+    atomicAdd(&lambdaForce_extra[b], dU_dli);
   }
+  real_sum_reduce(lEnergy,sEnergy,alchem_energy);
 }
 
 void getforce_ewaldself_oss(System *system)
@@ -37,16 +46,17 @@ void getforce_ewaldself_oss(System *system)
   Msld *m=system->msld;
   Run *r=system->run;
   int N=p->atomCount;
-  int shMem=0;
+  int shMem=BLNB*sizeof(real)/32;
   real_e *pEnergy=NULL;
   real prefactor=-system->run->betaEwald*(kELECTRIC/sqrt(M_PI));
 
   if (r->usePME==false) return;
   if (r->calcTermFlag[eenbrecipself]==false) return;
 
-  getforce_ewaldself_kernel_oss<<<(N+BLNB-1)/BLNB,BLNB,shMem,r->ossRecip>>>(
-    N,p->charge_d,prefactor,m->atomBlock_d,
-    s->lambdaForce_d, m->dGdF_d);
+  getforce_ewaldself_kernel_oss<<<(N+BLNB-1)/BLNB,BLNB,shMem,r->alchemRecip>>>(
+    N,p->charge_d,prefactor,m->atomBlock_d, s->lambda_fd,
+    s->lambdaForce_d, m->GaMD_alchem_force_d, 
+    m->dGdF_d, m->alchem_energy_d);
 }
 
 template <bool flagBox,int order,typename box_type>
@@ -240,9 +250,13 @@ __global__ void getforce_ewald_gather_kernel_oss(
   real *dGdF,
   real3 *position,
   real3_f *force,
+  real3_f *alchemForce,
   box_type kbox,
   real *lambda,
-  real_f *lambdaForce)
+  real_f *lambdaForce,
+  real_f *lambdaForce_extra,
+  real *alchem_energy
+)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   real q=0; // Avoid unitialized values for iAtom>=atomCount
@@ -262,6 +276,7 @@ __global__ void getforce_ewald_gather_kernel_oss(
   int iThread=rectify_modulus(threadIdx.x,32); // threadIdx.x&31; // within warp
   int iAtom=i/8;
   int threadOfAtom=rectify_modulus(i,8); // iThread%order;
+  extern __shared__ real sEnergy[];
   real lEnergy=0;
   real gEnergy=0;
 
@@ -412,6 +427,7 @@ __global__ void getforce_ewald_gather_kernel_oss(
   fi.z+=__shfl_down_sync(0xFFFFFFFF,fi.z,1);
   fgi.z+=__shfl_down_sync(0xFFFFFFFF,fgi.z,1);
   gEnergy+=__shfl_down_sync(0xFFFFFFFF,gEnergy,1);
+  lEnergy+=__shfl_down_sync(0xFFFFFFFF,lEnergy,1);
   fi.x+=__shfl_down_sync(0xFFFFFFFF,fi.x,2);
   fgi.x+=__shfl_down_sync(0xFFFFFFFF,fgi.x,2);
   fi.y+=__shfl_down_sync(0xFFFFFFFF,fi.y,2);
@@ -419,6 +435,7 @@ __global__ void getforce_ewald_gather_kernel_oss(
   fi.z+=__shfl_down_sync(0xFFFFFFFF,fi.z,2);
   fgi.z+=__shfl_down_sync(0xFFFFFFFF,fgi.z,2);
   gEnergy+=__shfl_down_sync(0xFFFFFFFF,gEnergy,2);
+  lEnergy+=__shfl_down_sync(0xFFFFFFFF,lEnergy,2);
   fi.x+=__shfl_down_sync(0xFFFFFFFF,fi.x,4);
   fgi.x+=__shfl_down_sync(0xFFFFFFFF,fgi.x,4);
   fi.y+=__shfl_down_sync(0xFFFFFFFF,fi.y,4);
@@ -426,12 +443,14 @@ __global__ void getforce_ewald_gather_kernel_oss(
   fi.z+=__shfl_down_sync(0xFFFFFFFF,fi.z,4);
   fgi.z+=__shfl_down_sync(0xFFFFFFFF,fgi.z,4);
   gEnergy+=__shfl_down_sync(0xFFFFFFFF,gEnergy,4);
+  lEnergy+=__shfl_down_sync(0xFFFFFFFF,lEnergy,4);
   // Reduction only correct for threadOfAtom==0
 
   // Lambda force
   if (iAtom<atomCount) {
     if (b && threadOfAtom==0) {
       atomicAdd(&lambdaForce[b], 2*q*gEnergy); // dQ/dL * (T * G)
+      atomicAdd(&lambdaForce_extra[b], 2*q*lEnergy); // dQ/dL * (T * G)
     }
   }
 
@@ -477,8 +496,11 @@ __global__ void getforce_ewald_gather_kernel_oss(
     }
     if (threadOfAtom==0) {
       at_real3_inc(&force[iAtom], fgi);
+      at_real3_inc(&alchemForce[iAtom], fi);
     }
   }
+  lEnergy *= threadOfAtom == 0? l*q : 0;
+  real_sum_reduce(lEnergy,sEnergy,alchem_energy);
 }
 
 template <bool flagBox,int order,typename box_type>
@@ -489,20 +511,20 @@ void getforce_ewaldTT_oss(System *system,box_type kbox)
   Msld *m=system->msld;
   Run *r=system->run;
   int N=p->atomCount;
-  int shMem=0;
+  int shMem=BLNB*sizeof(real)/32;
   real *dGdF = system->msld->dGdF_d;
 
   if (r->usePME==false) return;
   if (r->calcTermFlag[eenbrecip]==false) return;
 
   // Note we will already have the potential grid from the previous
-  cudaMemsetAsync(p->ostGridPME_d,0,p->gridDimPME[0]*p->gridDimPME[1]*p->gridDimPME[2]*sizeof(myCufftReal),r->ossRecip);
+  cudaMemsetAsync(p->ostGridPME_d,0,p->gridDimPME[0]*p->gridDimPME[1]*p->gridDimPME[2]*sizeof(myCufftReal),r->alchemRecip);
 
   // Setup for spread and gather
   int spreadGatherBlocks=(N + BLNB/8 - 1)/(BLNB/8);
 
   // Spread kernel
-  getforce_ewald_spread_kernel_oss<flagBox,order><<<spreadGatherBlocks,BLNB,0,r->ossRecip>>>(
+  getforce_ewald_spread_kernel_oss<flagBox,order><<<spreadGatherBlocks,BLNB,0,r->alchemRecip>>>(
     N,p->charge_d,m->atomBlock_d,(real3*)s->position_fd,kbox,
     s->lambda_fd,((int3*)p->gridDimPME)[0],
     dGdF, p->ostGridPME_d);
@@ -512,16 +534,19 @@ void getforce_ewaldTT_oss(System *system,box_type kbox)
   // Convolution kernel
   dim3 blockCount((p->gridDimPME[0]+8-1)/8,(p->gridDimPME[1]+8-1)/8,(p->gridDimPME[2]/2+1+8-1)/8);
   dim3 blockSize(8,8,8);
-  getforce_ewald_convolution_kernel_oss<flagBox><<<blockCount,blockSize,0,r->ossRecip>>>(((int3*)p->gridDimPME)[0],
+  getforce_ewald_convolution_kernel_oss<flagBox><<<blockCount,blockSize,0,r->alchemRecip>>>(((int3*)p->gridDimPME)[0],
     p->ostFourierGridPME_d, p->bGridPME_d,system->run->betaEwald,kbox);
 
   myCufftExecC2R(p->ossPlanIFFTPME, p->ostFourierGridPME_d, p->ostPotentialGridPME_d);
 
   // Gather kernel
-  getforce_ewald_gather_kernel_oss<flagBox,order><<<spreadGatherBlocks,BLNB,shMem,r->ossRecip>>>(
+  getforce_ewald_gather_kernel_oss<flagBox,order><<<spreadGatherBlocks,BLNB,shMem,r->alchemRecip>>>(
     N,p->charge_d,m->atomBlock_d,((int3*)p->gridDimPME)[0],
     p->potentialGridPME_d, p->ostPotentialGridPME_d, dGdF,
-    (real3*)s->position_fd,(real3_f*)s->force_d,kbox,s->lambda_fd,s->lambdaForce_d);
+    (real3*)s->position_fd,
+    (real3_f*)s->force_d,(real3_f*)(system->msld->GaMD_alchem_force_d + system->msld->blockCount), 
+    kbox,s->lambda_fd,s->lambdaForce_d, (real_f*) system->msld->GaMD_alchem_force_d,
+    system->msld->alchem_energy_d);
 }
 
 template <bool flagBox,typename box_type>
