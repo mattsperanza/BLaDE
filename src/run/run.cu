@@ -814,9 +814,9 @@ void Run::dynamics_initialize(System *system)
 #ifdef REPLICAEXCHANGE
   if (!fpREx && freqREx>0) fpREx=fpopen(fnmREx.c_str(),"w");
 #endif
-  if (!fpMTD_LMD && system->msld->oss) fpMTD_LMD=fpopen(fnmMTD_LMD.c_str(),"w");
-  if (!fpMTD_dUdL && system->msld->oss) fpMTD_dUdL=fpopen(fnmMTD_dUdL.c_str(),"w");
-  if (!fpMTD_HIST && system->msld->oss) fpMTD_HIST=fpopen(fnmMTD_HIST.c_str(),"w");
+  if (!fpMTD_LMD) fpMTD_LMD=fpopen(fnmMTD_LMD.c_str(),"w");
+  if (!fpMTD_dUdL) fpMTD_dUdL=fpopen(fnmMTD_dUdL.c_str(),"w");
+  if (!fpMTD_HIST) fpMTD_HIST=fpopen(fnmMTD_HIST.c_str(),"w");
 
   // Finish setting up MSLD
   system->msld->initialize(system);

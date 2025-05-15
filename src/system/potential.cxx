@@ -1570,6 +1570,11 @@ void Potential::reset_force(System *system,bool calcEnergy)
   if (calcEnergy) {
     cudaMemset(system->state->energy_d,0,eeend*sizeof(real_e));
   }
+  int nAtoms = system->state->atomCount;
+  int nL = system->msld->blockCount;
+  int DOF = nAtoms*3 + nL;
+  cudaMemset(system->msld->GaMD_torsion_force_d, 0, DOF*sizeof(real));
+  cudaMemset(system->msld->GaMD_alchem_force_d, 0, DOF*sizeof(real));
 }
 
 void Potential::calc_force(int step,System *system) {
@@ -1651,21 +1656,32 @@ void Potential::calc_force(int step,System *system) {
     // Every step of this requires potential energy
     system->state->recv_energy();
     cudaMemcpy(system->msld->alchem_energy, system->msld->alchem_energy_d, sizeof(real), cudaMemcpyDefault);
+    // Init
     if (system->run->step < system->msld->init_steps){
-      if (system->run->step == system->msld->init_steps - 1){ // Last step
-        system->msld->gamd_update(system, true);
-        system->msld->gamd_reset(system);
-      } else {
-        system->msld->gamd_update(system, false);
+      real init_left = 
+        ((real)system->msld->init_steps - system->run->step) 
+        / (system->msld->init_steps);
+      if(init_left < .75){ // throw 25% away for equil
+        if (system->run->step == system->msld->init_steps - 1){ // Last step
+          printf("Resetting GaMD for equil!\n");
+          system->msld->gamd_update(system, true);
+          system->msld->gamd_reset(system);
+        } else {
+          system->msld->gamd_update(system, false);
+        }
       }
     }
+    // equil
     else if (system->run->step < system->msld->equil_steps){
       real equil_left = 
-      (system->msld->equil_steps - system->run->step) 
+      ((real)system->msld->equil_steps - system->run->step) 
       / (system->msld->equil_steps - system->msld->init_steps);
-      bool update = equil_left < .75; // Quarter of equil spent rebuilding stats not updating E or k 
-      system->msld->gamd_update(system, update);
+      if (equil_left < .90){ // Throw 10% away to equil
+        bool update = equil_left < .70; // 20% spent sampling w/o updates to E or k  
+        system->msld->gamd_update(system, update);
+      }
       system->msld->getforce_gamd(system);
+    // prod
     } else {
       system->msld->getforce_gamd(system);
     }

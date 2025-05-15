@@ -936,7 +936,8 @@ void Msld::getforce_gamd(System* system) {
       real V = system->state->energy[eepotential];
       if (GaMD_torsion){ V -= system->state->energy[eedihe] + system->state->energy[eeimpr]; }
       if (GaMD_alchem){ V -= *system->msld->alchem_energy; }
-      printf("Potential (w/o extra): %f, Boost: %f, total_p_stats: [ ", V, GaMD_bias_added[0]);
+      printf("Potential (w/o extra): %f +/- %f, Boost: %f, total_p_stats: [ ", 
+        V, sqrt(total_p_stats[3] / GaMD_samples), GaMD_bias_added[0]);
       for(int i = 0; i < num_GaMD_stats; i++){
         printf("%f, ", total_p_stats[i]);
       }
@@ -944,7 +945,8 @@ void Msld::getforce_gamd(System* system) {
     }
     if (GaMD_torsion){
       real V = system->state->energy[eedihe] + system->state->energy[eeimpr];
-      printf("Torsion Potential: %f, Boost: %f, torsion_p_stats: [ ", V, GaMD_bias_added[1]);
+      printf("Torsion Potential: %f +/- %f, Boost: %f, torsion_p_stats: [ ", 
+        V, sqrt(torsion_p_stats[3] / GaMD_samples), GaMD_bias_added[1]);
       for(int i = 0; i < num_GaMD_stats; i++){
         printf("%f, ", torsion_p_stats[i]);
       }
@@ -965,11 +967,8 @@ void Msld::getforce_gamd(System* system) {
     GaMD_torsion_force_d, GaMD_torsion,
     GaMD_alchem_force_d, GaMD_alchem);
 
-  // Reset force arrays
-  cudaMemset(GaMD_torsion_force_d, 0, DOF*sizeof(real));
-  cudaMemset(GaMD_alchem_force_d, 0, DOF*sizeof(real));
+  // Reset force arrays with rest of forces
 }
-
 
 // Subtract ALF bias forces from dU_msld to get true dU_msld
 __global__ void sub_alf_kernel(real* dU_msld, real* dU_alf, int nL){

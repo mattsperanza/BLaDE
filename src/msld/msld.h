@@ -103,8 +103,8 @@ public:
   // GaMD Parameters - 3 Stages: [0, init), [init,equil), [equil, nStep)
   real* alchem_energy; // Internal energy of alchemical system
   real* alchem_energy_d;
-  real init_steps=1000000;
-  real equil_steps=init_steps+1000000;
+  int init_steps=1000000;
+  int equil_steps=init_steps+1000000;
   bool GaMD_total = false;
   bool GaMD_torsion = false;
   bool GaMD_alchem = false;
