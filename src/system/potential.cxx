@@ -1567,6 +1567,7 @@ void Potential::reset_force(System *system,bool calcEnergy)
   // cudaMemset(system->domdec->localForce_d,0,2*system->domdec->globalCount*sizeof(real3_f));
   // Fixed. See also localForce_d in src/domdec/domdec.cu
   cudaMemset(system->domdec->localForce_d,0,32*system->domdec->maxBlocks*sizeof(real3_f));
+  cudaMemset(system->domdec->localAlchemForce_d,0,32*system->domdec->maxBlocks*sizeof(real3_f));
   if (calcEnergy) {
     cudaMemset(system->state->energy_d,0,eeend*sizeof(real_e));
   }
@@ -1575,6 +1576,7 @@ void Potential::reset_force(System *system,bool calcEnergy)
   int DOF = nAtoms*3 + nL;
   cudaMemset(system->msld->GaMD_torsion_force_d, 0, DOF*sizeof(real));
   cudaMemset(system->msld->GaMD_alchem_force_d, 0, DOF*sizeof(real));
+  cudaMemset(system->msld->alchem_energy_d, 0, sizeof(real));
 }
 
 void Potential::calc_force(int step,System *system) {

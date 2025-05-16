@@ -31,7 +31,7 @@ __global__ void getforce_ewaldself_kernel_oss(
     b=atomBlock[i];
     l=lambdas[b];
     lEnergy = prefactor*l*l*q*q;
-    real dU_dli = 2*prefactor*l*q*q;
+    real dU_dli = 2*l*prefactor*q*q;
     real d2U_dli2 = 2*prefactor*q*q;
     atomicAdd(&lambdaForce[b], dGdF[b]*d2U_dli2);
     atomicAdd(&lambdaForce_extra[b], dU_dli);
@@ -544,7 +544,7 @@ void getforce_ewaldTT_oss(System *system,box_type kbox)
     N,p->charge_d,m->atomBlock_d,((int3*)p->gridDimPME)[0],
     p->potentialGridPME_d, p->ostPotentialGridPME_d, dGdF,
     (real3*)s->position_fd,
-    (real3_f*)s->force_d,(real3_f*)(system->msld->GaMD_alchem_force_d + system->msld->blockCount), 
+    (real3_f*)s->force_d,(real3_f*)(system->msld->GaMD_alchem_force_d+system->msld->blockCount), 
     kbox,s->lambda_fd,s->lambdaForce_d, (real_f*) system->msld->GaMD_alchem_force_d,
     system->msld->alchem_energy_d);
 }

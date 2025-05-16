@@ -421,6 +421,8 @@ void parse_msld(char *line,System *system)
     system->msld->GaMD_total=io_nextb(line);
   } else if (strcmp(token, "GaMD_torsion") == 0){
     system->msld->GaMD_torsion=io_nextb(line);
+  } else if (strcmp(token, "GaMD_alchem") == 0){
+    system->msld->GaMD_alchem=io_nextb(line);
   } else if (strcmp(token, "GaMD_init_steps") == 0){ // These next two need to be set in order
     system->msld->init_steps=io_nexti(line);
   } else if (strcmp(token, "GaMD_equil_steps") == 0){
@@ -737,6 +739,10 @@ void Msld::initialize(System *system)
   cudaMalloc(&dU_alf_d, blockCount*sizeof(real));
   cudaMalloc(&hist_potential_d, (blockCount-1)*sizeof(real)); // use blockCount so that it is indexed same as lambda array
   cudaMemset(hist_potential_d, 0, (blockCount-1)*sizeof(real));
+  cudaMalloc(&dGdF_d, blockCount*sizeof(real)); // use blockCount so that it is indexed same as lambda array
+  cudaMemset(dGdF_d, 0, blockCount*sizeof(real));
+  cudaMalloc(&dGdL_d, blockCount*sizeof(real));
+  cudaMemset(dGdL_d, 0, blockCount*sizeof(real));
   dU_msld = (real*)malloc(blockCount*sizeof(real));
   hist_potential = (real*)malloc((blockCount-1)*sizeof(real));
   if (oss && !oss_histogram_d) {
@@ -746,7 +752,8 @@ void Msld::initialize(System *system)
   // GaMD
   int nAtoms = system->structure->atomCount;
   int nL = system->msld->blockCount;
-  int DOF = nAtoms*3 + nL;
+  int rootFactor=(system->id==0?system->idCount:1);
+  int DOF = (nAtoms*3 + nL);
   cudaMalloc(&GaMD_torsion_force_d, DOF*sizeof(real));
   cudaMemset(GaMD_torsion_force_d, 0, DOF*sizeof(real));
   cudaMalloc(&GaMD_alchem_force_d, DOF*sizeof(real));
@@ -763,11 +770,11 @@ void Msld::initialize(System *system)
     memset(torsion_p_stats, 0, num_GaMD_stats*sizeof(double));
     torsion_p_stats[0] = 1e9; // Min starts at large value
     torsion_p_stats[1] = -1e9; // Max starts at small value
-    torsion_p_stats[4] = 6;
+    torsion_p_stats[4] = 10;
     memset(alchem_p_stats, 0, num_GaMD_stats*sizeof(double));
     alchem_p_stats[0] = 1e9; // Min starts at large value
     alchem_p_stats[1] = -1e9; // Max starts at small value
-    alchem_p_stats[4] = 6;
+    alchem_p_stats[4] = 40;
   }
 
   // Atom restraints
@@ -890,7 +897,6 @@ void __global__ gamd_kernel(
     remaining_force -= remove_alchem ? alchem_force[i] : 0;
     force[i] += remaining_force*dBoost_total; 
     force[i] += torsion_force[i]*dBoost_torsion;
-    // Potential overlap between torsion & this term
     force[i] += alchem_force[i]*dBoost_alchem;
   }
 }
@@ -973,14 +979,29 @@ void Msld::getforce_gamd(System* system) {
   }
 
   // TODO: Add boosts to total potential
-
   // Subtract torsion and alchem forces from total force array
   int nAtoms = system->state->atomCount;
   int nL = system->msld->blockCount;
   int DOF = nAtoms*3 + nL;
+
+  // Log difference in gradients
+  /*
+  real truth[DOF];
+  real mine[DOF];
+  cudaMemcpy(truth, system->state->forceBuffer_d, DOF*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(mine, system->msld->GaMD_alchem_force_d, DOF*sizeof(real), cudaMemcpyDefault);
+  for(int i = 0; i < DOF; i++){
+    if(abs(truth[i] - mine[i]) > 1e-4){
+      printf("Broken: ");
+    }
+    printf("i: %d, truth: %f, mine: %f\n", i, truth[i], mine[i]);
+  }
+  exit(1);
+  */
+
   gamd_kernel<<<(DOF+BLMS-1)/BLMS,BLMS,0,stream>>>(
     DOF, dBoost_total, dBoost_torsion, dBoost_alchem,
-    (real*) system->state->force_d, 
+    (real*) system->state->forceBuffer_d, 
     GaMD_torsion_force_d, GaMD_torsion,
     GaMD_alchem_force_d, GaMD_alchem);
 
@@ -1040,11 +1061,6 @@ void Msld::init_oss(System* system){
     cudaMemset(oss_potential_d, 0, nL*L_oss_bins*dUdL_bins*sizeof(real));
     cudaMalloc(&oss_histogram_d, nL*L_oss_bins*dUdL_bins*sizeof(real)); 
     cudaMemset(oss_histogram_d, 0, nL*L_oss_bins*dUdL_bins*sizeof(real));
-
-    cudaMalloc(&dGdF_d, blockCount*sizeof(real)); // use blockCount so that it is indexed same as lambda array
-    cudaMemset(dGdF_d, 0, blockCount*sizeof(real));
-    cudaMalloc(&dGdL_d, blockCount*sizeof(real));
-    cudaMemset(dGdL_d, 0, blockCount*sizeof(real));
 
     // Set variables consistant with user input
     real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
@@ -1189,7 +1205,7 @@ void Msld::add_sample(System* system, int step) { // Step = 0 during NPT steps
 
   if (update_fe_surface){
     // Only write restarts while dropping gaussians
-    if (step % (sample_freq*1000) == 0 && step != 0){ 
+    if (step % (sample_freq*10000) == 0 && step != 0){ 
       printf("Writing Restart & Potential Files!\n");
       write_histogram_file(system, "hist_restart.txt", false);
       write_histogram_file(system, "hist_potential.txt", true);

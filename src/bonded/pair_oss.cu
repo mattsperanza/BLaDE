@@ -94,7 +94,6 @@ __global__ void getforce_exclusion_pair_kernel_oss(
       real fij_ost=0;
       real fli_ost=0;
       real fljtmp_ost=0;
-      real eij=0;
       real fij=0;
       real fli=0;
       real flj=0;
@@ -105,17 +104,17 @@ __global__ void getforce_exclusion_pair_kernel_oss(
       real kqq=kELECTRIC*pp.qxq;
       real fij_tmp=kqq*(erff(br)*rinv-((real)1.128379167095513)*cutoffs.betaEwald*expf(-br*br))*rinv;
       real uij=-kqq*erff(br)*rinv;
+      // Vanilla force & energy
       lEnergy = li*ljtmp*uij;
-      fij = li*ljtmp*fij_tmp;
+      fij = li*ljtmp*fij_tmp; // no soft
       fli = ljtmp*uij;
-      flj = li*uij;
+      flj = bjtmp ? li*uij : 0;
 
       // OST Derivatives - lixlij is always just li*lj for ewald?
       real dU_drij_dli = ljtmp*fij_tmp;
       real dU_drij_dlj = bjtmp ? li*fij_tmp : 0;
       real dU_dlami_dlamj = bi && bjtmp ? uij : 0;
 
-      // Forces redef
       fij_ost = dGdFi * dU_drij_dli + dGdFjtmp * dU_drij_dlj;
       fli_ost = dGdFjtmp * dU_dlami_dlamj;
       fljtmp_ost = dGdFi * dU_dlami_dlamj; // this doesn't over-count due to product rule
@@ -267,8 +266,8 @@ __global__ void getforce_14pair_kernel_oss(
           // Vanilla forces & energy
           eij += lixljtmp*U_dir;
           fij += lixljtmp*dU_drijp_tmp*drijp_drij;
-          fli += dlixlj_dli*U_dir;
-          flj += dlixlj_dlj*U_dir;
+          fli += dlixlj_dli*U_dir + lixljtmp*dU_drijp_tmp*drijp_dlami;
+          flj += dlixlj_dlj*U_dir + lixljtmp*dU_drijp_tmp*drijp_dlamj;
 
           // Coulomb - soft-cored - lixlj * e14/rEff
           rinv = 1/rEff; // Corrected above change to go back to soft-coring
@@ -280,10 +279,11 @@ __global__ void getforce_14pair_kernel_oss(
           d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
           d2Up_dlami_dlamj += dlixlj_dli_dlj * U_dir;
           // Accumulate later...
+          // Vanilla force & energy
           eij += lixljtmp*U_dir;
           fij += lixljtmp*dU_drijp_tmp*drijp_drij;
-          fli += dlixlj_dli*U_dir;
-          flj += dlixlj_dlj*U_dir;
+          fli += dlixlj_dli*U_dir + lixljtmp*dU_drijp_tmp*drijp_dlami;
+          flj += dlixlj_dlj*U_dir + lixljtmp*dU_drijp_tmp*drijp_dlamj;
         }
         else {
           //TODO: Implement this path
@@ -325,10 +325,11 @@ __global__ void getforce_14pair_kernel_oss(
           d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
           d2Up_dlami_dlamj += dlixlj_dli_dlj * U_dir;
           // Accumulate later...
+          // Vanilla
           eij += lixljtmp*U_dir;
           fij += lixljtmp*dU_drijp_tmp*drijp_drij;
-          fli += dlixlj_dli*U_dir;
-          flj += dlixlj_dlj*U_dir;
+          fli += dlixlj_dli*U_dir + lixljtmp*dU_drijp_tmp*drijp_dlami;
+          flj += dlixlj_dlj*U_dir + lixljtmp*dU_drijp_tmp*drijp_dlamj;
         }
         else { // Not soft-cored
           if ( !usevdWSwitch ) { // Force Switch
@@ -347,7 +348,7 @@ __global__ void getforce_14pair_kernel_oss(
             fljtmp_ost += dGdFi * d2U_dli_dlj;
             // Vanilla Potential & Forces
             eij += lixljtmp*eij_tmp;
-            fij += lixljtmp*fij_tmp;
+            fij += lixljtmp*fij_tmp; // no soft-core
             fli += dlixlj_dli*eij_tmp;
             flj += dlixlj_dli*eij_tmp; 
           } else { // Potential Switch
@@ -372,20 +373,17 @@ __global__ void getforce_14pair_kernel_oss(
             fljtmp_ost += dGdFi * d2U_dli_dlj;
             // Vanilla Potential & Forces
             eij += lixljtmp*eij_tmp;
-            fij += lixljtmp*fij_tmp;
+            fij += lixljtmp*fij_tmp; // no soft-core
             fli += dlixlj_dli*eij_tmp;
             flj += dlixlj_dli*eij_tmp;
           }
         }
 
         // Calculate chain rule derivatives due to soft-coring
-        real fij_ost = 0;
         real d2U_drij_dlami = dU_drijp*d2rijp_drij_dlami + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami) * drijp_drij;
         real d2U_drij_dlamj = dU_drijp*d2rijp_drij_dlamj + (d2U_drijp_dlamj + d2U_drijp2*drijp_dlamj) * drijp_drij;
 
         // OST lambda force:
-        real fli_ost = 0;
-        real fljtmp_ost = 0;
         real d2U_dlami_dlamj = d2Up_dlami_dlamj +
           d2U_drijp_dlamj*drijp_dlami + dU_drijp*d2rijp_dlami_dlamj + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami) * drijp_dlamj;
         real d2U_dlami2 = d2U_drijp_dlami*drijp_dlami + dU_drijp * d2rijp_dlami2 + (d2U_drijp_dlami + d2U_drijp2 * drijp_dlami)*drijp_dlami;

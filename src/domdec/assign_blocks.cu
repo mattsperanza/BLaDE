@@ -471,6 +471,6 @@ void Domdec::unpack_forces_oss(System *system)
     unpack_forces_kernel<<<(32*N+BLUP-1)/BLUP,BLUP,0,r->alchemDirect>>>
       (N,blockBounds_d,localToGlobal_d,
       (real3_f*)system->state->force_d,localForce_d, 
-      (real3_f*)(system->msld->GaMD_alchem_force_d+system->msld->blockCount),localAlchemForce_d);
+      (real3_f*)(system->msld->GaMD_alchem_force_d+system->msld->blockCount), localAlchemForce_d);
   }
 }

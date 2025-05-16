@@ -171,6 +171,7 @@ __global__ void getforce_nbdirect_oss_kernel(
 
     fi=real3_reset<real3>();
     fi_ost=real3_reset<real3>();
+
     fli=0;
     fli_ost=0;
 
@@ -231,6 +232,7 @@ __global__ void getforce_nbdirect_oss_kernel(
 
       fj=real3_reset<real3>();
       fj_ost=real3_reset<real3>();
+
       flj=0;
       flj_ost=0;
 
@@ -249,6 +251,7 @@ __global__ void getforce_nbdirect_oss_kernel(
 
             fjtmp=real3_reset<real3>();
             fjtmp_ost=real3_reset<real3>();
+
             fljtmp=0;
             fljtmp_ost=0;
             if (iThread<iCount && ((1<<jtmp)&exclMask)) {
@@ -272,7 +275,7 @@ __global__ void getforce_nbdirect_oss_kernel(
                   if (bi==bjtmp) { // intra-sub (i == j, alc-alc or env-env)
                     lixljtmp = li;
                     dlixlj_dli = bi ? 1 : 0;
-                    dlixlj_dlj = 0; // prevent over-count
+                    dlixlj_dlj = 0; // prevent over-count?
                     dGdFjtmp = 0;
                     dlixlj_dli_dlj = 0;
                   } else { // intra-site (i != j, alc-alc or env-env)
@@ -357,8 +360,8 @@ __global__ void getforce_nbdirect_oss_kernel(
                   // Vanilla forces & energy
                   eij += lixljtmp*U_dir;
                   fij += lixljtmp*dU_drijp_tmp*drijp_drij;
-                  fli += dlixlj_dli*U_dir;
-                  fljtmp += dlixlj_dlj*U_dir;
+                  fli += dlixlj_dli*U_dir + lixljtmp*dU_drijp_tmp*drijp_dlami;
+                  fljtmp += dlixlj_dlj*U_dir + lixljtmp*dU_drijp_tmp*drijp_dlamj;
                   // OSS Forces
                   real two = (real) 2.0;
                   d2U_drijp2 += lixljtmp*two*kELECTRIC*inp.q*jtmpnp_q*rinv*rinv*rinv*(1/M_PI)*
@@ -410,8 +413,8 @@ __global__ void getforce_nbdirect_oss_kernel(
                   // Vanilla Forces
                   eij += lixljtmp*U_dir;
                   fij += lixljtmp*dU_drijp_tmp*drijp_drij;
-                  fli += dlixlj_dli*U_dir;
-                  fljtmp += dlixlj_dlj*U_dir;
+                  fli += dlixlj_dli*U_dir + lixljtmp*dU_drijp_tmp*drijp_dlami;
+                  fljtmp += dlixlj_dlj*U_dir + lixljtmp*dU_drijp_tmp*drijp_dlamj;
                   // OST Forces
                   dU_drijp += lixljtmp * dU_drijp_tmp;
                   d2U_drijp2 += lixljtmp*((real)6.0)*rinv6*rinv*rinv*(((real)26.0)*vdwp.c12*rinv6-((real)7.0)*vdwp.c6);
@@ -430,9 +433,9 @@ __global__ void getforce_nbdirect_oss_kernel(
                     real eij_tmp=vdwp.c12*k12*(rinv6-rCutinv3*rCutinv3)*(rinv6-rCutinv3*rCutinv3)-vdwp.c6*k6*(rinv3-rCutinv3)*(rinv3-rCutinv3);
                     // Vanilla Potential & Forces
                     eij += lixljtmp*eij_tmp;
-                    fij += lixljtmp*fij_tmp;
-                    fli += dlixlj_dli*eij_tmp;
-                    fljtmp += dlixlj_dli*eij_tmp;
+                    fij += lixljtmp*fij_tmp;// no soft
+                    fli += dlixlj_dli*eij_tmp; 
+                    fljtmp += dlixlj_dli*eij_tmp; 
                     // OSS calculation (not soft-cored):
                     real d2U_drij_dlami = dlixlj_dli * fij_tmp;
                     real d2U_drij_dlamj = dlixlj_dlj * fij_tmp;
@@ -456,8 +459,8 @@ __global__ void getforce_nbdirect_oss_kernel(
                     real eij_tmp=fsw*(vdwp.c12*rinv6-vdwp.c6)*rinv6;
                     // Vanilla Potential & Forces
                     eij += lixljtmp*eij_tmp;
-                    fij += lixljtmp*fij_tmp;
-                    fli += dlixlj_dli*eij_tmp;
+                    fij += lixljtmp*fij_tmp; // no soft
+                    fli += dlixlj_dli*eij_tmp; 
                     fljtmp += dlixlj_dlj*eij_tmp;
                     // OSS calculation (not soft-cored):
                     real d2U_drij_dlami = dlixlj_dli * fij_tmp;
@@ -488,7 +491,7 @@ __global__ void getforce_nbdirect_oss_kernel(
                 real3_scaleinc(&fi_ost, fij_ost/r,dr);
                 fjtmp_ost=real3_scale<real3>(-fij_ost/r,dr);
 
-                // Accumulate alchem vanilla forces
+                // Accumulate vanilla alchem interaction forces
                 lEnergy += eij;
                 real3_scaleinc(&fi, fij/r, dr);
                 fjtmp=real3_scale<real3>(-fij/r,dr);
@@ -672,5 +675,6 @@ void getforce_nbdirect_oss_reduce(System *system) {
   Run *r=system->run;
   int N=3*s->atomCount+2*s->lambdaCount;
 
+  // TODO: This doesn't accound for multi-gpu yet
   getforce_nbdirect_reduce_oss_kernel<<<(N+BLNB-1)/BLNB,BLNB,0,r->alchemDirect>>>(N,system->idCount,s->forceBuffer_d);
 }

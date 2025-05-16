@@ -126,10 +126,10 @@ Run::Run(System *system)
 
   ossBias=0;
   ossBonded=0;
-  ossDirect=0;
-  ossRecip=0;
+  alchemDirect=0;
+  alchemRecip=0;
+  gamdBias=0;
 
-  gamdBias=0
 #else
   cudaStreamCreate(&updateStream);
   cudaStreamCreate(&bondedStream);
@@ -490,7 +490,7 @@ void test_OST_force(System *system) {
     cudaMemcpy(dU, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     double sum = 0;
     double num_sum = 0;
-    for (int j = 1; j < system->state->lambdaCount; j++) { // skip environment lambda
+    for (int j = 0; j < system->state->lambdaCount; j++) { 
       // Set dGdF[:] = 0 and dGdF[j] = e * pi
       real pi_e = M_E * M_PI;
       real_f dGdF[system->state->lambdaCount];
@@ -565,8 +565,8 @@ void test_OST_force(System *system) {
           printf("Analytic d2U:                 %15.8f\n", d2U_analytic[k]);
           printf("Scaling num->analytic:        %15.8f\n", d2U_analytic[k]/d2U_numeric[k]);
           printf("Scaling analytic->num:        %15.8f\n\n", d2U_numeric[k]/d2U_analytic[k]);
-          //printf("Exiting...\n");
-          //exit(1);
+          printf("Exiting...\n");
+          exit(1);
         }
       }
     }

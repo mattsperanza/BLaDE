@@ -117,7 +117,7 @@ public:
   double alchem_p_stats[num_GaMD_stats]; // Would prefer not do do this as it requires second codepath
   real GaMD_bias_added[GaMD_modes]; // [dV_total, dV_torsion, dV_alchem]
   real* GaMD_torsion_force_d; // Force just due to torsions
-  real* GaMD_alchem_force_d; // Force just due to alchemical interactions
+  real* GaMD_alchem_force_d; // Force just due to alchemical non-bonded interactions (no overlap w/ torsion boost)
 
   int thetaCollBiasCount;
   real *kThetaCollBias;
