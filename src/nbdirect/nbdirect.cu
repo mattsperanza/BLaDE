@@ -130,6 +130,7 @@ __global__ void getforce_nbdirect_kernel(
   real fli,flj,fljtmp;
   int bi,bj,bjtmp;
   real li,lj,ljtmp,lixljtmp;
+  real dlixlj_dli, dlixlj_dlj;
   real rEff,dredr,dredll; // Soft core stuff
   int exclAddress, exclMask;
 
@@ -231,23 +232,41 @@ __global__ void getforce_nbdirect_kernel(
 
             if (r<cutoffs.rCut) {
               // Scaling
+              real a = 2; // scale real space interactions by lambda^a
+              real lixlj_orig, dlixlj_dli_orig, dlixlj_dlj_orig;
               if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) {
                 if (bi==bjtmp) {
-                  lixljtmp=li;
+                  lixlj_orig = li;
+                  dlixlj_dli_orig = 1;
+                  dlixlj_dlj_orig = 0;
+                  lixljtmp=pow(li, a);
+                  dlixlj_dli = a*pow(li, a-1.0);
+                  dlixlj_dlj = 0;
                 } else {
+                  lixlj_orig = 0;
+                  dlixlj_dli_orig = 0;
+                  dlixlj_dlj_orig = 0;
                   lixljtmp=0;
+                  dlixlj_dli = 0;
+                  dlixlj_dlj = 0;
                 }
               } else {
-                lixljtmp=li*ljtmp;
+                lixlj_orig = li*ljtmp;
+                dlixlj_dli_orig = ljtmp;
+                dlixlj_dlj_orig = li;
+                lixljtmp=pow(li*ljtmp, a);
+                dlixlj_dli = a*ljtmp*pow(li*ljtmp, a-1.0);
+                dlixlj_dlj = a*li*pow(li*ljtmp, a-1.0);
               }
 
+              // Don't use a power for softcores
               rEff=r;
+              dredr=1; // d(rEff) / d(r)
+              dredll=0; // d(rEff) / d(lixljtmp) -> missing d(lixljtmp)/d(li or ljtmp)
               if (useSoftCore) {
-                dredr=1; // d(rEff) / d(r)
-                dredll=0; // d(rEff) / d(lixljtmp)
                 if (bi || bjtmp) {
                   // real rSoft=(2.0*ANGSTROM*sqrt(4.0))*(1.0-lixljtmp);
-                  real rSoft=SOFTCORERADIUS*(1-lixljtmp);
+                  real rSoft=SOFTCORERADIUS*(1-lixlj_orig);
                   if (r<rSoft) {
                     real rdivrs=r/rSoft;
                     rEff=1-((real)0.5)*rdivrs;
@@ -345,23 +364,9 @@ __global__ void getforce_nbdirect_kernel(
               }
               fij*=lixljtmp;
 
-              // Lambda force
-              if (bi || bjtmp) {
-                if (useSoftCore) {
-                  fljtmp=eij+fij*dredll;
-                } else {
-                  fljtmp=eij;
-                }
-                if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) {
-                  if (bi==bjtmp) {
-                    fli+=fljtmp;
-                  }
-                  fljtmp=0;
-                } else {
-                  fli+=ljtmp*fljtmp;
-                  fljtmp*=li;
-                }
-              }
+              // Lambda force -> dredll missing dlixdlj_orig_dl 
+              fli += dlixlj_dli*eij + fij*dredll*dlixlj_dli_orig; // fij just got lixlj scale 
+              fljtmp = dlixlj_dlj*eij + fij*dredll*dlixlj_dlj_orig;
 
               // Spatial force
               if (useSoftCore) {
@@ -468,7 +473,7 @@ void getforce_nbdirectTTTT(System *system,box_type box,bool calcEnergy)
     system->domdec->blockExcls_d,system->run->cutoffs,d->localPosition_d,d->localForce_d,box,s->lambda_fd,s->lambdaForce_d,pEnergy);
 
   // TODO: Check if this is valid assumption
-  if ((system->msld->oss && !system->msld->tracking_only) || system->msld->GaMD_alchem) return;
+  if ((system->msld->oss && !system->msld->tracking_only) || system->msld->GaMD_alchem || system->msld->GaMD_orth) return;
   system->domdec->unpack_forces(system);
 }
 

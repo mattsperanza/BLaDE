@@ -156,6 +156,19 @@ __device__ void function_pair(NbExPotential pp,Cutoffs rc,real r,real *fpair,rea
   }
 }
 
+__device__ void lambda_scale(real li, int bi, real lj, int bj, real a, Nb14Potential pp, real* lixljtmp, real* dlixlj_dli, real* dlixlj_dlj){
+  // li*li not expected
+  *lixljtmp = pow(li*lj, a);
+  *dlixlj_dli = bi ? a*lj*pow(li*lj, a-1.0) : 0;
+  *dlixlj_dlj = bj ? a*li*pow(li*lj, a-1.0) : 0;
+}
+
+__device__ void lambda_scale(real li, int bi, real lj, int bj, real a, NbExPotential pp, real* lixljtmp, real* dlixlj_dli, real* dlixlj_dlj){
+  *lixljtmp = li*lj;
+  *dlixlj_dli = lj;
+  *dlixlj_dlj = li;
+}
+
 
 template <bool flagBox,class PairPotential,bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
 __global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs cutoffs,real3 *position,real3_f *force,box_type box,real *lambda,real_f *lambdaForce,real_e *energy)
@@ -192,11 +205,17 @@ __global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs 
         l[1]=lambda[b[1]];
       }
     }
+    real a = 2; // scale real space interactions by lambda^a
+    real lixljtmp = 0;
+    real dlixljtmp_dli = 0;
+    real dlixljtmp_dlj = 0;
+    // (li*lj)^a if nb14, li*lj if nbex
+    lambda_scale(l[0], b[0], l[1], b[1], a, pp, &lixljtmp, &dlixljtmp_dli, &dlixljtmp_dlj);
 
     rEff=r;
+    dredr=1; // d(rEff) / d(r)
+    dredll=0; // d(rEff) / d(lixljtmp)
     if (useSoftCore) {
-      dredr=1; // d(rEff) / d(r)
-      dredll=0; // d(rEff) / d(lixljtmp)
       if (b[0]) {
         real rSoft=SOFTCORERADIUS*(1-l[0]*l[1]);
         if (r<rSoft) {
@@ -214,21 +233,21 @@ __global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs 
 
     // Interaction
     function_pair(pp,cutoffs,rEff,&fpair,&lEnergy, b[0] || energy,usevdWSwitch,usePME);
-    fpair*=l[0]*l[1];
+    fpair*=lixljtmp;
 
     // Lambda force
     if (useSoftCore) {
       if (b[0]) {
-        atomicAdd(&lambdaForce[b[0]],l[1]*(lEnergy+fpair*dredll));
+        atomicAdd(&lambdaForce[b[0]],dlixljtmp_dli*lEnergy+fpair*dredll*l[1]);
         if (b[1]) {
-          atomicAdd(&lambdaForce[b[1]],l[0]*(lEnergy+fpair*dredll));
+          atomicAdd(&lambdaForce[b[1]],dlixljtmp_dlj*lEnergy+fpair*dredll*l[0]);
         }
       }
     } else {
       if (b[0]) {
-        atomicAdd(&lambdaForce[b[0]],l[1]*lEnergy);
+        atomicAdd(&lambdaForce[b[0]],dlixljtmp_dli*lEnergy);
         if (b[1]) {
-          atomicAdd(&lambdaForce[b[1]],l[0]*lEnergy);
+          atomicAdd(&lambdaForce[b[1]],dlixljtmp_dlj*lEnergy);
         }
       }
     }

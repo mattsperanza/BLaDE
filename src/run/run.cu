@@ -490,12 +490,12 @@ void test_OST_force(System *system) {
     cudaMemcpy(dU, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     double sum = 0;
     double num_sum = 0;
-    for (int j = 0; j < system->state->lambdaCount; j++) { 
+    for (int j = 1; j < system->state->lambdaCount; j++) { 
       // Set dGdF[:] = 0 and dGdF[j] = e * pi
       real pi_e = M_E * M_PI;
       real_f dGdF[system->state->lambdaCount];
       memset(dGdF, 0, system->state->lambdaCount*sizeof(real));
-      dGdF[j] = pi_e;
+      dGdF[j] = pi_e;// need to comment out clearing of this array during force calculation
       cudaMemcpy(system->msld->dGdF_d, dGdF, system->state->lambdaCount*sizeof(real_f), cudaMemcpyDefault);
       system->msld->oss = false;
       // Numerical Force = dU(X, L+dl) - dU(X, L-dl) / 2*dl

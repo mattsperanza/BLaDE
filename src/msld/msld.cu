@@ -423,6 +423,8 @@ void parse_msld(char *line,System *system)
     system->msld->GaMD_torsion=io_nextb(line);
   } else if (strcmp(token, "GaMD_alchem") == 0){
     system->msld->GaMD_alchem=io_nextb(line);
+  } else if (strcmp(token, "GaMD_orth") == 0){
+    system->msld->GaMD_orth=io_nextb(line);
   } else if (strcmp(token, "GaMD_init_steps") == 0){ // These next two need to be set in order
     system->msld->init_steps=io_nexti(line);
   } else if (strcmp(token, "GaMD_equil_steps") == 0){
@@ -759,22 +761,30 @@ void Msld::initialize(System *system)
   cudaMalloc(&GaMD_alchem_force_d, DOF*sizeof(real));
   cudaMemset(GaMD_alchem_force_d, 0, DOF*sizeof(real));
   cudaMalloc(&alchem_energy_d, sizeof(real));
+  orth_p_stats = (double*) calloc(blockCount*num_GaMD_stats, sizeof(double));
+  GaMD_orth_boosts = (real*) calloc(blockCount, sizeof(real));
   alchem_energy = (real*) malloc(sizeof(real));
   *alchem_energy = 0;
   memset(GaMD_bias_added, 0, GaMD_modes*sizeof(real));
-  if(GaMD_total || GaMD_torsion || GaMD_alchem){
+  if(GaMD_total || GaMD_torsion || GaMD_alchem || GaMD_orth){
     memset(total_p_stats, 0, num_GaMD_stats*sizeof(double));
     total_p_stats[0] = 1e9; // Min starts at large value
     total_p_stats[1] = -1e9; // Max starts at small value
     total_p_stats[4] = 6; // Max std of boost
     memset(torsion_p_stats, 0, num_GaMD_stats*sizeof(double));
-    torsion_p_stats[0] = 1e9; // Min starts at large value
-    torsion_p_stats[1] = -1e9; // Max starts at small value
+    torsion_p_stats[0] = 1e9; 
+    torsion_p_stats[1] = -1e9; 
     torsion_p_stats[4] = 10;
     memset(alchem_p_stats, 0, num_GaMD_stats*sizeof(double));
-    alchem_p_stats[0] = 1e9; // Min starts at large value
-    alchem_p_stats[1] = -1e9; // Max starts at small value
+    alchem_p_stats[0] = 1e9; 
+    alchem_p_stats[1] = -1e9; 
     alchem_p_stats[4] = 40;
+    for (int i = 0; i < blockCount; i++){
+      int id = i*num_GaMD_stats;
+      orth_p_stats[id] = 1e9;
+      orth_p_stats[id+1] = -1e9;
+      orth_p_stats[id+4] = 1;
+    }
   }
 
   // Atom restraints
@@ -809,6 +819,10 @@ void Msld::gamd_reset(System* system){
     total_p_stats[i] = 0;
     torsion_p_stats[i] = 0;
     alchem_p_stats[i] = 0;
+    for (int j = 0; j < blockCount; j++){
+      int id = i + j*num_GaMD_stats;
+      orth_p_stats[id] = 0;
+    }
   }
   total_p_stats[0] = 1e9; 
   total_p_stats[1] = -1e9; 
@@ -816,6 +830,11 @@ void Msld::gamd_reset(System* system){
   torsion_p_stats[1] = -1e9; 
   alchem_p_stats[0] = 1e9; 
   alchem_p_stats[1] = -1e9; 
+  for (int i = 0; i < blockCount; i++){
+      int id = i*num_GaMD_stats;
+      orth_p_stats[id] = 1e9;
+      orth_p_stats[id+1] = -1e9;
+  }
 }
 
 void update_E_k(bool conservative, int num_samples, double* stats){
@@ -869,7 +888,7 @@ void Msld::gamd_update(System* system, bool calc_E_k) {
   if (GaMD_total){
     real V = system->state->energy[eepotential];
     if (GaMD_torsion){ V -= system->state->energy[eedihe] + system->state->energy[eeimpr]; }
-    if (GaMD_alchem){ V -= *system->msld->alchem_energy; }
+    if (GaMD_alchem){ V -= *system->msld->alchem_energy + system->state->energy[eelambda]; }
     update_stats(V, total_p_stats, GaMD_samples, GaMD_low_threshold, calc_E_k);
   }
   if (GaMD_torsion){
@@ -877,22 +896,35 @@ void Msld::gamd_update(System* system, bool calc_E_k) {
     update_stats(V, torsion_p_stats, GaMD_samples, GaMD_low_threshold, calc_E_k);
   }
   if (GaMD_alchem){
-    real V = *system->msld->alchem_energy;
+    real V = *system->msld->alchem_energy + system->state->energy[eelambda];
     update_stats(V, alchem_p_stats, GaMD_samples, GaMD_low_threshold, calc_E_k);
+  }
+  if (GaMD_orth){
+    for(int i = 1; i < blockCount; i++){ // Don't update 0th lambda, it is the env
+      int id = i*num_GaMD_stats;
+      real V = system->msld->dU_msld[i]; // Fetched each step when oss = true
+      update_stats(V, orth_p_stats+id, GaMD_samples, GaMD_low_threshold, calc_E_k);
+    }
   }
   GaMD_samples++;
 }
 
 void __global__ gamd_kernel(
-  int len, 
+  int len, int blockCount,
   real dBoost_total, real dBoost_torsion, real dBoost_alchem, 
   real* force, 
   real* torsion_force, bool remove_torsion, 
-  real* alchem_force, bool remove_alchem) {
+  real* alchem_force, bool remove_alchem,
+  real* alf_force
+) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if(i<len) { 
     real remaining_force = force[i];
     // Remove separate biases
+    // Check placement of this?
+    if (i < blockCount && remove_alchem){
+      alchem_force[i] += alf_force[i];
+    }
     remaining_force -= remove_torsion ? torsion_force[i] : 0;
     remaining_force -= remove_alchem ? alchem_force[i] : 0;
     force[i] += remaining_force*dBoost_total; 
@@ -913,7 +945,7 @@ void Msld::getforce_gamd(System* system) {
     // Calculate total potential without other variables we are biasing with 
     real V = system->state->energy[eepotential];
     if (GaMD_torsion){ V -= system->state->energy[eedihe] + system->state->energy[eeimpr]; }
-    if (GaMD_alchem){ V -= *system->msld->alchem_energy; }
+    if (GaMD_alchem){ V -= *system->msld->alchem_energy + system->state->energy[eelambda]; }
     real dV = V - total_p_stats[5];
     real boost = 0;
     if (dV < 0){
@@ -933,7 +965,7 @@ void Msld::getforce_gamd(System* system) {
     }
   }
   if(GaMD_alchem){
-    real V = *system->msld->alchem_energy;
+    real V = *system->msld->alchem_energy + system->state->energy[eelambda];
     real dV = V - alchem_p_stats[5];
     real boost = 0;
     if (dV < 0){
@@ -941,6 +973,8 @@ void Msld::getforce_gamd(System* system) {
       GaMD_bias_added[2] = boost;
       dBoost_alchem = alchem_p_stats[6]*dV;
     }
+
+    // GaMD_orth already part of force array if true
   }
 
   // Logging
@@ -967,45 +1001,58 @@ void Msld::getforce_gamd(System* system) {
       printf(" ]\n");
     }
     if (GaMD_alchem){
-      real V = *system->msld->alchem_energy;
-      printf("Alchem Potential: %f +/- %f, Boost: %f, alchem_p_stats: [ ", 
-        V, sqrt(alchem_p_stats[3] / GaMD_samples), GaMD_bias_added[2]);
+      real V = *system->msld->alchem_energy + system->state->energy[eelambda]; 
+      printf("Alchem Potential: %f +/- %f, Boost: %f, dBoost: %f, alchem_p_stats: [ ", 
+        V, sqrt(alchem_p_stats[3] / GaMD_samples), GaMD_bias_added[2], dBoost_alchem);
       for(int i = 0; i < num_GaMD_stats; i++){
         printf("%f, ", alchem_p_stats[i]);
       }
       printf(" ]\n");
     }
+    if (GaMD_orth){
+      for(int i = 1; i < blockCount; i++){
+        real V = dU_msld[i];
+        int id = i*num_GaMD_stats;
+        printf("Block %d Force: %f +/- %f, Boost: %f, orth_p_stats: [ ", 
+          i, V, sqrt(orth_p_stats[id+3] / GaMD_samples), GaMD_orth_boosts[i]);
+        for(int j = 0; j < num_GaMD_stats; j++){
+          printf("%f, ", orth_p_stats[id+j]);
+        }
+        printf(" ]\n");
+      }
+    }
     printf("\n");
   }
 
-  // TODO: Add boosts to total potential
-  // Subtract torsion and alchem forces from total force array
   int nAtoms = system->state->atomCount;
   int nL = system->msld->blockCount;
   int DOF = nAtoms*3 + nL;
-
-  // Log difference in gradients
-  /*
-  real truth[DOF];
-  real mine[DOF];
-  cudaMemcpy(truth, system->state->forceBuffer_d, DOF*sizeof(real), cudaMemcpyDefault);
-  cudaMemcpy(mine, system->msld->GaMD_alchem_force_d, DOF*sizeof(real), cudaMemcpyDefault);
-  for(int i = 0; i < DOF; i++){
-    if(abs(truth[i] - mine[i]) > 1e-4){
-      printf("Broken: ");
-    }
-    printf("i: %d, truth: %f, mine: %f\n", i, truth[i], mine[i]);
-  }
-  exit(1);
-  */
-
   gamd_kernel<<<(DOF+BLMS-1)/BLMS,BLMS,0,stream>>>(
-    DOF, dBoost_total, dBoost_torsion, dBoost_alchem,
+    DOF, blockCount, dBoost_total, dBoost_torsion, dBoost_alchem,
     (real*) system->state->forceBuffer_d, 
     GaMD_torsion_force_d, GaMD_torsion,
-    GaMD_alchem_force_d, GaMD_alchem);
+    GaMD_alchem_force_d, GaMD_alchem,
+    dU_alf_d
+  );
 
   // Reset force arrays with rest of forces
+}
+
+void Msld::getforce_orth_GaMD(System* system){
+  real dGdF[blockCount];
+  memset(dGdF, 0, blockCount*sizeof(real));
+  for(int i = 1; i < blockCount; i++){
+    int id = i*num_GaMD_stats;
+    real V = system->msld->dU_msld[i];
+    real dV = V - orth_p_stats[id+5];
+    real boost = 0;
+    if (dV < 0){
+      boost = .5*orth_p_stats[id+6]*dV*dV;
+      GaMD_orth_boosts[i] = boost;
+      dGdF[i] = orth_p_stats[id+6]*dV;
+    }
+  }
+  cudaMemcpyAsync(dGdF_d, dGdF, blockCount*sizeof(real), cudaMemcpyDefault, system->run->ossBias);
 }
 
 // Subtract ALF bias forces from dU_msld to get true dU_msld
@@ -1140,12 +1187,14 @@ void Msld::log_sampling(System* system, int step){
 
 __global__ void add_sample_1D_kernel(
   int nL, real* lambdas, real* dU_msld, 
+  int* lambdaSites, int* subsPerSite,
   int L_bins, real L_max, real L_min, 
-  real* histogram_counts, real* average_dUdL, real* average_dUdL2, real* variance) {
+  real* histogram_counts, real* average_dUdL, 
+  real* average_dUdL2, real* variance) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if(i<nL) {
     real lambda = lambdas[i+1];
-    real dUdL = dU_msld[i+1];
+    real dUdL = dU_msld[i+1]; // Track true dU/dL
     int bin = get_histogram_index(lambda, L_bins, L_max, L_min); 
     int hist_bin = i*L_bins + bin;
 
@@ -1159,22 +1208,32 @@ __global__ void add_sample_1D_kernel(
 }
 
 __global__ void add_sample_hist_kernel(
-  real kT, int nL, real* lambdas, int* lambdaSites, int* subsPerSite, real* dU_msld, real* hist_potential,
+  real kT, int nL, real* lambdas, int* lambdaSites, int* subsPerSite, 
+  real* dU_msld, real* hist_potential,
   real weight, bool temper, real tempering, real temper_min, 
   real* histogram, 
   int L_bins, real L_max, real L_min, 
   int dUdL_bins, real dUdL_max, real dUdL_min) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
+    int site = lambdaSites[i+1];
+    int skip = 0;
+    for(int j = 0; j < site; j++){
+      skip += subsPerSite[j];
+    }
+    real dUdL = dU_msld[i+1];
+    for(int j = skip; j < skip+subsPerSite[site]; j++){
+      if (j == i+1){ // j != i
+        //continue;
+      }
+      dUdL -= lambdas[j]*dU_msld[j];
+    }
+    //dUdL = -dUdL;
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
     int X =  get_histogram_index(lambdas[i+1], L_bins, L_max, L_min);
-    int Y = get_histogram_index(dU_msld[i+1], dUdL_bins, dUdL_max, dUdL_min);
+    int Y = get_histogram_index(dUdL, dUdL_bins, dUdL_max, dUdL_min);
     int index = i*L_bins*dUdL_bins + X*dUdL_bins + Y;
-    // PB Meta over every block
-    real sum = 0;
-    for (int j = 0; j < nL; j++){
-      sum += exp(-hist_potential[j]/kT);
-    }
+
     real factorDecouple = 1.0 / nL; //exp(-hist_potential[i])/sum;
     real potential = max(0.0, hist_potential[i] - temper_min);
     real factorTemper = temper ? exp(-potential / (tempering*kT)) : 1.0;
@@ -1200,7 +1259,9 @@ void Msld::add_sample(System* system, int step) { // Step = 0 during NPT steps
 
   // This continues after bias updates (reset at end of bias updates)
   add_sample_1D_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
-    blockCount-1, s->lambda_fd, dU_msld_d, L_1D_bins, L_max, L_min, 
+    blockCount-1, s->lambda_fd, dU_msld_d, 
+    lambdaSite_d, blocksPerSite_d,
+    L_1D_bins, L_max, L_min, 
     histogram_1D_d, average_dUdL_d, average_dUdL2_d, variance_dUdL_d);
 
   if (update_fe_surface){
@@ -1220,6 +1281,7 @@ void Msld::add_sample(System* system, int step) { // Step = 0 during NPT steps
 
 __global__ void getforce_hist_kernel(
   int nL, real* lambdas, real* dU_msld,
+  int* lambdaSites, int* subsPerSite, 
   real* hist_potential, real* histogram,
   int dUdL_bins, real dUdL_max, real dUdL_min, int dUdL_search,
   int L_bins, real L_max, real L_min, int L_search,
@@ -1236,12 +1298,27 @@ __global__ void getforce_hist_kernel(
   real local_dUdL_force = 0.0;
   real local_L_force = 0.0;
   if (iL < nL) {
+    int site = lambdaSites[iL+1];
+    int skip = 0;
+    for(int j = 0; j < site; j++){
+      skip += subsPerSite[j];
+    }
+    real dUdL = dU_msld[iL+1];
+    for(int j = skip; j < skip+subsPerSite[site]; j++){
+      if(j == iL + 1){ // j != i
+        //continue;
+      }
+      dUdL -= lambdas[j]*dU_msld[j];
+    }
+    //dUdL = -dUdL;
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
     int X = get_histogram_index(lambdas[iL+1], L_bins, L_max, L_min);
-    int Y = get_histogram_index(dU_msld[iL+1], dUdL_bins, dUdL_max, dUdL_min);
+    int Y = get_histogram_index(dUdL, dUdL_bins, dUdL_max, dUdL_min);
     real effective_max = 300.0;
-    if (dU_msld[iL+1] > effective_max){ // As if on 300.0
-      Y = get_histogram_index(effective_max, dUdL_bins, dUdL_max, dUdL_min);
+    if (abs(dUdL) > effective_max){ // As if on edge
+      real sign = dUdL > 0 ? 1.0 : -1.0;
+      dUdL = sign*effective_max;
+      Y = get_histogram_index(dUdL, dUdL_bins, dUdL_max, dUdL_min);
     }
     int j = X - L_search + iSearch;
     if (j >= X-L_search && j <= X+L_search) {
@@ -1268,7 +1345,7 @@ __global__ void getforce_hist_kernel(
 
           real dUdL_resolution = (dUdL_max-dUdL_min)/(dUdL_bins-1.0);
           real dUdL_center = dUdL_min + k*dUdL_resolution;
-          real dUdL_distance = (dU_msld[iL+1] - dUdL_center) / dUdL_std;
+          real dUdL_distance = (dUdL - dUdL_center) / dUdL_std;
           real dUdL_gaussian = expf(-0.5*dUdL_distance*dUdL_distance);
           int index = iL*dUdL_bins*L_bins + L_index*dUdL_bins + dUdL_index;
           real weight = mirrorFactor * histogram[index];
@@ -1279,9 +1356,9 @@ __global__ void getforce_hist_kernel(
           local_dUdL_force += -dUdL_distance/dUdL_std * tmp_bias;
           local_L_force += -L_distance/L_std * tmp_bias;
         }
-        if (dU_msld[iL+1] > effective_max){ 
+        if (abs(dUdL) > effective_max){ 
           local_dUdL_force = 0; // No longer a function of dUdL
-          // Still feels lambda forces as if at 300.0
+          // Still feels lambda forces as if at effective max
         }
         atomicAdd(&dGdF[iL+1], local_dUdL_force);
         atomicAdd(&dGdL[iL+1], local_L_force);
@@ -1292,7 +1369,7 @@ __global__ void getforce_hist_kernel(
 }
 
 __global__ void getforce_pb_oss(
-  int nL, real kT, 
+  int nL, real kT, int* lambdaSites, int* subsPerSite,
   real* hist_potential, real* dGdF, real* dGdL, 
   real* lambdas, real* lambdaForce, real* dU_msld, real_e* energy) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -1307,20 +1384,34 @@ __global__ void getforce_pb_oss(
     //}
     //real pb = exp(-hist_potential[i] / kT) / sum;
 
-    // Harmonic Restraint at top end of histogram
-    real end = 500.0; // Histogram ceil "ends" at 300
-    real U = 0;
-    if (dU_msld[i+1] > end){
-      real k = 1.0 / 10000.0;
-      U += .5 * k * pow(dU_msld[i+1] - end, 2);
-      real dU = k * (dU_msld[i+1] - end);
-      dGdF[i+1] += dU;
-    }
-
     // Add forces
-    real pb = 1.0 / nL;
-    atomicAdd(&lambdaForce[i+1], pb*dGdL[i+1]);
-    dGdF[i+1] *= pb; 
+    int site = lambdaSites[i+1];
+    int skip = 0;
+    for(int j = 0; j < site; j++){
+      skip += subsPerSite[j];
+    }
+    real scale = dGdF[i+1];
+    real dgdl = dGdL[i+1];
+    for(int j = skip; j < skip+subsPerSite[site]; j++){
+      if(j == i+1){ // j != i
+        //continue;
+      }
+      scale -= dGdF[j]*lambdas[i+1];
+      dgdl -= dGdF[j]*dU_msld[i+1];
+    }
+    __syncthreads();
+    atomicAdd(&lambdaForce[i+1], dgdl/nL);
+    dGdF[i+1] = scale/nL;
+
+    // Harmonic Restraint - .5*k*(1-li)*dU_msld^2 at dU_msld > 0
+    real U = 0;
+    real start = 200;
+    //if (dU_msld[i+1] > start){
+    //  real k = 1.0 / pow(500.0, 2);
+    //  U = .5 * k * (1.0-lambdas[i+1]) * pow(dU_msld[i+1] - start, 2);
+    //  dGdF[i+1] += k * (1.0-lambdas[i+1]) * (dU_msld[i+1] - start);
+    //  atomicAdd(&lambdaForce[i+1], -k * pow(dU_msld[i+1] - start, 2));
+    //}
     if (energy && i==0) {
       //atomicAdd(energy, -kT*log(sum));
     }
@@ -1341,10 +1432,6 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
     shMem = BLMS*sizeof(real);
   }
 
-  // Reset memory from last call
-  cudaMemsetAsync(system->msld->hist_potential_d, 0, (system->msld->blockCount-1)*sizeof(real), r->ossBias);
-  cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
-  cudaMemsetAsync(system->msld->dGdL_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
 
   // Set up grid and block dimensions
   dim3 blockDim(BLMS, 1, 1);
@@ -1354,6 +1441,7 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
   gridDim.z = 1;
   getforce_hist_kernel<<<gridDim, blockDim, shMem, stream>>>(
     blockCount-1, s->lambda_fd, dU_msld_d,
+    lambdaSite_d, blocksPerSite_d, 
     hist_potential_d, oss_histogram_d,
     dUdL_bins, dUdL_max, dUdL_min, dUdL_search,
     L_oss_bins, L_max, L_min, L_search,
@@ -1364,6 +1452,7 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
   // Force from PBMetaD combined function -kT ln(sum(-gi(li, Fi)/kT)))
   getforce_pb_oss<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     blockCount-1, system->state->leapParms1->kT, 
+    lambdaSite_d, blocksPerSite_d, 
     hist_potential_d, dGdF_d, dGdL_d,
     s->lambda_fd, s->lambdaForce_d, dU_msld_d, pEnergy);
 }
@@ -1393,8 +1482,9 @@ __global__ void getpotential_hist_kernel(
     real Y_center = dUdL_min + Y * Y_res;
     real effective_max = 300.0;
     int Y_id = Y; // Put bias is correct location
-    if (Y_center > effective_max){ // Eval at 300.0
-      Y = get_histogram_index(effective_max, dUdL_bins, dUdL_max, dUdL_min);
+    if (abs(Y_center) > effective_max){ // Eval at 300.0
+      real sign = Y_center > 0 ? 1.0 : -1.0;
+      Y = get_histogram_index(sign*effective_max, dUdL_bins, dUdL_max, dUdL_min);
       Y_center = dUdL_min + Y * Y_res;
     }
     real bias = 0.0;
