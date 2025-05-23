@@ -175,12 +175,17 @@ __global__ void getforce_14pair_kernel_oss(
       real dGdFi = dGdF[b[0]];
       real dGdFjtmp = dGdF[b[1]];
       real lixljtmp, dlixlj_dli, dlixlj_dlj, d2lixlj_dli_dlj, d2lixlj_dli2, d2lixlj_dlj2;
+      real lixlj_orig, dlixlj_dli_orig, dlixlj_dlj_orig, d2lixlj_dli_dlj_orig;
       if ((pp.siteBlock[0]&0xFFFF0000)==(pp.siteBlock[1]&0xFFFF0000)) { // same site (m == n)
         printf("Unexpected scaling case occurred! Didn't expect this to run! Contact devs!\n");
       }
       real a = 2;
-      lixljtmp = pow(li*ljtmp, a);
+      lixlj_orig = li*ljtmp;
+      dlixlj_dli_orig = ljtmp;
+      dlixlj_dlj_orig = li;
+      d2lixlj_dli_dlj_orig = bi && bjtmp ? 1 : 0;
       
+      lixljtmp = pow(li*ljtmp, a);
       dlixlj_dli = bi ? a*ljtmp*pow(li*ljtmp, a-1.0) : 0;
       dlixlj_dlj = bjtmp ? a*li*pow(li*ljtmp, a-1.0) : 0;
 
@@ -218,9 +223,9 @@ __global__ void getforce_14pair_kernel_oss(
               rEff=rEff*rdivrs*rdivrs*rdivrs+((real)0.5); // Soft-core: rEff = rL * (.5 + (r/rL)^3 - .5*(r/rL)^4)
               rEff*=rSoft;
               // Don't use lixlj derivatives since the scaling is different
-              real drlam_dlami = bi ? -SOFTCORERADIUS*ljtmp : 0;
-              real drlam_dlamj = bjtmp ? -SOFTCORERADIUS*li : 0;
-              real d2rlam_dli_dlj = bi && bjtmp ? -SOFTCORERADIUS : 0;
+              real drlam_dlami = -SOFTCORERADIUS*dlixlj_dli_orig;
+              real drlam_dlamj = -SOFTCORERADIUS*dlixlj_dlj_orig;
+              real d2rlam_dli_dlj = -SOFTCORERADIUS*d2lixlj_dli_dlj_orig;
               // li*li case never expected
               real r_rsoft = r / rSoft;
               real r_rsoft3 = r_rsoft * r_rsoft * r_rsoft;
@@ -413,7 +418,9 @@ __global__ void getforce_14pair_kernel_oss(
         // OSS Forces
         fij_ost += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
         fli_ost += dGdFi*d2U_dlami2 + dGdFjtmp*d2U_dlami_dlamj;
-        fljtmp_ost += dGdFi*d2U_dlami_dlamj + dGdFjtmp*d2U_dlamj2;
+        if(bjtmp){
+          fljtmp_ost += dGdFi*d2U_dlami_dlamj + dGdFjtmp*d2U_dlamj2;
+        }
 
         // OSS & Vanilla forces
         atomicAdd(&lambdaForce[b[0]], fli_ost);

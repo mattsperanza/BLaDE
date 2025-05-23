@@ -519,7 +519,9 @@ __global__ void getforce_nbdirect_oss_kernel(
                 // Soft Interaction
                 fij_ost += dGdFi*d2U_drij_dlami + dGdFjtmp*d2U_drij_dlamj;
                 fli_ost += dGdFi*d2U_dlami2 + dGdFjtmp*d2U_dlami_dlamj;
-                fljtmp_ost += dGdFi*d2U_dlami_dlamj + dGdFjtmp*d2U_dlamj2;
+                if(bjtmp && (bi&0xFFFF0000)!=(bjtmp&0xFFFF0000)){
+                  fljtmp_ost += dGdFi*d2U_dlami_dlamj + dGdFjtmp*d2U_dlamj2;
+                }
 
                 // Accumulate OST forces
                 real3_scaleinc(&fi_ost, fij_ost/r,dr);
