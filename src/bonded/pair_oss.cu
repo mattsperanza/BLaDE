@@ -141,7 +141,7 @@ __global__ void getforce_14pair_kernel_oss(
     int pairCount,Nb14Potential *pairs,Cutoffs cutoffs,
     real3 *position,real3_f *force, real3_f *alchemForce, box_type box,
     real *lambda,real_f *lambdaForce, real_f *lambdaForce_extra,
-    real *dGdF, real* alchem_energy)
+    real *dGdF, real* alchem_energy, real a)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   int ii,jj;
@@ -179,7 +179,6 @@ __global__ void getforce_14pair_kernel_oss(
       if ((pp.siteBlock[0]&0xFFFF0000)==(pp.siteBlock[1]&0xFFFF0000)) { // same site (m == n)
         printf("Unexpected scaling case occurred! Didn't expect this to run! Contact devs!\n");
       }
-      real a = 2;
       lixlj_orig = li*ljtmp;
       dlixlj_dli_orig = ljtmp;
       dlixlj_dlj_orig = li;
@@ -456,7 +455,7 @@ void getforce_nb14TTTT_oss(System *system,box_type box)
       N,p->nb14s_d,system->run->cutoffs,(real3*)s->position_fd,
       (real3_f*)s->force_d,(real3_f*)(system->msld->GaMD_alchem_force_d+system->msld->blockCount),box,
       s->lambda_fd,s->lambdaForce_d, (real_f*)system->msld->GaMD_alchem_force_d, 
-      system->msld->dGdF_d, system->msld->alchem_energy_d);
+      system->msld->dGdF_d, system->msld->alchem_energy_d, system->msld->alpha);
 }
 
 template <bool flagBox,bool useSoftCore,bool usevdWSwitch,typename box_type>

@@ -171,7 +171,9 @@ __device__ void lambda_scale(real li, int bi, real lj, int bj, real a, NbExPoten
 
 
 template <bool flagBox,class PairPotential,bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
-__global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs cutoffs,real3 *position,real3_f *force,box_type box,real *lambda,real_f *lambdaForce,real_e *energy)
+__global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs cutoffs,
+  real3 *position,real3_f *force,box_type box,
+  real *lambda,real_f *lambdaForce,real_e *energy, real a)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   int ii,jj;
@@ -205,7 +207,6 @@ __global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs 
         l[1]=lambda[b[1]];
       }
     }
-    real a = 2; // scale real space interactions by lambda^a
     real lixljtmp = 0;
     real dlixljtmp_dli = 0;
     real dlixljtmp_dlj = 0;
@@ -286,7 +287,11 @@ void getforce_nb14TTTT(System *system,box_type box,bool calcEnergy)
     pEnergy=s->energy_d+eenb14;
   }
 
-  getforce_pair_kernel <flagBox,Nb14Potential,useSoftCore,usevdWSwitch,usePME> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->nb14s_d,system->run->cutoffs,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,pEnergy);
+  getforce_pair_kernel <flagBox,Nb14Potential,useSoftCore,usevdWSwitch,usePME> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+    N,p->nb14s_d,system->run->cutoffs,(real3*)s->position_fd,(real3_f*)s->force_d,
+    box,s->lambda_fd,s->lambdaForce_d,pEnergy,
+    system->msld->alpha
+  );
 }
 
 template <bool flagBox,bool useSoftCore,bool usevdWSwitch,typename box_type>
@@ -351,7 +356,11 @@ void getforce_nbexT(System *system,box_type box,bool calcEnergy)
   }
 
   // Never use soft cores for nbex, they're already soft.
-  getforce_pair_kernel <flagBox,NbExPotential,false,false,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->nbexs_d,system->run->cutoffs,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,pEnergy);
+  getforce_pair_kernel <flagBox,NbExPotential,false,false,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+    N,p->nbexs_d,system->run->cutoffs,(real3*)s->position_fd,
+    (real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,pEnergy,
+    system->msld->alpha
+  );
 }
 
 void getforce_nbex(System *system,bool calcEnergy)

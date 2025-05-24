@@ -102,7 +102,9 @@ __global__ void getforce_nbdirect_kernel(
   box_type box,
   const real* __restrict__ lambda,
   real_f* __restrict__ lambdaForce,
-  real_e* __restrict__ energy)
+  real_e* __restrict__ energy,
+  real a
+)
 {
 // NYI - maybe energy should be a double
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -232,7 +234,6 @@ __global__ void getforce_nbdirect_kernel(
 
             if (r<cutoffs.rCut) {
               // Scaling
-              real a = 2; // scale real space interactions by lambda^a
               real lixlj_orig, dlixlj_dli_orig, dlixlj_dlj_orig;
               if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) {
                 if (bi==bjtmp) {
@@ -470,7 +471,9 @@ void getforce_nbdirectTTTT(System *system,box_type box,bool calcEnergy)
 #else
     p->vdwParameters_d,
 #endif
-    system->domdec->blockExcls_d,system->run->cutoffs,d->localPosition_d,d->localForce_d,box,s->lambda_fd,s->lambdaForce_d,pEnergy);
+    system->domdec->blockExcls_d,system->run->cutoffs,
+    d->localPosition_d,d->localForce_d,box,s->lambda_fd,s->lambdaForce_d,
+    pEnergy, system->msld->alpha);
 
   // TODO: Check if this is valid assumption
   if ((system->msld->oss && !system->msld->tracking_only) || system->msld->GaMD_alchem || system->msld->GaMD_orth) return;

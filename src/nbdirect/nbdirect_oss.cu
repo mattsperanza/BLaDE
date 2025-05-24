@@ -107,7 +107,8 @@ __global__ void getforce_nbdirect_oss_kernel(
   real_f* __restrict__ lambdaForce,
   real_f* __restrict__ lambdaForce_extra,
   real* __restrict__ dGdF, 
-  real* alchem_energy
+  real* alchem_energy,
+  real a
 )
 {
 // NYI - maybe energy should be a double
@@ -271,7 +272,6 @@ __global__ void getforce_nbdirect_oss_kernel(
                 // Scaling
                 real dlixlj_dli, dlixlj_dlj, d2lixlj_dli_dlj, d2lixlj_dli2, d2lixlj_dlj2;
                 real lixlj_orig, dlixlj_dli_orig, dlixlj_dlj_orig, d2lixlj_dli_dlj_orig;
-                real a = 2; // lixlj^a
                 // for l_{m,i} and l_{n,j}
                 if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) { // same site (m == n)
                   if (bi==bjtmp) { // intra-sub (i == j, alc-alc or env-env)
@@ -645,7 +645,8 @@ void getforce_nbdirect_ossTTTT(System *system,box_type box)
     s->lambdaForce_d,
     system->msld->GaMD_alchem_force_d, // starts with lambda forces
     system->msld->dGdF_d,
-    system->msld->alchem_energy_d
+    system->msld->alchem_energy_d,
+    system->msld->alpha
   );
 
   // Note this should be done once per force calculation and is potentially done here instead of in reg nbdirect

@@ -65,12 +65,16 @@ public:
   real* dU_msld; // [blockCount]
 
   // 1D histogramming and tracking of dU/dL distribution
+  bool abf = false; // Subtract average dU/dL using
   int L_1D_bins = 51; // this is also the max index (51 leads to >.99 as last bin)
+  real* abf_TI_d; // [nL]
+  real* dABF_dl_d; // [nL]
   real* histogram_1D_d; // [nL * L_1D_bins] counts in bin 
   real* average_dUdL_d; // [nL * L_1D_bins]
   real* average_dUdL2_d; // [nL * L_1D_bins]
   real* variance_dUdL_d; // [nL * L_1D_bins]
 
+  real alpha = 2; // lambda^alpha scaling
   // Histogram (2D meta) - uniform binning - nL = blockCount-1
   bool oss = false; // Perform Orthogonal Space Sampling calculations
   real* oss_histogram_d; // [nL * L_oss_bins * dUdL_bins] stores sum of gaussian prefactors
@@ -79,6 +83,7 @@ public:
   real* dGdL_d; // [blockCount] Derivative of gaussians w.r.t. lambda
   real* hist_potential_d; // [blockCount-1] potential from 2d metadynamics
   real* hist_potential; // [blockCount-1]
+  real* bonded_dUdL_d; // [blockCount] lambda forces from bonds
 
   // Grid & Meta Params (free means it is a free parameter)
   int L_oss_bins = 201; // free - # of whole bins that fit in range [L_min, L_max]
@@ -184,7 +189,7 @@ public:
   void getforce_atomRestraints(System *system,bool calcEnergy);
   void getforce_chargeRestraints(System *system,bool calcEnergy);
 
-  void sub_alf(real* dU_msld_d, real* dU_alf_d, int len, cudaStream_t stream);
+  void sub_alf(real* dU_msld_d, real* dU_alf_d, real* dU_torsion_d, real* dU_bond_d, int len, cudaStream_t stream);
 
   // GaMD Functions
   void gamd_update(System* system, bool update_E_k);
@@ -199,6 +204,9 @@ public:
   void getpotential_hist(System* system);
   void getforce_hist(System *system, bool calcEnergy);
   void log_sampling(System *system, int step);
+
+  // ABF Functions
+  void getforce_abf(System* system, bool calcEnergy);
 
   void recv_meta();
 };
