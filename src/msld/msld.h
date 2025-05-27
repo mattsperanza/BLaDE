@@ -84,6 +84,7 @@ public:
   real* hist_potential_d; // [blockCount-1] potential from 2d metadynamics
   real* hist_potential; // [blockCount-1]
   real* bonded_dUdL_d; // [blockCount] lambda forces from bonds
+  real* min_bias_d; // [blockCount]
 
   // Grid & Meta Params (free means it is a free parameter)
   int L_oss_bins = 201; // free - # of whole bins that fit in range [L_min, L_max]
@@ -204,6 +205,7 @@ public:
   void getpotential_hist(System* system);
   void getforce_hist(System *system, bool calcEnergy);
   void log_sampling(System *system, int step);
+  void get_tempering_hist(System* system);
 
   // ABF Functions
   void getforce_abf(System* system, bool calcEnergy);

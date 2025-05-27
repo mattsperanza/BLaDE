@@ -1676,28 +1676,26 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
     system->msld->sub_alf(system->msld->dU_msld_d, 
       system->msld->dU_alf_d, system->msld->GaMD_torsion_force_d, system->msld->bonded_dUdL_d,
       system->msld->blockCount, r->ossBias);
-    cudaMemcpyAsync(system->msld->dU_msld, system->msld->dU_msld_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, r->ossBias);
-    // Reset memory from last call -> moved here for GaMD_orth
-    cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
-    cudaMemsetAsync(system->msld->dGdL_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
-    // Calculate dGdF equilalent for GaMD_orth
-    if (system->msld->GaMD_orth && system->msld->GaMD_force){
-      // For now just overwrites dGdF, so needs to be prior to force
-      system->msld->getforce_orth_GaMD(system);
-    }
-    // Sampling & Logging of (L, dU/dL) and <dU/dL> data -> frequency logic handled internally
-    system->msld->add_sample(system, step);
-    system->msld->log_sampling(system, step);
     // End 2D bias updates after a certain amount of time
     if(system->run->step >= system->msld->update_steps && system->msld->update_fe_surface && !system->msld->tracking_only){
       printf("\n\n Ending all 2d meta bias updates!\n\n");
       system->msld->update_fe_surface = false;
       system->msld->reset_1D(system); // Insights into sampling after fixing bias
     }
+    // Sampling & Logging of (L, dU/dL) and <dU/dL> data -> frequency logic handled internally
+    system->msld->add_sample(system, step);
+    system->msld->log_sampling(system, step);
+    // Reset memory from last call 
+    cudaMemsetAsync(system->msld->hist_potential_d, 0, (system->msld->blockCount-1)*sizeof(real), r->ossBias);
+    cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
+    cudaMemsetAsync(system->msld->dGdL_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
     // Calculate dGdF from histogram
     if (!system->msld->tracking_only){
-      cudaMemsetAsync(system->msld->hist_potential_d, 0, (system->msld->blockCount-1)*sizeof(real), r->ossBias);
       system->msld->getforce_hist(system,calcEnergy);
+    }
+    // Calculate dGdF equiv from GaMD
+    if (system->msld->GaMD_orth && system->msld->GaMD_orth){
+      system->msld->getforce_orth_GaMD(system);
     }
     // ABF
     if (system->msld->abf){
@@ -1712,9 +1710,9 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
       if (system->id == helper) {
         cudaStreamWaitEvent(r->ossBonded, r->ossBiasComplete, 0);
         // TODO: Decide which to keep (this comment will mess with force tests - or should at least)
-        //getforce_bond_oss(system);
-        //getforce_dihe_oss(system);
-        //getforce_impr_oss(system);
+        getforce_bond_oss(system);
+        getforce_dihe_oss(system);
+        getforce_impr_oss(system);
         getforce_angle_oss(system);
         getforce_cmap_oss(system);
         cudaEventRecord(r->ossBondedComplete, r->ossBonded);
