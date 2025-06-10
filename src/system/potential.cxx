@@ -1571,14 +1571,14 @@ void Potential::reset_force(System *system,bool calcEnergy)
   if (calcEnergy) {
     cudaMemset(system->state->energy_d,0,eeend*sizeof(real_e));
   }
-  cudaMemset(system->msld->dU_alf_d, 0, system->msld->blockCount*sizeof(real));
+  cudaMemset(system->msld->dUdL_alf_d, 0, system->msld->blockCount*sizeof(real));
   int nAtoms = system->state->atomCount;
   int nL = system->msld->blockCount;
   int DOF = nAtoms*3 + nL;
   cudaMemset(system->msld->GaMD_torsion_force_d, 0, DOF*sizeof(real));
   cudaMemset(system->msld->GaMD_alchem_force_d, 0, DOF*sizeof(real));
   cudaMemset(system->msld->alchem_energy_d, 0, sizeof(real));
-  cudaMemset(system->msld->bonded_dUdL_d, 0, nL*sizeof(real));
+  cudaMemset(system->msld->dUdL_bonded_d, 0, nL*sizeof(real));
 }
 
 void Potential::calc_force(int step,System *system) {
@@ -1671,53 +1671,41 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
     cudaStreamWaitEvent(r->ossBias, r->nbrecipComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
     cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
-    // Get dU_msld_dL without bias forces or forces we don't care to explore in (bonds)
-    cudaMemcpyAsync(system->msld->dU_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, r->ossBias);
-    system->msld->sub_alf(system->msld->dU_msld_d, 
-      system->msld->dU_alf_d, system->msld->GaMD_torsion_force_d, system->msld->bonded_dUdL_d,
-      system->msld->blockCount, r->ossBias);
+    if (system->msld->abf){ // ABF force does not depend on current lambda force
+      system->msld->getforce_abf(system,calcEnergy);
+    }
+    // Get lambda force terms into dUdL_* arrays, potentially sub <dUdL> from ABF from OSS force
+    system->msld->set_forces(system);
     // End 2D bias updates after a certain amount of time
     if(system->run->step >= system->msld->update_steps && system->msld->update_fe_surface && !system->msld->tracking_only){
       printf("\n\n Ending all 2d meta bias updates!\n\n");
       system->msld->update_fe_surface = false;
       system->msld->reset_1D(system); // Insights into sampling after fixing bias
     }
-    // Sampling & Logging of (L, dU/dL) and <dU/dL> data -> frequency logic handled internally
-    system->msld->add_sample(system, step);
-    system->msld->log_sampling(system, step);
     // Reset memory from last call 
     cudaMemsetAsync(system->msld->hist_potential_d, 0, (system->msld->blockCount-1)*sizeof(real), r->ossBias);
     cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
     cudaMemsetAsync(system->msld->dGdL_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
-    // Calculate dGdF from histogram
+    // Calculate dGdF & dGdL from histogram
     if (!system->msld->tracking_only){
       system->msld->getforce_hist(system,calcEnergy);
-    }
-    // Calculate dGdF equiv from GaMD
-    if (system->msld->GaMD_orth && system->msld->GaMD_orth){
-      system->msld->getforce_orth_GaMD(system);
-    }
-    // ABF
-    if (system->msld->abf){
-      system->msld->getforce_abf(system,calcEnergy);
     }
     // Wait on calculation of dGdF then add OSS forces directly into force array
     cudaEventRecord(r->ossBiasComplete, r->ossBias);
   }
 
-  if ((!system->msld->tracking_only && system->msld->oss) || system->msld->GaMD_alchem || system->msld->GaMD_orth){
-    if (system->msld->oss || system->msld->GaMD_orth){
-      if (system->id == helper) {
-        cudaStreamWaitEvent(r->ossBonded, r->ossBiasComplete, 0);
-        // TODO: Decide which to keep (this comment will mess with force tests - or should at least)
+  if (!system->msld->tracking_only && system->msld->oss){
+    if (system->id == helper) {
+      cudaStreamWaitEvent(r->ossBonded, r->ossBiasComplete, 0);
+      if(!system->msld->OSS_remove_bonded){
         getforce_bond_oss(system);
         getforce_dihe_oss(system);
         getforce_impr_oss(system);
         getforce_angle_oss(system);
         getforce_cmap_oss(system);
-        cudaEventRecord(r->ossBondedComplete, r->ossBonded);
-        cudaStreamWaitEvent(r->updateStream, r->ossBondedComplete, 0);
       }
+      cudaEventRecord(r->ossBondedComplete, r->ossBonded);
+      cudaStreamWaitEvent(r->updateStream, r->ossBondedComplete, 0);
     }
     if (system->id>=0) {
       cudaStreamWaitEvent(r->alchemDirect, r->ossBiasComplete, 0);
@@ -1735,6 +1723,18 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
       cudaStreamWaitEvent(r->updateStream, r->alchemRecipComplete, 0);
     }
   } 
+
+  if (system->msld->oss){
+    // Wait on dU/dL
+    cudaStreamWaitEvent(r->ossBias, r->ossBondedComplete, 0);
+    cudaStreamWaitEvent(r->ossBias, r->alchemDirectComplete, 0);
+    cudaStreamWaitEvent(r->ossBias, r->alchemRecipComplete, 0);
+    // Sampling & Logging of (L, dU/dL) and <dU/dL> data -> after potential of histogram is filled
+    system->msld->add_sample(system, step); // To flatten histogram lambda forces, this needs to be after OSS lambda forces
+    system->msld->log_sampling(system, step);
+    cudaEventRecord(r->ossBiasComplete, r->ossBias);
+    cudaStreamWaitEvent(r->updateStream, r->ossBiasComplete, 0);
+  }
 
   // GaMD
   if (system->msld->GaMD_total || system->msld->GaMD_torsion || system->msld->GaMD_alchem || system->msld->GaMD_orth){ // Always requires potential energies

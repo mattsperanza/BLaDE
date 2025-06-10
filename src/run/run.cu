@@ -616,7 +616,7 @@ void test_OSS_conservation(System* system) {
       printf("Step: %d, Pot: %f, Kin: %f, Tot: %f\n",step,system->state->energy[eepotential],system->state->energy[eekinetic],system->state->energy[eetotal]);
       real dUdL[nL+1], dU_msld[nL+1];
       cudaMemcpy(dUdL, system->state->lambdaForce_d, (nL+1)*sizeof(real), cudaMemcpyDefault);
-      cudaMemcpy(dU_msld, system->msld->dU_msld_d, (nL+1)*sizeof(real), cudaMemcpyDefault);
+      cudaMemcpy(dU_msld, system->msld->oss_dUdL_d, (nL+1)*sizeof(real), cudaMemcpyDefault);
       printf("Lambda Force: [ ");
       for (int i = 0; i < nL+1; i++) {
         printf("%f -> %f, ", dU_msld[i], dUdL[i]);

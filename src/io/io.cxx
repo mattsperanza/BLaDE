@@ -380,7 +380,7 @@ void print_meta(int step, System* system){
 
   fp=system->run->fpMTD_dUdL;
   for(int i = 1; i < system->msld->blockCount; i++){
-    fprintf(fp, "%f ", system->msld->dU_msld[i]);
+    fprintf(fp, "%f ", system->msld->oss_dUdL[i]);
   }
   fprintf(fp, "\n\n");
 
@@ -409,7 +409,8 @@ void print_dynamics_output(int step,System *system)
       print_nrg(step,system);
     }
     if (step % system->run->freqMTD == 0 && 
-      system->msld->oss && (!system->msld->update_fe_surface || system->msld->tracking_only)){
+      system->msld->oss){
+      //&& (!system->msld->update_fe_surface || system->msld->tracking_only)){
       system->state->recv_lambda();
       system->msld->recv_meta();
       print_meta(step, system);
@@ -478,7 +479,7 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
   
     int bins = system->msld->L_1D_bins;
     real* dUdL = (real*)malloc(bins * nL * sizeof(real));
-    real* dUdL_d = system->msld->average_dUdL_d;
+    real* dUdL_d = system->msld->ensemble_dUdL_d;
     cudaMemcpy(dUdL, dUdL_d, bins * nL * sizeof(real), cudaMemcpyDefault);
   
     file << "# ABF <dU/dL>\n";

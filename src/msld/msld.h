@@ -59,22 +59,35 @@ public:
   bool update_fe_surface = true; // add samples to oss histogram
   bool tracking_only = false; // Collect samples in 1D & 2D, but don't use/calculate atomic/lambda forces
   int sample_freq = 10;
-  int update_steps = 500000; // timesteps of sampling while updating FE surface
-  real* dU_alf_d; // [blockCount]
-  real* dU_msld_d; // [blockCount]
-  real* dU_msld; // [blockCount]
+  int update_steps = -1; // timesteps of sampling while updating FE surface - default to 1/4th of simulation
+  bool standard_tempering = true; // use exp(-max(0, hist_potential[i] - temper_min) / kT) vs. same thing with min_bias
+  bool OSS_remove_bonded = true; // removes large fluctuations in dUdL around l=0 that can cause instabilities
+  bool OSS_remove_abf = true; // remove abf force from oss_dUdL, hist density around zero if you don't
+  bool ABF_remove_bonded = false; // Does not compute true free energy if true
+  bool ABF_flatten_hist = false; // cancel average lambda forces from meta gaussians, makes algo very reliant on hist estimate
+  real* dUdL_bonded_d; // [blockCount] lambda forces from bonds
+  real* dUdL_alf_d; // [blockCount] lambda forces from alf
+  real* dUdL_abf_d; // [blockCount] lambda force from ABF
+  real* dUdL_msld_d; // [blockCount] lambda forces from force field 
+  real* oss_dUdL_d; // [blockCount] lambda forces that OSS is interested in biasing (nonbonded)
+  real* oss_dUdL; // [blockCount]
 
   // 1D histogramming and tracking of dU/dL distribution
   bool abf = false; // Subtract average dU/dL using
-  int L_1D_bins = 51; // this is also the max index (51 leads to >.99 as last bin)
+  int L_1D_bins = 51; // this is also the max index (51 leads to >.99 as last bin since first and last are half width)
   real* abf_TI_d; // [nL]
   real* dABF_dl_d; // [nL]
   real* histogram_1D_d; // [nL * L_1D_bins] counts in bin 
   real* average_dUdL_d; // [nL * L_1D_bins]
   real* average_dUdL2_d; // [nL * L_1D_bins]
   real* variance_dUdL_d; // [nL * L_1D_bins]
+  real* weights_d; // [nL * L_1D_bins] sum_i (exp(bias_i - offset))
+  real* weighted_dUdL_d; // [nL * L_1D_bins] sum_i (dUdL*exp(bias_i - offset)) 
+  real* ensemble_dUdL_d; // [nL * L_1D_bins] sum_i (dUdL*exp(bias_i - offset)) / sum_i (exp(bias_i - offset))
+  real* offsets_d; // [nL * L_1D_bins] offsets for each bin that cancels in ensemble_average
 
-  real alpha = 2; // lambda^alpha scaling
+  real alpha = 1.0; // lambda^alpha scaling
+
   // Histogram (2D meta) - uniform binning - nL = blockCount-1
   bool oss = false; // Perform Orthogonal Space Sampling calculations
   real* oss_histogram_d; // [nL * L_oss_bins * dUdL_bins] stores sum of gaussian prefactors
@@ -83,7 +96,6 @@ public:
   real* dGdL_d; // [blockCount] Derivative of gaussians w.r.t. lambda
   real* hist_potential_d; // [blockCount-1] potential from 2d metadynamics
   real* hist_potential; // [blockCount-1]
-  real* bonded_dUdL_d; // [blockCount] lambda forces from bonds
   real* min_bias_d; // [blockCount]
 
   // Grid & Meta Params (free means it is a free parameter)
@@ -190,7 +202,8 @@ public:
   void getforce_atomRestraints(System *system,bool calcEnergy);
   void getforce_chargeRestraints(System *system,bool calcEnergy);
 
-  void sub_alf(real* dU_msld_d, real* dU_alf_d, real* dU_torsion_d, real* dU_bond_d, int len, cudaStream_t stream);
+  // Remove alf from dUdL_msld, d
+  void set_forces(System* system);
 
   // GaMD Functions
   void gamd_update(System* system, bool update_E_k);
