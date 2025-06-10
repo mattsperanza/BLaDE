@@ -454,8 +454,6 @@ void parse_msld(char *line,System *system)
       printf("Cannot currently remove bonded terms and leave ABF in at same time.\n");
       exit(1);
     }
-  } else if (strcmp(token, "ABF_remove_bonded") == 0){
-    system->msld->ABF_remove_bonded=io_nextb(line);
   } else if (strcmp(token, "ABF_flatten_hist") == 0){
     system->msld->ABF_flatten_hist=io_nextb(line);
     if(!system->msld->OSS_remove_abf && system->msld->ABF_flatten_hist){
@@ -1289,7 +1287,7 @@ __global__ void add_sample_1D_kernel(
   real* weights, real* offsets, real* weighted_dUdL,
   real* ensemble_dUdL, 
   bool ABF_update,
-  bool ABF_remove_bonded, bool ABF_flatten_hist
+  bool ABF_flatten_hist
 ) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if(i<nL) {
@@ -1297,8 +1295,6 @@ __global__ void add_sample_1D_kernel(
     real dUdL = ABF_flatten_hist ? 
       lambdaForce[i+1] - dUdL_abf[i+1] : // Flatten everything except what abf has added (call this kernel after oss force calc)
       dUdL_msld[i+1] + dUdL_alf[i+1]; // these don't change when OSS kernels are called
-    // Removing bonded means TI equation does not give true free energy 
-    dUdL -= ABF_remove_bonded ? dUdL_bonded[i+1] : 0.0; // dUdL_msld contains bonded forces 
     int bin = get_histogram_index(lambda, L_bins, L_max, L_min); 
     int hist_bin = i*L_bins + bin;
 
@@ -1340,31 +1336,30 @@ __global__ void add_sample_hist_kernel(
 ) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
-    // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
     int site = lambdaSites[i+1];
     int skip = 0;
     for(int j = 0; j < site; j++){
       skip += subsPerSite[j];
     }
-    real dUdL = oss_dUdL[i+1];
-    for(int j = skip; j < skip+subsPerSite[site]; j++){
-      if(j == i+1){ // j != i
-        continue;
-      }
-      dUdL -= oss_dUdL[j];
-    }
-    int X = get_histogram_index(lambdas[i+1], L_bins, L_max, L_min);
-    int Y = get_histogram_index(dUdL, dUdL_bins, dUdL_max, dUdL_min);
-    int index = i*L_bins*dUdL_bins + X*dUdL_bins + Y;
-
+    // PB Meta
     real sum = 0;
     for(int j = 0; j < skip+subsPerSite[site]; j++){
       sum += exp(-hist_potential[j-1] / kT);
     }
     real pb = exp(-hist_potential[i] / kT) / sum;
-
-    // only put bias near l=1
-    real factorDecouple = i == 0 ? 0.0 : 1.0; 
+    // OSS force difference
+    real dUdL = oss_dUdL[i+1];
+    for(int j = skip; j < skip+subsPerSite[site]; j++){
+      if(j != i+1){ 
+        dUdL -= oss_dUdL[j];
+      }
+    }
+    // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
+    int X = get_histogram_index(lambdas[i+1], L_bins, L_max, L_min);
+    int Y = get_histogram_index(dUdL, dUdL_bins, dUdL_max, dUdL_min);
+    int index = i*L_bins*dUdL_bins + X*dUdL_bins + Y;
+    // Add sample
+    real factorDecouple = pb;
     real potential = standard_tempering ? 
       max(0.0, hist_potential[i] - temper_min) : 
       max(0.0, min_bias[i] - temper_min);
@@ -1390,7 +1385,7 @@ void Msld::add_sample(System* system, int step) { // Step = 0 during NPT steps
   }
 
   // This continues after bias updates 
-  bool remove_hist = ABF_flatten_hist; // && step > .75*update_steps; // remove after dropping lots of bias
+  bool remove_hist = ABF_flatten_hist; // && step > .75*update_steps; // remove after dropping lots of bias?
   add_sample_1D_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
     blockCount-1, s->lambda_fd, 
     s->lambdaForce_d, dUdL_msld_d, dUdL_alf_d, dUdL_bonded_d, dUdL_abf_d,
@@ -1399,8 +1394,8 @@ void Msld::add_sample(System* system, int step) { // Step = 0 during NPT steps
     histogram_1D_d, average_dUdL_d, average_dUdL2_d, variance_dUdL_d,
     hist_potential_d, s->leapParms1->kT, 
     weights_d, offsets_d, weighted_dUdL_d, ensemble_dUdL_d, 
-    update_fe_surface, // stop updating <dU/dL> that ABF uses
-    ABF_remove_bonded, remove_hist);
+    step < update_steps, // stop updating <dU/dL> that ABF uses
+    remove_hist);
 
   if (update_fe_surface){
     // Only write restarts while dropping gaussians
@@ -1408,7 +1403,7 @@ void Msld::add_sample(System* system, int step) { // Step = 0 during NPT steps
       printf("Writing Restart & Potential Files!\n");
       write_histogram_file(system, "hist_restart.txt", false);
       write_histogram_file(system, "hist_potential.txt", true);
-      get_tempering_hist(system); // Requires a potential eval
+      get_tempering_hist(system); // Requires a potential eval on every point of histogram
     }
     add_sample_hist_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
       s->leapParms1->kT, blockCount-1, s->lambda_fd, lambdaSite_d, 
@@ -1456,7 +1451,7 @@ __global__ void getforce_abf_kernel(
     }
     dUdL_abf = -dUdL_abf; // we add -'ve of <dU/dL>
     atomicAdd(&lambdaForce[i+1], dUdL_abf);
-    lambdaForce_extra[i+1] = dUdL_abf;
+    lambdaForce_extra[i+1] = dUdL_abf; // for set_forces method
     int start = i*num_bins;
     real e = 0; // = -TI
     for (int j = 0; j < num_bins - 1; j++) { 
@@ -1532,10 +1527,9 @@ __global__ void getforce_hist_kernel(
     real dUdL = oss_dUdL[iL+1];
     real lam = lambdas[iL+1];
     for(int j = skip; j < skip+subsPerSite[site]; j++){
-      if(j == iL+1){ // j != i
-        continue;
+      if(j != iL+1){ // j != i
+        dUdL -= oss_dUdL[j];
       }
-      dUdL -= oss_dUdL[j];
     }
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
     int X = get_histogram_index(lam, L_bins, L_max, L_min);
@@ -1600,29 +1594,38 @@ __global__ void getforce_pb_oss(
     for(int j = 0; j < site; j++){
       skip += subsPerSite[j];
     }
+    // Convert Well-Tempered MD to F(li, dU/dLi)
     real fes_correction = 1.0;
     if(!update_fe && standard_temper){
-      // Convert Well-Tempered MD to F(li, dU/dLi)
-      // F(s) = -(kT + kT*temper)/kT * V(s) = -(1 + temper) * V(s)
-      // We want to subtract the F(s), so we ignore the negative
-      fes_correction = 1.0 + temper;
+      fes_correction = 1.0 + temper; // F(s) = -(kT + kT*temper)/kT * V(s) = -(1 + temper) * V(s)
     }
+    // PB Meta
     real sum = 0;
     for(int j = skip; j < skip+subsPerSite[site]; j++){
+      // hist_potential has nBlock-1 elements
       sum += exp(-hist_potential[j-1]*fes_correction / kT);
     }
-    real pb = 1.0; //exp(-hist_potential[i]*fes_correction / kT) / sum;
+    real pb = exp(-hist_potential[i]*fes_correction / kT) / sum;
+    // This histogram on this Fi
     real dgdf = pb*dGdF[i+1]*fes_correction;
     atomicAdd(&lambdaForce[i+1], pb*dGdL[i+1]*fes_correction);
-    for(int j = skip; j < skip+subsPerSite[site]; j++){
-      if (j == i+1){
-        continue;
-      }
-      atomicAdd(&lambdaForce[j], pb*dGdL[i+1]*fes_correction);
-      real pb_j = 1.0; //exp(-hist_potential[j-1]*fes_correction / kT) / sum;
-      dgdf += -pb_j*dGdF[j]*fes_correction;
+    if (!OSS_remove_abf){
+      // ABF variables have nBlock-1 elements
+      atomicAdd(&lambdaForce[i+1], d2UdL2_abf[i]*pb*dGdF[i+1]*fes_correction);
     }
-    __syncthreads();
+    for(int j = skip; j < skip+subsPerSite[site]; j++){
+      if (j != i+1){
+        // other lambda forces from this histogram since g(li, 1-sum(lj))
+        atomicAdd(&lambdaForce[j], -pb*dGdL[i+1]*fes_correction);
+        if (!OSS_remove_abf){
+          atomicAdd(&lambdaForce[j], -d2UdL2_abf[i]*pb*dGdF[i+1]*fes_correction);
+        }
+        // Add scale from other histogram Fi derivatives since g(li, 1-sum(lj), dU/dLi - dU/dLj)
+        real pb_j = exp(-hist_potential[j-1]*fes_correction / kT) / sum;
+        dgdf += -pb_j*dGdF[j]*fes_correction;
+      }
+    }
+    __syncthreads(); // done using other histogram forces
     dGdF[i+1] = dgdf;
     if (energy && i==0) {
       //atomicAdd(energy, -kT*log(sum));

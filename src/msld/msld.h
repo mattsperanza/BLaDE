@@ -63,7 +63,6 @@ public:
   bool standard_tempering = true; // use exp(-max(0, hist_potential[i] - temper_min) / kT) vs. same thing with min_bias
   bool OSS_remove_bonded = true; // removes large fluctuations in dUdL around l=0 that can cause instabilities
   bool OSS_remove_abf = true; // remove abf force from oss_dUdL, hist density around zero if you don't
-  bool ABF_remove_bonded = false; // Does not compute true free energy if true
   bool ABF_flatten_hist = false; // cancel average lambda forces from meta gaussians, makes algo very reliant on hist estimate
   real* dUdL_bonded_d; // [blockCount] lambda forces from bonds
   real* dUdL_alf_d; // [blockCount] lambda forces from alf
