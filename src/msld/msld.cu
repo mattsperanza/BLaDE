@@ -438,6 +438,10 @@ void parse_msld(char *line,System *system)
     if(system->msld->tracking_only && system->msld->oss){
       system->msld->tracking_only = false;
     }
+  } else if (strcmp(token, "OSS_force_diff")==0){
+    system->msld->OSS_force_diff=io_nextb(line);
+  } else if (strcmp(token, "OSS_neg_lmd_force")==0){
+    system->msld->OSS_neg_lmd_force=io_nextb(line); 
   } else if (strcmp(token, "OSS_remove_abf") == 0){
     system->msld->OSS_remove_abf=io_nextb(line);
     if(!system->msld->OSS_remove_abf && system->msld->OSS_remove_bonded){
@@ -773,6 +777,7 @@ void Msld::initialize(System *system)
 
 
   // OSS variables
+  calc_imp(system);
   oss_dUdL = (real*)malloc(blockCount*sizeof(real));
   cudaMalloc(&oss_dUdL_d, blockCount*sizeof(real)); 
   cudaMemset(oss_dUdL_d, 0, blockCount*sizeof(real));
@@ -785,6 +790,10 @@ void Msld::initialize(System *system)
   cudaMalloc(&dUdL_abf_d, blockCount*sizeof(real));
   cudaMemset(dUdL_abf_d, 0, blockCount*sizeof(real));
 
+  cudaMalloc(&oss_samples_d, (blockCount-1)*sizeof(real)); 
+  cudaMemset(oss_samples_d, 0, (blockCount-1)*sizeof(real));
+  cudaMalloc(&oss_Z_d, (blockCount-1)*sizeof(real)); 
+  cudaMemset(oss_Z_d, 0, (blockCount-1)*sizeof(real));
   cudaMalloc(&hist_potential_d, (blockCount-1)*sizeof(real)); 
   cudaMemset(hist_potential_d, 0, (blockCount-1)*sizeof(real));
   cudaMalloc(&min_bias_d, (blockCount-1)*sizeof(real));
@@ -1146,6 +1155,47 @@ static int histogram_index(real val, int num_bins, real max, real min) {
   return round(tmp/resolution);
 }
 
+void Msld::calc_imp(System *system) {
+  int bins = system->msld->L_oss_bins;
+  int nSample = 10000000; // 10 mil
+  int c = system->msld->fnex;
+  int nSite = system->msld->siteCount;
+  cudaMalloc(&p_imp_d, nSite*bins*sizeof(real));
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_real_distribution<real> dist(0.0, 1.0);
+  real p[bins*(nSite-1)];
+  for (int ii = 0; ii < nSite-1; ii++) {
+    int nDim = system->msld->blocksPerSite[ii+1];
+    int start = bins*ii;
+    real histogram[bins];
+    memset(histogram, 0, bins*sizeof(real));
+    for (int i = 0; i < nSample; i++) {
+      real ti[nDim], unli[nDim], li[nDim], sum_unli = 0.0;
+      for (int j = 0; j < nDim; j++) {
+        ti[j] = dist(gen);
+        unli[j] = exp(c * sin(M_PI * ti[j] - M_PI/2));
+        sum_unli += unli[j];
+      }
+      for (int j = 0; j < nDim; j++) {
+        li[j] = unli[j] / sum_unli;
+        int index = histogram_index(li[j], bins, 1.0, 0.0);
+        histogram[index] += 1.0 / (nSample*nDim);
+      }
+    }
+
+    real sum = 0;
+    printf("p_imp for site %d: [ ", ii+1);
+    for (int i = 0; i < bins; i++) {
+      p[start + i] = histogram[i];
+      sum += histogram[i];
+      printf("%f, ", p[start+i]);
+    }
+    printf(" ], Sum: %f\n", sum);
+  }
+  cudaMemcpy(p_imp_d, p, bins*(nSite-1)*sizeof(real), cudaMemcpyDefault);
+}
+
 void Msld::init_oss(System* system){
     int nL = blockCount-1; // 0th lambda is environment
     // 1D Storage
@@ -1308,10 +1358,12 @@ __global__ void add_sample_1D_kernel(
  
     // Weighted Stats
     if (ABF_update){
+      // Bias from PB Meta
       real bias = 0;
       for(int j = 0; j < nL; j++){
-        bias += hist_potential[j];
+        bias += exp(-hist_potential[j]/kT);
       } 
+      bias = -kT*log(bias);
       if(bias > offsets[hist_bin]){
         real correction = exp(offsets[hist_bin] - bias);
         weights[hist_bin] *= correction;
@@ -1329,10 +1381,10 @@ __global__ void add_sample_hist_kernel(
   real kT, int nL, real* lambdas, int* lambdaSites, int* subsPerSite, 
   real* oss_dUdL, real* hist_potential, real* min_bias,
   real weight, bool temper, real tempering, real temper_min, 
-  real* histogram, 
+  real* histogram, real* oss_samples, real* p_imp,
   int L_bins, real L_max, real L_min, 
   int dUdL_bins, real dUdL_max, real dUdL_min,
-  bool standard_tempering
+  bool standard_tempering, bool force_diff
 ) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
@@ -1351,7 +1403,7 @@ __global__ void add_sample_hist_kernel(
     real dUdL = oss_dUdL[i+1];
     for(int j = skip; j < skip+subsPerSite[site]; j++){
       if(j != i+1){ 
-        dUdL -= oss_dUdL[j];
+        dUdL -= force_diff ? oss_dUdL[j] : 0.0;
       }
     }
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
@@ -1359,14 +1411,14 @@ __global__ void add_sample_hist_kernel(
     int Y = get_histogram_index(dUdL, dUdL_bins, dUdL_max, dUdL_min);
     int index = i*L_bins*dUdL_bins + X*dUdL_bins + Y;
     // Add sample
-    real factorDecouple = pb;
-    real potential = standard_tempering ? 
-      max(0.0, hist_potential[i] - temper_min) : 
-      max(0.0, min_bias[i] - temper_min);
-    real factorTemper = temper ? exp(-potential / (tempering*kT)) : 1.0;
+    real factorDecouple = 1.0;
+    real factorJacobian = p_imp[(site-1)*L_bins + X];
     if (X >= 0 && X < L_bins && Y >= 0 && Y < dUdL_bins) {
-      histogram[index] += weight * factorDecouple * factorTemper;
+      // TODO: See if multiplication or division is right for jacobian
+      // multiplication is adding G_imp(li)=-kT*ln(p_imp), div is subtracting
+      histogram[index] += factorDecouple;// / factorJacobian;
     }
+    oss_samples[i] += factorDecouple;// / factorJacobian; // histogram wide normalization
   }
 };
 
@@ -1409,8 +1461,9 @@ void Msld::add_sample(System* system, int step) { // Step = 0 during NPT steps
       s->leapParms1->kT, blockCount-1, s->lambda_fd, lambdaSite_d, 
       blocksPerSite_d, oss_dUdL_d, hist_potential_d, min_bias_d,
       gaussian_weight, temper, tempering, temper_min, oss_histogram_d, 
+      oss_samples_d, p_imp_d,
       L_oss_bins, L_max, L_min, dUdL_bins, dUdL_max, dUdL_min,
-      standard_tempering);
+      standard_tempering, OSS_force_diff);
   }
 }
 
@@ -1508,7 +1561,8 @@ __global__ void getforce_hist_kernel(
   int L_bins, real L_max, real L_min, int L_search,
   real dUdL_std, real L_std,
   real* dGdF, real* dGdL,
-  bool mirror_Lmin, bool mirror_Lmax
+  bool mirror_Lmin, bool mirror_Lmax,
+  bool force_diff
 ) {
   // 2D grid: blockIdx.y = lambda index, blockIdx.x*blockDim.x+threadIdx.x = L search offset
   int iSearch = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1528,7 +1582,7 @@ __global__ void getforce_hist_kernel(
     real lam = lambdas[iL+1];
     for(int j = skip; j < skip+subsPerSite[site]; j++){
       if(j != iL+1){ // j != i
-        dUdL -= oss_dUdL[j];
+        dUdL -= force_diff ? oss_dUdL[j] : 0.0;
       }
     }
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
@@ -1585,44 +1639,56 @@ __global__ void getforce_pb_oss(
   real* lambdas, real* lambdaForce, real* oss_dUdL, real_e* energy, 
   real* d2UdL2_abf, bool OSS_remove_abf,
   real* counts_1D, int bins_1D,
-  bool update_fe, bool standard_temper
+  real* oss_samples, real* oss_Z, 
+  real oss_gamma, real oss_eps,
+  bool update_fe, bool standard_temper,
+  bool force_diff, bool lmd_neg_force
 ) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i < nL) {
+    // getforce_hist computes p(l, dU/dL), dp/dl, dp/dF, so we need to convert first
+    // TODO: Implement Z normalization over explored phase space
+    if(oss_samples[i] < 1e-5){
+      return;
+    }
+    real p = hist_potential[i] / oss_samples[i]; // div by zero at beginning when oss_samples/oss_Z is zero
+    real s = hist_potential[i];
+    real prefactor = (oss_gamma - 1) * kT;
+    real arg = p + oss_eps;
+    hist_potential[i] = prefactor*log(arg);
+    dGdL[i+1] = prefactor * dGdL[i+1] / oss_samples[i] / arg;
+    dGdF[i+1] = prefactor * dGdF[i+1] / oss_samples[i] / arg;
+    printf("i: %d, P: %f, V: %f, dGdF: %f, dGdL: %f, p~: %f, samples: %f\n", 
+      i, p, hist_potential[i], dGdF[i+1], dGdL[i+1], s, oss_samples[i]);
+    __syncthreads(); // Math beyond here does not make assumption about potential
     int site = lambdaSites[i+1];
     int skip = 0;
     for(int j = 0; j < site; j++){
       skip += subsPerSite[j];
     }
-    // Convert Well-Tempered MD to F(li, dU/dLi)
-    real fes_correction = 1.0;
-    if(!update_fe && standard_temper){
-      fes_correction = 1.0 + temper; // F(s) = -(kT + kT*temper)/kT * V(s) = -(1 + temper) * V(s)
-    }
     // PB Meta
     real sum = 0;
     for(int j = skip; j < skip+subsPerSite[site]; j++){
-      // hist_potential has nBlock-1 elements
-      sum += exp(-hist_potential[j-1]*fes_correction / kT);
+      sum += exp(-hist_potential[j-1] / kT); // hist_potential has nBlock-1 elements
     }
-    real pb = exp(-hist_potential[i]*fes_correction / kT) / sum;
-    // This histogram on this Fi
-    real dgdf = pb*dGdF[i+1]*fes_correction;
-    atomicAdd(&lambdaForce[i+1], pb*dGdL[i+1]*fes_correction);
+    real pb = exp(-hist_potential[i] / kT) / sum;
+    // Add this histogram's forces
+    real dgdf = pb*dGdF[i+1];
+    atomicAdd(&lambdaForce[i+1], pb*dGdL[i+1]);
     if (!OSS_remove_abf){
-      // ABF variables have nBlock-1 elements
-      atomicAdd(&lambdaForce[i+1], d2UdL2_abf[i]*pb*dGdF[i+1]*fes_correction);
+      atomicAdd(&lambdaForce[i+1], pb*dGdF[i+1]*d2UdL2_abf[i]); // ABF variables have nBlock-1 elements
     }
     for(int j = skip; j < skip+subsPerSite[site]; j++){
       if (j != i+1){
-        // other lambda forces from this histogram since g(li, 1-sum(lj))
-        atomicAdd(&lambdaForce[j], -pb*dGdL[i+1]*fes_correction);
+        // other lambda forces from this histogram since g(li, 1-sum(lj)) or g(li, sum(lj))
+        real sign = lmd_neg_force ? -1.0 : 1.0;
+        atomicAdd(&lambdaForce[j], sign*pb*dGdL[i+1]);
         if (!OSS_remove_abf){
-          atomicAdd(&lambdaForce[j], -d2UdL2_abf[i]*pb*dGdF[i+1]*fes_correction);
+          atomicAdd(&lambdaForce[j], sign*d2UdL2_abf[i]*pb*dGdF[i+1]);
         }
         // Add scale from other histogram Fi derivatives since g(li, 1-sum(lj), dU/dLi - dU/dLj)
-        real pb_j = exp(-hist_potential[j-1]*fes_correction / kT) / sum;
-        dgdf += -pb_j*dGdF[j]*fes_correction;
+        real pb_j = exp(-hist_potential[j-1] / kT) / sum;
+        dgdf += force_diff ? -pb_j*dGdF[j] : 0.0;
       }
     }
     __syncthreads(); // done using other histogram forces
@@ -1661,7 +1727,7 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
     L_oss_bins, L_max, L_min, L_search,
     dUdL_std, L_std,
     dGdF_d, dGdL_d,
-    mirror_Lmin, mirror_Lmax);
+    mirror_Lmin, mirror_Lmax, OSS_force_diff);
 
   // Force from PBMetaD combined function -kT ln(sum(-gi(li, Fi)/kT)))
   getforce_pb_oss<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
@@ -1670,7 +1736,10 @@ void Msld::getforce_hist(System *system, bool calcEnergy) {
     hist_potential_d, min_bias_d, dGdF_d, dGdL_d,
     s->lambda_fd, s->lambdaForce_d, oss_dUdL_d, pEnergy,
     dABF_dl_d, OSS_remove_abf, histogram_1D_d, L_1D_bins,
-    update_fe_surface, standard_tempering
+    oss_samples_d, oss_Z_d,
+    opes_gamma, opes_eps,
+    update_fe_surface, standard_tempering,
+    OSS_force_diff, OSS_neg_lmd_force
   );
 }
 
@@ -1680,7 +1749,7 @@ __global__ void min_L_max_dUdL_kernel(
     int L_bins, int dUdL_bins,
     real dUdL_max, real dUdL_min,
     real* potential_grid, real* histogram,
-    real* min_bias
+    real* min_bias, real* oss_Z, real* oss_samples
 ) {
   // TODO: Claude 3.7 wrote, eventually write your own reductions
   extern __shared__ real shared_max_bias[];
@@ -1698,12 +1767,14 @@ __global__ void min_L_max_dUdL_kernel(
     real dUdL_res = (dUdL_max - dUdL_min) / (dUdL_bins - 1.0);
     for (int x = tid; x < L_bins; x += stride) {
       real local_max = -INFINITY;
+      real sum = 0;
       real offset = 0.0;
       real weighted_dUdL = 0;
       real Z = 0;
       for (int y = 0; y < dUdL_bins; y++) {
         int grid_index = iL*dUdL_bins*L_bins + x * dUdL_bins + y;
         real current_bias = potential_grid[grid_index] / kT;
+        sum += current_bias;
         local_max = max(local_max, current_bias);
         if (current_bias <= 0.0) { continue; } // if we don't do this the bins with zero bias contribute
         if (histogram[grid_index] <= 0.0) { continue; } // No contribution from dUdL without samples
@@ -1717,7 +1788,7 @@ __global__ void min_L_max_dUdL_kernel(
         weighted_dUdL += dUdL * exp(current_bias - offset);
         Z += exp(current_bias - offset);
       }
-      shared_max_bias[x] = local_max;
+      shared_max_bias[x] = sum;
       //oss_ens_dUdL[iL*L_bins + x] = Z > 1e-5 ? weighted_dUdL / Z : 0.0;
       //oss_Z[iL*L_bins + x] = Z;
       //oss_Z_offset[iL*L_bins + x] = offset;
@@ -1725,11 +1796,11 @@ __global__ void min_L_max_dUdL_kernel(
     __syncthreads();
 
     if (tid == 0) {
-      real min_of_max_bias = INFINITY;
+      real min_of_max_bias = 0.0;
       for (int x = 0; x < L_bins; x++) {
-        min_of_max_bias = min(min_of_max_bias, shared_max_bias[x]);
+        min_of_max_bias += shared_max_bias[x];
       }
-      min_bias[iL] = min_of_max_bias;
+      min_bias[iL] = min_of_max_bias / oss_samples[iL];
     }
   }
 }
@@ -1746,7 +1817,7 @@ void Msld::get_tempering_hist(System* system) {
       L_oss_bins, dUdL_bins,
       dUdL_max, dUdL_min,
       oss_potential_d, oss_histogram_d,
-      min_bias_d);
+      min_bias_d, oss_Z_d, oss_samples_d);
 }
 
 __global__ void getpotential_hist_kernel(

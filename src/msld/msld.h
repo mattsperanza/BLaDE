@@ -61,6 +61,8 @@ public:
   int sample_freq = 10;
   int update_steps = -1; // timesteps of sampling while updating FE surface - default to 1/4th of simulation
   bool standard_tempering = true; // use exp(-max(0, hist_potential[i] - temper_min) / kT) vs. same thing with min_bias
+  bool OSS_force_diff = false; // g(li, dU/dLi ? - sum j!=i dU/dLj) 
+  bool OSS_neg_lmd_force = true; // g(li, ? 1 - sum j!=i li : sum j!=i li) -> this being true cancels all meta lambda forces in 2 lambda dim
   bool OSS_remove_bonded = true; // removes large fluctuations in dUdL around l=0 that can cause instabilities
   bool OSS_remove_abf = true; // remove abf force from oss_dUdL, hist density around zero if you don't
   bool ABF_flatten_hist = false; // cancel average lambda forces from meta gaussians, makes algo very reliant on hist estimate
@@ -87,10 +89,13 @@ public:
 
   real alpha = 1.0; // lambda^alpha scaling
 
-  // Histogram (2D meta) - uniform binning - nL = blockCount-1
+  // Histogram (2D meta) -> uniform binning -> nL = blockCount-1
   bool oss = false; // Perform Orthogonal Space Sampling calculations
   real* oss_histogram_d; // [nL * L_oss_bins * dUdL_bins] stores sum of gaussian prefactors
   real* oss_potential_d; // [nL * L_oss_bins * dUdL_bins]
+  real* oss_Z_d; // [nL] from Supp. 9 in https://dx.doi.org/10.1021/acs.jpclett.0c00497?ref=pdf
+  real* oss_samples_d; // [nL] number of samples in histogram
+  real* p_imp_d; // [(nSite-1) * L_oss_bins] probability due to implicit constraints
   real* dGdF_d; // [blockCount] Derivative of gaussians w.r.t. lambda force
   real* dGdL_d; // [blockCount] Derivative of gaussians w.r.t. lambda
   real* hist_potential_d; // [blockCount-1] potential from 2d metadynamics
@@ -113,8 +118,11 @@ public:
   bool temper = true; // Using defaults (2 kcal = .43, 4 kcal = .08, 6 kcal = .01)
   real tempering = 2.0; // free - exp(-max(0, pot - min) / kBT*tempering)
   real temper_min = 1.0; // free 
-  bool mirror_Lmin = true; // free 
-  bool mirror_Lmax = true; // free
+  real opes_dE = 2.0; // gamma * kT
+  real opes_gamma = opes_dE * .6; // dE / kT
+  real opes_eps = exp(-opes_dE / (.6 - .6 / opes_gamma));
+  bool mirror_Lmin = false; // free 
+  bool mirror_Lmax = false; // free
   real gaussian_weight = .01; // free
 
   // GaMD Parameters - 3 Stages: [0, init), [init,equil), [equil, nStep)
@@ -218,6 +226,7 @@ public:
   void getforce_hist(System *system, bool calcEnergy);
   void log_sampling(System *system, int step);
   void get_tempering_hist(System* system);
+  void calc_imp(System* system);
 
   // ABF Functions
   void getforce_abf(System* system, bool calcEnergy);
