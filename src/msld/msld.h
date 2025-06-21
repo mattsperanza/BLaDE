@@ -83,10 +83,10 @@ public:
   real* offsets_d; // [nL * L_1D_bins] offsets for each bin that cancels in ensemble_average
   // All paths sum_sites Ns*(Ns-1) -> each lambda in a site to every other lambda in that site, averages of its own forces 
   int path_count;
-  int warmup_samples = 0; // linear ramp of <dU/dL> with how much abf sample weight you have (basically number of samples)
+  int warmup_samples = 20; // linear ramp of <dU/dL> with how much abf sample weight you have (basically number of samples)
   // ABF alone doesn't work well when this is high since rare events are not capitalized on (might just be very slow idk)
   // Then again basing <dU/dL> on 1 sample may introduce artificial barriers if you sampled an outliner
-  real edge_KDE_std = .02; // gaussians go to ~0 around 4*std
+  real edge_KDE_std = .05; // gaussians go to ~0 around 4*std
   // This means samples where sum k!=i,j(lmd k) < .08 have negligible weight
   real* path_samples_d; // [Ns*(Ns-1)] reduction of weights along each path, including prior
   real* path_sample_offsets_d;
@@ -98,6 +98,10 @@ public:
   real* path_weighted_dUdL2_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] weighted dU/dL^2
   real* path_ensemble_dUdL_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] <dU/dL> = sum(w*dU/dL) / sum(w)
   real* path_dUdL_variance_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] <dU/dL^2> - <dU/dL>^2 this isn't the most stable estimator
+  real* path_dUdL_diff_d;
+  real* path_dUdL_diff2_d;
+  real* path_ens_dUdL_diff_d;
+  real* path_ens_dUdL_variance_d;
   real L_resolution = (abs(L_max)+abs(L_min))/L_1D_bins;
   real L_std = 4*L_resolution; // free
   int L_search = 4.0*(L_std/L_resolution); 
@@ -108,7 +112,8 @@ public:
   bool oss = false; // Perform Orthogonal Space Sampling calculations
   bool opes = false; // 
   bool explore = false; // OPES explore vs OPES standard
-  real* p_imp_d; // [(nSite-1) * L_oss_bins] probability due to implicit constraints
+  bool do_imp = false;
+  real* p_imp_d; // [(nSite-1) * L_oss_bins] probability due to implicit constraints / max(p_imp_d)
   real* dGdF_d; // [blockCount] OSS chain rule multiplier, dGdF[i] * d2U/dlidX
   real* hist_potential_d; // [blockCount-1] potential from 2d metadynamics
   real* hist_potential; // [blockCount-1]

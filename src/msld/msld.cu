@@ -442,6 +442,8 @@ void parse_msld(char *line,System *system)
     system->msld->opes=io_nextb(line);
   } else if (strcmp(token, "explore") == 0){
     system->msld->explore=io_nextb(line);
+  } else if (strcmp(token, "do_imp") == 0){
+    system->msld->do_imp=io_nextb(line);
   } else if (strcmp(token, "opes_dE") == 0){
     system->msld->opes_dE=io_nextf(line);
   } else if (strcmp(token, "L_1D_bins") == 0){
@@ -461,7 +463,7 @@ void parse_msld(char *line,System *system)
   } else if (strcmp(token, "tracking_only") == 0){
     system->msld->tracking_only=io_nextb(line);
     if(system->msld->tracking_only){
-      system->msld->oss = true;
+      system->msld->abf = true;
       system->msld->update_fe_surface = true;
     }
   } else if (strcmp(token, "sample_freq") == 0){
@@ -1094,11 +1096,22 @@ void Msld::calc_imp(System *system) {
     real sum = 0;
     int start = bins*ii;
     printf("edge p_imp for site %d, std: %f, total weight: %f, precent of total samples: %f: [ ", ii+1, std, tot_weight, tot_weight/((real)nSample));
+    real max=0;// largest probability
     for (int i = 0; i < bins; i++) {
       p[start + i] = histogram[i] / (tot_weight);
+      if(p[start+i] > max){
+        max = p[start+i];
+      }
       sum += histogram[i] / (tot_weight);
       printf("%f, ", p[start+i]);
-    }    
+    }
+    for (int i = 0; i < bins; i++){
+      if(max < 1e-9){
+        printf("Max in implicit constraint too small!\n");
+        exit(1);
+      }
+      p[start+i] /= max;// always makes this larger
+    }
     printf(" ], Sum: %f\n", sum);
   }
   cudaMemcpy(p_imp_d, p, bins*(nSite-1)*sizeof(real), cudaMemcpyDefault);
@@ -1182,7 +1195,7 @@ void Msld::recv_meta(){
 void Msld::log_sampling(System* system, int step){
   State* s = system->state;
   Run* r = system->run;
-  if(step % (sample_freq*100) != 0 || step == 0){
+  if(step % (sample_freq*1000) != 0 || step == 0){
     return;
   }
 
@@ -1237,7 +1250,6 @@ void Msld::log_sampling(System* system, int step){
             count++;
           }
         }
-        /*
         printf("All Paths <dU/dL>:\n");
         count = 0;
         for(int i = 0; i < blocksPerSite[site]; i++){
@@ -1252,7 +1264,6 @@ void Msld::log_sampling(System* system, int step){
             count++;
           }
         }
-        */
         /*
         printf("All Paths <Std>:\n");
         count = 0;
@@ -1333,8 +1344,10 @@ __global__ void add_sample_1D_kernel(
   real* ensemble_dUdL, 
   bool ABF_update,
   bool do_paths,
+  bool opes,
   int warmup_samples,
   real edge_std,
+  bool do_imp,
   int L_imp_bins,
   real* target_distribution, // implicit constraint
   real gamma,
@@ -1418,10 +1431,10 @@ __global__ void add_sample_1D_kernel(
         distance2 += di*di + dj*dj;
         real weight = exp(-.5*distance2 / (edge_std*edge_std)); // KDE of edge dU/dL samples
         hist_bin = (site-1)*L_bins + bin;
-        // Add weight due to implicit constraints
+        // Optionally add weight due to implicit constraints
         bin = get_histogram_index(combined_lambda, L_imp_bins, L_max, L_min);
         real implicit_p = target_distribution[(site-1)*L_imp_bins + bin];
-        weight /= pow(implicit_p, 1.0/gamma);
+        weight /= opes && do_imp ? pow(implicit_p, 1.0/gamma) : 1.0;
         // Add sample to projected bin
         bin = get_histogram_index(combined_lambda, L_bins, L_max, L_min); 
         hist_bin = (start_path+count)*L_bins + bin; // path# * length + index
@@ -1494,8 +1507,10 @@ void Msld::add_sample(System* system, int step) { // Step = 0 during NPT steps
     weights_d, offsets_d, weighted_dUdL_d, ensemble_dUdL_d, 
     step < update_steps, // stop updating <dU/dL> that ABF uses
     abf, // do_paths
+    opes,
     warmup_samples,
     edge_KDE_std,
+    do_imp,
     L_imp_bins,
     p_imp_d,
     opes_gamma,
