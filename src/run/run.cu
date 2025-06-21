@@ -128,6 +128,7 @@ Run::Run(System *system)
   ossBonded=0;
   alchemDirect=0;
   alchemRecip=0;
+  abfForce=0;
   gamdBias=0;
 
 #else
@@ -141,6 +142,7 @@ Run::Run(System *system)
   cudaStreamCreate(&ossBonded);
   cudaStreamCreate(&alchemDirect);
   cudaStreamCreate(&alchemRecip);
+  cudaStreamCreate(&abfForce);
   // GaMD Streams
   cudaStreamCreate(&gamdBias);
 
@@ -164,6 +166,7 @@ Run::Run(System *system)
   cudaEventCreate(&ossBondedComplete);
   cudaEventCreate(&alchemDirectComplete);
   cudaEventCreate(&alchemRecipComplete);
+  cudaEventCreate(&abfForceComplete);
 
   // GaMD Bias Event
   cudaEventCreate(&gamdBiasComplete);
@@ -616,7 +619,6 @@ void test_OSS_conservation(System* system) {
       printf("Step: %d, Pot: %f, Kin: %f, Tot: %f\n",step,system->state->energy[eepotential],system->state->energy[eekinetic],system->state->energy[eetotal]);
       real dUdL[nL+1], dU_msld[nL+1];
       cudaMemcpy(dUdL, system->state->lambdaForce_d, (nL+1)*sizeof(real), cudaMemcpyDefault);
-      cudaMemcpy(dU_msld, system->msld->oss_dUdL_d, (nL+1)*sizeof(real), cudaMemcpyDefault);
       printf("Lambda Force: [ ");
       for (int i = 0; i < nL+1; i++) {
         printf("%f -> %f, ", dU_msld[i], dUdL[i]);
@@ -711,9 +713,6 @@ void Run::test(char *line,char *token,System *system)
       printf("OSS or ABF boolean not set!!!\n");
       printf("Not running energy conservation test!!!\n");
     }
-    return;
-  } else if (testType=="print_histogram") {
-    write_histogram_file(system, "histograms.txt", true);
     return;
   } else {
     fatal(__FILE__,__LINE__,"Error: test type %s does not match alchemical, spatial, oss_force, or oss_energy_cons \n",testType.c_str());

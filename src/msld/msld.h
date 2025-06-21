@@ -61,17 +61,11 @@ public:
   int sample_freq = 10;
   int update_steps = -1; // timesteps of sampling while updating FE surface - default to 1/4th of simulation
   bool standard_tempering = true; // use exp(-max(0, hist_potential[i] - temper_min) / kT) vs. same thing with min_bias
-  bool OSS_force_diff = false; // g(li, dU/dLi ? - sum j!=i dU/dLj) 
-  bool OSS_neg_lmd_force = true; // g(li, ? 1 - sum j!=i li : sum j!=i li) -> this being true cancels all meta lambda forces in 2 lambda dim
-  bool OSS_remove_bonded = true; // removes large fluctuations in dUdL around l=0 that can cause instabilities
-  bool OSS_remove_abf = true; // remove abf force from oss_dUdL, hist density around zero if you don't
-  bool ABF_flatten_hist = false; // cancel average lambda forces from meta gaussians, makes algo very reliant on hist estimate
   real* dUdL_bonded_d; // [blockCount] lambda forces from bonds
   real* dUdL_alf_d; // [blockCount] lambda forces from alf
-  real* dUdL_abf_d; // [blockCount] lambda force from ABF
+  real* dUdL_abf_d; // [blockCount] lambda force from ABF, OPES
   real* dUdL_msld_d; // [blockCount] lambda forces from force field 
-  real* oss_dUdL_d; // [blockCount] lambda forces that OSS is interested in biasing (nonbonded)
-  real* oss_dUdL; // [blockCount]
+  real* dUdL_msld; // [blockCount]
 
   // 1D histogramming and tracking of dU/dL distribution
   bool abf = false; // Subtract average dU/dL using
@@ -86,44 +80,41 @@ public:
   real* weighted_dUdL_d; // [nL * L_1D_bins] sum_i (dUdL*exp(bias_i - offset)) 
   real* ensemble_dUdL_d; // [nL * L_1D_bins] sum_i (dUdL*exp(bias_i - offset)) / sum_i (exp(bias_i - offset))
   real* offsets_d; // [nL * L_1D_bins] offsets for each bin that cancels in ensemble_average
+  // All paths sum_sites Ns*(Ns-1) -> each lambda in a site to every other lambda in that site, averages of its own forces 
+  int path_count;
+  int warmup_samples = 0; // linear ramp of <dU/dL> with how much abf sample weight you have (basically number of samples)
+  // ABF alone doesn't work well when this is high since rare events are not capitalized on (might just be very slow idk)
+  // Then again basing <dU/dL> on 1 sample may introduce artificial barriers if you sampled an outliner
+  real edge_KDE_std = .04; // gaussians go to ~0 around 4*std
+  // This means samples where sum k!=i,j(lmd k) < .08 have negligible weight
+  real* path_samples_d; // [Ns*(Ns-1)] reduction of weights along each path, including prior
+  real* path_unsamples_d; // [Ns*(Ns-1)] reduction of unweights along each path, including prior
+  real* path_weights_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] gaussian weighted distances from edges with bias weighting
+  real* path_unweights_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] gaussian weighted distences from edges without bias weighting
+  real* path_weighted_dUdL_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] weighted dU/dL
+  real* path_weighted_dUdL2_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] weighted dU/dL^2
+  real* path_ensemble_dUdL_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] <dU/dL> = sum(w*dU/dL) / sum(w)
+  real* path_dUdL_variance_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] <dU/dL^2> - <dU/dL>^2 this isn't the most stable estimator
+  real L_resolution = (abs(L_max)+abs(L_min))/L_1D_bins;
+  real L_std = 4*L_resolution; // free
+  int L_search = 4.0*(L_std/L_resolution); 
 
   real alpha = 1.0; // lambda^alpha scaling
 
   // Histogram (2D meta) -> uniform binning -> nL = blockCount-1
   bool oss = false; // Perform Orthogonal Space Sampling calculations
-  real* oss_histogram_d; // [nL * L_oss_bins * dUdL_bins] stores sum of gaussian prefactors
-  real* oss_potential_d; // [nL * L_oss_bins * dUdL_bins]
-  real* oss_Z_d; // [nL] from Supp. 9 in https://dx.doi.org/10.1021/acs.jpclett.0c00497?ref=pdf
-  real* oss_samples_d; // [nL] number of samples in histogram
+  bool explore = true; // OPES explore vs OPES standard
   real* p_imp_d; // [(nSite-1) * L_oss_bins] probability due to implicit constraints
-  real* dGdF_d; // [blockCount] Derivative of gaussians w.r.t. lambda force
-  real* dGdL_d; // [blockCount] Derivative of gaussians w.r.t. lambda
+  real* dGdF_d; // [blockCount] OSS chain rule multiplier, dGdF[i] * d2U/dlidX
   real* hist_potential_d; // [blockCount-1] potential from 2d metadynamics
   real* hist_potential; // [blockCount-1]
   real* min_bias_d; // [blockCount]
 
-  // Grid & Meta Params (free means it is a free parameter)
-  int L_oss_bins = 201; // free - # of whole bins that fit in range [L_min, L_max]
-  int dUdL_bins = 2501; // free - # of whole bins that fit in range [dUdL_min, dUdL_max]
   real L_max = 1.0;
   real L_min = 0.0;
-  real dUdL_max = 750; // free 
-  real dUdL_min = -750; // free
-  real L_resolution = (abs(L_max)+abs(L_min))/L_oss_bins;
-  real dUdL_resolution = (abs(dUdL_max)+abs(dUdL_min))/dUdL_bins;
-  real L_std = .01; // free
-  real dUdL_std = 4.0; // free
-  int L_search = 5.0*(L_std/L_resolution); 
-  int dUdL_search = 5.0*(dUdL_std/dUdL_resolution); 
-  bool temper = true; // Using defaults (2 kcal = .43, 4 kcal = .08, 6 kcal = .01)
-  real tempering = 2.0; // free - exp(-max(0, pot - min) / kBT*tempering)
-  real temper_min = 1.0; // free 
-  real opes_dE = 2.0; // gamma * kT
+  real opes_dE = 1.0; // gamma * kT
   real opes_gamma = opes_dE * .6; // dE / kT
   real opes_eps = exp(-opes_dE / (.6 - .6 / opes_gamma));
-  bool mirror_Lmin = false; // free 
-  bool mirror_Lmax = false; // free
-  real gaussian_weight = .01; // free
 
   // GaMD Parameters - 3 Stages: [0, init), [init,equil), [equil, nStep)
   real* alchem_energy; // Internal energy of alchemical system
@@ -177,6 +168,8 @@ public:
   real softNotBondExponent;
 
   bool fix; // ffix
+  bool slow_fix; // Slowly tranform from WT to desired state, gets turned off automatically prior to end of this round of dynamics
+  real_x *lambda_delta_d; // [blockCount] desired - WT / nsteps
 
   Msld();
   ~Msld();
@@ -218,17 +211,11 @@ public:
   void getforce_gamd(System* system);
   void getforce_orth_GaMD(System* system);
 
-  // OSS Functions
-  void init_oss(System* system);
-  void reset_1D(System* system);
-  void add_sample(System *system, int step);
-  void getpotential_hist(System* system);
-  void getforce_hist(System *system, bool calcEnergy);
-  void log_sampling(System *system, int step);
-  void get_tempering_hist(System* system);
-  void calc_imp(System* system);
-
   // ABF Functions
+  void add_sample(System *system, int step);
+  void log_sampling(System *system, int step);
+  void calc_imp(System* system);
+  void init_abf(System* system);
   void getforce_abf(System* system, bool calcEnergy);
 
   void recv_meta();

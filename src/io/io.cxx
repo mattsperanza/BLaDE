@@ -380,7 +380,7 @@ void print_meta(int step, System* system){
 
   fp=system->run->fpMTD_dUdL;
   for(int i = 1; i < system->msld->blockCount; i++){
-    fprintf(fp, "%f ", system->msld->oss_dUdL[i]);
+    fprintf(fp, "%f ", system->msld->dUdL_msld[i]);
   }
   fprintf(fp, "\n\n");
 
@@ -460,67 +460,6 @@ void write_checkpoint_file(const char *fnm,System *system)
 
     fclose(fp);
   }
-}
-
-// Written by ChatGPT so expect errors
-void write_histogram_file(System* system, std::string file_name, bool potential) {
-  // Print path to file
-  char cwd[1024];
-  std::ofstream file(file_name);
-  if (!file) {
-    std::cerr << "Error: Unable to open file " << file_name << " for writing." << std::endl;
-    return;
-  }
-
-  if (system->msld->oss) {
-    // Print average dUdL
-    int nL = system->state->lambdaCount - 1;
-    file << "# Num_Lambdas: " << nL << "\n";
-  
-    int bins = system->msld->L_1D_bins;
-    real* dUdL = (real*)malloc(bins * nL * sizeof(real));
-    real* dUdL_d = system->msld->ensemble_dUdL_d;
-    cudaMemcpy(dUdL, dUdL_d, bins * nL * sizeof(real), cudaMemcpyDefault);
-  
-    file << "# ABF <dU/dL>\n";
-    for (int i = 0; i < nL; i++) {
-      file << "# Lambda " << i << " Bins " << bins << "\n";
-      for (int j = 0; j < bins; j++) {
-          file << i << ", " << j << ", " << dUdL[i * bins + j] << "\n";
-      }
-    }
-    free(dUdL);
-
-    int L_bins = system->msld->L_oss_bins;
-    real L_max = system->msld->L_max;
-    real L_min = system->msld->L_min;
-    int dUdL_bins = system->msld->dUdL_bins;
-    real dUdL_max = system->msld->dUdL_max;
-    real dUdL_min = system->msld->dUdL_min;
-
-    real* hist_potential = (real*)malloc(L_bins * dUdL_bins * nL * sizeof(real));
-    if(potential){
-      system->msld->getpotential_hist(system);
-      cudaMemcpy(hist_potential, system->msld->oss_potential_d, L_bins * dUdL_bins * nL * sizeof(real), cudaMemcpyDeviceToHost);
-    } else {
-      cudaMemcpy(hist_potential, system->msld->oss_histogram_d, L_bins * dUdL_bins * nL * sizeof(real), cudaMemcpyDeviceToHost);
-    }
-
-    file << "# Histogram Potential\n";
-    for (int i = 0; i < nL; i++) {
-      file << "# Lambda " << i << " L_bins: " << L_bins << " L_range: [" << L_min << ", " << L_max << "]"
-         << " dUdL_bins: " << dUdL_bins << " dUdL_range: [" << dUdL_min << ", " << dUdL_max << "] " << "\n";
-      for (int j = 0; j < L_bins; j++) {
-        for (int k = 0; k < dUdL_bins; k++) {
-          int idx = i * L_bins * dUdL_bins + j * dUdL_bins + k;
-          file << i << ", " << j << ", " << k << ", " << hist_potential[idx] << "\n";
-        }
-      }
-    }
-    free(hist_potential);
-  }
-
-  file.close();
 }
 
 void read_checkpoint_file(const char *fnm,System *system)
