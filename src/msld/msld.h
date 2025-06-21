@@ -70,6 +70,7 @@ public:
   // 1D histogramming and tracking of dU/dL distribution
   bool abf = false; // Subtract average dU/dL using
   int L_1D_bins = 51; // this is also the max index (51 leads to >.99 as last bin since first and last are half width)
+  int L_imp_bins = 401;
   real* abf_TI_d; // [nL]
   real* dABF_dl_d; // [nL]
   real* histogram_1D_d; // [nL * L_1D_bins] counts in bin 
@@ -85,12 +86,14 @@ public:
   int warmup_samples = 0; // linear ramp of <dU/dL> with how much abf sample weight you have (basically number of samples)
   // ABF alone doesn't work well when this is high since rare events are not capitalized on (might just be very slow idk)
   // Then again basing <dU/dL> on 1 sample may introduce artificial barriers if you sampled an outliner
-  real edge_KDE_std = .04; // gaussians go to ~0 around 4*std
+  real edge_KDE_std = .02; // gaussians go to ~0 around 4*std
   // This means samples where sum k!=i,j(lmd k) < .08 have negligible weight
   real* path_samples_d; // [Ns*(Ns-1)] reduction of weights along each path, including prior
+  real* path_sample_offsets_d;
   real* path_unsamples_d; // [Ns*(Ns-1)] reduction of unweights along each path, including prior
   real* path_weights_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] gaussian weighted distances from edges with bias weighting
   real* path_unweights_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] gaussian weighted distences from edges without bias weighting
+  real* path_weight_offsets_d; // 
   real* path_weighted_dUdL_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] weighted dU/dL
   real* path_weighted_dUdL2_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] weighted dU/dL^2
   real* path_ensemble_dUdL_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] <dU/dL> = sum(w*dU/dL) / sum(w)
@@ -103,7 +106,8 @@ public:
 
   // Histogram (2D meta) -> uniform binning -> nL = blockCount-1
   bool oss = false; // Perform Orthogonal Space Sampling calculations
-  bool explore = true; // OPES explore vs OPES standard
+  bool opes = false; // 
+  bool explore = false; // OPES explore vs OPES standard
   real* p_imp_d; // [(nSite-1) * L_oss_bins] probability due to implicit constraints
   real* dGdF_d; // [blockCount] OSS chain rule multiplier, dGdF[i] * d2U/dlidX
   real* hist_potential_d; // [blockCount-1] potential from 2d metadynamics
@@ -112,7 +116,7 @@ public:
 
   real L_max = 1.0;
   real L_min = 0.0;
-  real opes_dE = 1.0; // gamma * kT
+  real opes_dE = 5.0; // gamma * kT
   real opes_gamma = opes_dE * .6; // dE / kT
   real opes_eps = exp(-opes_dE / (.6 - .6 / opes_gamma));
 
