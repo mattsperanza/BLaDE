@@ -55,6 +55,8 @@ public:
   struct VariableBias *variableBias;
   struct VariableBias *variableBias_d;
 
+  real alpha = 1.0; // lambda^alpha scaling
+
   // FE Estimation Variables -> need to be on/off before msld::init is called
   bool update_fe_surface = true; // add samples to oss histogram
   bool tracking_only = false; // Collect samples in 1D & 2D, but don't use/calculate atomic/lambda forces
@@ -66,11 +68,12 @@ public:
   real* dUdL_abf_d; // [blockCount] lambda force from ABF, OPES
   real* dUdL_msld_d; // [blockCount] lambda forces from force field 
   real* dUdL_msld; // [blockCount]
+  real* oss_dUdL_d;
 
   // 1D histogramming and tracking of dU/dL distribution
+  bool oss = false; // Perform Orthogonal Space Sampling calculations
   bool abf = false; // Subtract average dU/dL using
   int L_1D_bins = 51; // this is also the max index (51 leads to >.99 as last bin since first and last are half width)
-  int L_imp_bins = 401;
   real* abf_TI_d; // [nL]
   real* dABF_dl_d; // [nL]
   real* histogram_1D_d; // [nL * L_1D_bins] counts in bin 
@@ -98,32 +101,16 @@ public:
   real* path_weighted_dUdL2_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] weighted dU/dL^2
   real* path_ensemble_dUdL_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] <dU/dL> = sum(w*dU/dL) / sum(w)
   real* path_dUdL_variance_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] <dU/dL^2> - <dU/dL>^2 this isn't the most stable estimator
-  real* path_dUdL_diff_d;
-  real* path_dUdL_diff2_d;
+  real* path_weighted_dUdL_diff_d;
+  real* path_weighted_dUdL_diff2_d;
   real* path_ens_dUdL_diff_d;
-  real* path_ens_dUdL_variance_d;
-  real L_resolution = (abs(L_max)+abs(L_min))/L_1D_bins;
-  real L_std = 4*L_resolution; // free
-  int L_search = 4.0*(L_std/L_resolution); 
-
-  real alpha = 1.0; // lambda^alpha scaling
-
-  // Histogram (2D meta) -> uniform binning -> nL = blockCount-1
-  bool oss = false; // Perform Orthogonal Space Sampling calculations
-  bool opes = false; // 
-  bool explore = false; // OPES explore vs OPES standard
-  bool do_imp = false;
-  real* p_imp_d; // [(nSite-1) * L_oss_bins] probability due to implicit constraints / max(p_imp_d)
+  real* path_dUdL_diff_var_d;
   real* dGdF_d; // [blockCount] OSS chain rule multiplier, dGdF[i] * d2U/dlidX
   real* hist_potential_d; // [blockCount-1] potential from 2d metadynamics
   real* hist_potential; // [blockCount-1]
-  real* min_bias_d; // [blockCount]
 
   real L_max = 1.0;
   real L_min = 0.0;
-  real opes_dE = 5.0; // gamma * kT
-  real opes_gamma = opes_dE * .6; // dE / kT
-  real opes_eps = exp(-opes_dE / (.6 - .6 / opes_gamma));
 
   // GaMD Parameters - 3 Stages: [0, init), [init,equil), [equil, nStep)
   real* alchem_energy; // Internal energy of alchemical system
@@ -223,7 +210,6 @@ public:
   // ABF Functions
   void add_sample(System *system, int step);
   void log_sampling(System *system, int step);
-  void calc_imp(System* system);
   void init_abf(System* system);
   void getforce_abf(System* system, bool calcEnergy);
 
