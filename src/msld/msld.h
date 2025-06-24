@@ -72,7 +72,10 @@ public:
 
   // 1D histogramming and tracking of dU/dL distribution
   bool oss = false; // Perform Orthogonal Space Sampling calculations
+  bool opes = false;
+  bool explore = true;
   bool abf = false; // Subtract average dU/dL using
+  bool oss_remove_bonded = true;
   int L_1D_bins = 51; // this is also the max index (51 leads to >.99 as last bin since first and last are half width)
   real* abf_TI_d; // [nL]
   real* dABF_dl_d; // [nL]
@@ -86,7 +89,7 @@ public:
   real* offsets_d; // [nL * L_1D_bins] offsets for each bin that cancels in ensemble_average
   // All paths sum_sites Ns*(Ns-1) -> each lambda in a site to every other lambda in that site, averages of its own forces 
   int path_count;
-  int warmup_samples = 20; // linear ramp of <dU/dL> with how much abf sample weight you have (basically number of samples)
+  int warmup_samples = 50; // linear ramp of <dU/dL> with how much abf sample weight you have (basically number of samples)
   // ABF alone doesn't work well when this is high since rare events are not capitalized on (might just be very slow idk)
   // Then again basing <dU/dL> on 1 sample may introduce artificial barriers if you sampled an outliner
   real edge_KDE_std = .05; // gaussians go to ~0 around 4*std
@@ -106,11 +109,17 @@ public:
   real* path_ens_dUdL_diff_d;
   real* path_dUdL_diff_var_d;
   real* dGdF_d; // [blockCount] OSS chain rule multiplier, dGdF[i] * d2U/dlidX
-  real* hist_potential_d; // [blockCount-1] potential from 2d metadynamics
-  real* hist_potential; // [blockCount-1]
+  real* hist_potential_d; // [blockCount] potential from 2d metadynamics
+  real* hist_potential; // [blockCount]
 
   real L_max = 1.0;
   real L_min = 0.0;
+  real L_std = .05; // 51 bins, .02 width
+  real L_res; // these get calculated right before use
+  int L_search;
+  real opes_dE = 5.0;
+  real opes_gamma; // these get calculated right before use
+  real opes_eps;
 
   // GaMD Parameters - 3 Stages: [0, init), [init,equil), [equil, nStep)
   real* alchem_energy; // Internal energy of alchemical system
@@ -197,9 +206,6 @@ public:
   void getforce_thetaBias(System *system,bool calcEnergy);
   void getforce_atomRestraints(System *system,bool calcEnergy);
   void getforce_chargeRestraints(System *system,bool calcEnergy);
-
-  // Remove alf from dUdL_msld, d
-  void set_forces(System* system);
 
   // GaMD Functions
   void gamd_update(System* system, bool update_E_k);

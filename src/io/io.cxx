@@ -385,7 +385,7 @@ void print_meta(int step, System* system){
   fprintf(fp, "\n\n");
 
   fp=system->run->fpMTD_HIST;
-  for(int i = 0; i < system->msld->blockCount-1; i++){
+  for(int i = 0; i < system->msld->blockCount; i++){
     fprintf(fp, "%f ", system->msld->hist_potential[i]);
   }
   fprintf(fp, "\n\n");
