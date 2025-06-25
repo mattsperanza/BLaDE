@@ -1667,19 +1667,19 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
   Run* r = system->run;
   int helper=(system->idCount==2); 
 
-  if ((system->msld->abf || system->msld->oss || system->msld->opes) && !system->msld->tracking_only){ // ABF force does not depend on current lambda force
-    cudaMemcpyAsync(system->msld->dUdL_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, r->abfForce);
-    cudaMemsetAsync(system->msld->hist_potential_d, 0, system->msld->blockCount*sizeof(real), r->abfForce);
-    cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->abfForce);
-    system->msld->getforce_abf(system, calcEnergy);
+  if ((system->msld->abf || system->msld->oss) && !system->msld->tracking_only){ // ABF force does not depend on current lambda force
+    cudaMemcpyAsync(system->msld->dUdL_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, r->ossBias);
+    cudaMemsetAsync(system->msld->hist_potential_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
+    cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
+    system->msld->getforce_oss(system, calcEnergy);
     system->msld->add_sample(system, step); 
     system->msld->log_sampling(system, step); 
-    cudaEventRecord(r->abfForceComplete, r->abfForce);
+    cudaEventRecord(r->ossBiasComplete, r->ossBias);
   }
 
   if (system->msld->oss && !system->msld->tracking_only){
     if (system->id == helper) {
-      cudaStreamWaitEvent(r->ossBonded, r->abfForceComplete, 0);
+      cudaStreamWaitEvent(r->ossBonded, r->ossBiasComplete, 0);
       if(!system->msld->oss_remove_bonded){ // If we haven't remved bonded terms, these have a contribution
         getforce_bond_oss(system);
         getforce_dihe_oss(system);
@@ -1691,13 +1691,13 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
       cudaStreamWaitEvent(r->updateStream, r->ossBondedComplete, 0);
     }
     if (system->id>=0) {
-      cudaStreamWaitEvent(r->alchemDirect, r->abfForceComplete, 0);
+      cudaStreamWaitEvent(r->alchemDirect, r->ossBiasComplete, 0);
       getforce_nbdirect_oss(system);
       cudaEventRecord(r->alchemDirectComplete, r->alchemDirect);
       cudaStreamWaitEvent(r->updateStream, r->alchemDirectComplete, 0);
     }
     if (system->id==0) {
-      cudaStreamWaitEvent(r->alchemRecip, r->abfForceComplete, 0);
+      cudaStreamWaitEvent(r->alchemRecip, r->ossBiasComplete, 0);
       getforce_ewaldself_oss(system);
       getforce_ewald_oss(system);
       getforce_nb14_oss(system);

@@ -113,10 +113,6 @@ class Run {
   cudaStream_t ossBonded;
   cudaEvent_t ossBondedComplete;
 
-  // ABF streams
-  cudaStream_t abfForce;
-  cudaEvent_t abfForceComplete;
-
   // Alchem Loops Stream - only wait on vanilla forces if oss
   cudaStream_t alchemDirect;
   cudaEvent_t alchemDirectComplete;

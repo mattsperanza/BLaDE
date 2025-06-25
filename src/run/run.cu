@@ -128,7 +128,6 @@ Run::Run(System *system)
   ossBonded=0;
   alchemDirect=0;
   alchemRecip=0;
-  abfForce=0;
   gamdBias=0;
 
 #else
@@ -142,7 +141,6 @@ Run::Run(System *system)
   cudaStreamCreate(&ossBonded);
   cudaStreamCreate(&alchemDirect);
   cudaStreamCreate(&alchemRecip);
-  cudaStreamCreate(&abfForce);
   // GaMD Streams
   cudaStreamCreate(&gamdBias);
 
@@ -166,7 +164,6 @@ Run::Run(System *system)
   cudaEventCreate(&ossBondedComplete);
   cudaEventCreate(&alchemDirectComplete);
   cudaEventCreate(&alchemRecipComplete);
-  cudaEventCreate(&abfForceComplete);
 
   // GaMD Bias Event
   cudaEventCreate(&gamdBiasComplete);
