@@ -1454,6 +1454,7 @@ __global__ void getforce_abf_kernel(
   real kT, int nL,
   real* lambdas, 
   real* lambdaForce, real* dUdL_msld, real* dUdL_bonded,
+  real reg,
   int num_bins, real L_max, real L_min,
   int* lambdaSite, int* subsPerSite,
   real* path_ensemble_dUdL,
@@ -1481,10 +1482,7 @@ __global__ void getforce_abf_kernel(
       real dproj_dli = 1.0/2.0;
       real dproj_dlj = -1.0/2.0;
       // |lj| / (1.0 - |li|)
-      real fl = lambda < .99999 ? partner_lambda / (1.0-lambda) : 1.0 / (subsPerSite[site]-1.0);
-      // fyi - product rules also work
-      real dfl_dli = 0; // These are zero if using abs value function, these aren't used
-      real dfl_dlj = 0; // Making this not zero for ABF requires something that isn't computed
+      real fl = (partner_lambda+reg)/(1.0 - lambda + reg*(subsPerSite[site]-1.0));
       int bin = get_histogram_index(combined_lambda, num_bins, L_max, L_min); 
       int hist_bin = (start_path+count)*num_bins + bin;
 
@@ -1510,10 +1508,10 @@ __global__ void getforce_abf_kernel(
         dUdL_abf = (1 - interp)*partner_dUdL + interp*dUdL;
       }
       // we add -'ve of <dU/dL>
-      dUdL_abf = -dUdL_abf;
+      dUdL_abf = -fl*dUdL_abf;
       if(i == 0 && false){
-        printf("i: %d, li: %f, lj: %f, dUdL_abf: %f, lambdaForce[i+1]: %f, sum: %f\n",
-          i, lambda, partner_lambda, dUdL_abf, lambdaForce[i+1], dUdL_abf + lambdaForce[i+1]);
+        printf("i: %d, j: %d, li: %f, lj: %f, dUdL_abf: %f, lambdaForce[i+1]: %f, sum: %f\n",
+          i, j, lambda, partner_lambda, dUdL_abf, lambdaForce[i+1], dUdL_abf + lambdaForce[i+1]);
       }
       atomicAdd(&lambdaForce[i+1], dUdL_abf);
     }
@@ -1529,6 +1527,7 @@ __global__ void getforce_hist_kernel(
   int blockCount, int paths, 
   int siteCount, int* lambdaSites, int* subsPerSite, 
   real* histogram, real* lambdas, real* dUdL_msld, real* dUdL_bonded,
+  real regularization,
   int dUdL_bins, real dUdL_max, real dUdL_min, int dUdL_search,
   int L_bins, real L_max, real L_min, int L_search,
   real dUdL_std, real L_std,
@@ -1545,8 +1544,8 @@ __global__ void getforce_hist_kernel(
   if (path < paths) {
     // path is one of the i->j paths, i < j, combined_lambda = (1 - lj + li) / 2
     int nL = blockCount-1;
-    int iL = 0; 
-    int jL = 0;
+    int iL = -1; 
+    int jL = -1;
     int site = 0;
     // Find which lambdas i & j this path corresponds to by guess & check in order
     int site_paths = 0;
@@ -1554,34 +1553,41 @@ __global__ void getforce_hist_kernel(
     real site_sum = 0;
     for(int j = 1; j < siteCount; j++){
       int count = 0;
-      real sum = 0;
+      site_sum = 0; // sum_k sum_l>k Lk*Ll == sum_k lk*(1-lk)/2
       for(int k = 0; k < subsPerSite[j]; k++){
+        site_sum += (1.0 - lambdas[prev_block+k+1])*lambdas[prev_block+k+1];
         for(int l = k+1; l < subsPerSite[j]; l++){
-          sum += lambdas[prev_block + k] + lambdas[prev_block + l];
           int p = site_paths + count;
           count++;
           if(path == p){
+            site = j;
             iL = prev_block + k;
             jL = prev_block + l;
           }
         }
       }
-      if ((iL != 0 || jL != 0) && site_sum < 1e-5){
-        site_sum = sum;
+      if (iL != -1 || jL != -1){
+        break;
       }
       site_paths += subsPerSite[j]*(subsPerSite[j]-1)/2;
       prev_block += subsPerSite[j];
     }
     real dUdL = (dUdL_msld[jL+1]-dUdL_bonded[jL+1]) - (dUdL_msld[iL+1]-dUdL_bonded[iL+1]);
     real lam = (1.0 - lambdas[jL+1] + lambdas[iL+1]) / 2.0;
-    real interp = lambdas[jL+1] + lambdas[iL+1] / site_sum;
+    real num = 2.0*(lambdas[jL+1]*lambdas[iL+1] + (lambdas[jL+1]+lambdas[iL+1])*regularization);
+    real denom = site_sum + (subsPerSite[site]-1)*regularization;
+    real interp = num / denom;
+    real dinterp_dli = 2.0*(lambdas[jL+1] + regularization)/denom - num/(denom*denom)*(1.0-2.0*lambdas[iL+1]);
+    real dinterp_dlj = 2.0*(lambdas[iL+1] + regularization)/denom - num/(denom*denom)*(1.0-2.0*lambdas[jL+1]);
+    real dinterp_dlk = num / (denom*denom) * (1.0-2.0*lambdas[iL]);
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
     int X = get_histogram_index(lam, L_bins, L_max, L_min);
     int Y = get_histogram_index(dUdL, dUdL_bins, dUdL_max, dUdL_min);
     int j = X - L_search + iSearch;
     if (j >= X-L_search && j <= X+L_search) {
       if(false && j == X)
-        printf("path: %d, li: %d, lj: %d, x: %d, interp: %f, site_sum: %f, lam: %f, dUdL: %f, L_search: %d\n", path, iL, jL, j, interp, site_sum, lam, dUdL, L_search);
+        printf("path: %d, li: %d, lj: %d, li: %f, lj: %f, didi: %f, didj: %f, didk: %f\n",
+               path, iL, jL, lambdas[iL+1], lambdas[jL+1], dinterp_dli, dinterp_dlj, dinterp_dlk);
       int L_index = j;
       real mirrorFactor = 1;
       L_index = (L_index < 0) ? -L_index : L_index;
@@ -1615,8 +1621,13 @@ __global__ void getforce_hist_kernel(
         real dproj_dlj = -.5;
         atomicAdd(&dGdF[iL+1], -interp*local_dUdL_force); // since we subtracted this lambda force
         atomicAdd(&dGdF[jL+1], interp*local_dUdL_force); 
-        atomicAdd(&lambdaForce[iL+1], interp*local_L_force*dproj_dli);
-        atomicAdd(&lambdaForce[jL+1], interp*local_L_force*dproj_dlj);
+        atomicAdd(&lambdaForce[iL+1], dinterp_dli*local_bias + interp*local_L_force*dproj_dli);
+        atomicAdd(&lambdaForce[jL+1], dinterp_dlj*local_bias + interp*local_L_force*dproj_dlj);
+        for(int k = prev_block; k < prev_block+subsPerSite[site]; k++){
+          if(k == iL || k == jL) {continue;}
+          real dinterp_dlk = -num/(denom*denom)*(1-2.0*lambdas[k+1]);
+          atomicAdd(&lambdaForce[k+1], dinterp_dlk*local_bias);
+        }
         atomicAdd(&hist_potential[iL+1], interp*local_bias);
       }
       if(iL == 7 && false)
@@ -1648,6 +1659,7 @@ void Msld::getforce_oss(System *system, bool calcEnergy) {
   getforce_abf_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->leapParms1->kT, blockCount-1,
     s->lambda_fd, s->lambdaForce_d, dUdL_msld_d, dUdL_bonded_d, 
+    regularization,
     L_1D_bins, L_max, L_min,
     lambdaSite_d, blocksPerSite_d,
     path_ensemble_dUdL_d, 
@@ -1666,6 +1678,7 @@ void Msld::getforce_oss(System *system, bool calcEnergy) {
     blockCount, path_count/2, 
     siteCount, lambdaSite_d, blocksPerSite_d, 
     path_histogram_d, s->lambda_fd, dUdL_msld_d, dUdL_bonded_d,
+    regularization,
     dUdL_bins, dUdL_max, dUdL_min, dUdL_search,
     L_2D_bins, L_max, L_min, L_search,
     dUdL_std, L_std,
