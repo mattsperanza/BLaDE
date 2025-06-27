@@ -25,6 +25,8 @@ public:
         gamma = (T*) calloc(m, sizeof(T));
         beta = (T*) calloc(m, sizeof(T));
         step_size = 0.0;
+        steepest_descent_steps = 0;
+        linesearch_failures = 0;
          
         search = (T*) calloc(DOF, sizeof(T));
         prev_positions = (T*) calloc(DOF, sizeof(T));
@@ -60,19 +62,20 @@ public:
  */
 void init(T* X, T* G, T steepest_descent_step_size) {
     // f(X0), g(X0)
-    grad(X, G);
-    // Update
+    T f_initial = grad(X, G);
+    //real p0[50], p1[50];
     for (int i = 0; i < DOF; ++i) {
         prev_positions[i] = X[i];
         prev_gradient[i] = G[i];
     }
     for (int i = 0; i < DOF; ++i) {
-        s[i + (m - 1) * DOF] = X[i] - prev_positions[i];
-        y[i + (m - 1) * DOF] = G[i] - prev_gradient[i];
-        X[i] -= steepest_descent_step_size * G[i];
+        q[i] = G[i];
     }
-    // f(X0-size*G), g(X0-size*G)
-    grad(X, G);
+    steepest_descent_step_size = new_linesearch(f_initial, X, G);
+    printf("steepest descent step size: %f\n", steepest_descent_step_size);
+    for (int i = 0; i < DOF; ++i) {
+        X[i] += steepest_descent_step_size * -q[i];
+    }
 }
 
 /**
@@ -101,6 +104,25 @@ void minimize_step(T* X, T* G) {
         q[i] = G[i];
     }
     update(X, G);
+    if (minimized){
+        return;
+    }
+    if (std::isnan(rho[m-1]) || std::isinf(rho[m-1])) {
+        printf("ERROR: Dividing by zero. Resetting and doing steepest descent\n");
+        for (int i = 0; i < this->m*DOF; ++i) {
+            s[i] = 0;
+            y[i] = 0;
+        }
+        for (int i = 0; i < this->m; ++i) {
+            rho[i] = 0;
+            alpha[i] = 0;
+            gamma[i] = 0;
+        }
+        init(X, G, 0.0001);
+        ++steepest_descent_steps;
+        printf("Steepest descent steps: %i\n", steepest_descent_steps);
+        return;
+    }
     for (int i = m - 1; i >= 0; --i) {
         alpha[i] = rho[i] * dot_product(s + i * DOF, q, DOF);
         for (int j = 0; j < DOF; ++j) {
@@ -118,15 +140,37 @@ void minimize_step(T* X, T* G) {
         }
     }
     // min_a f(X + a*q)
-    step_size = this->linesearch(p0, X, G); 
+    printf("Old function value: %f\n", p0);
+    /*
+    if (dot_product(q, G, DOF) < 0) {
+        printf("Warning: search direction points up, using steepest descent");
+        ++steepest_descent_steps;
+        printf("Steepest descent steps: %i\n", steepest_descent_steps);
+        for (int i = 0; i < DOF; ++i) {
+            q[i] = G[i];
+        }
+    }*/
+    step_size = this->new_linesearch(p0, X, G); 
+    grad(X, G);
     std::cout << "step size: " << step_size << "\n";
     // Update system positions
     for (int j = 0; j < DOF; ++j) {
         X[j] += (step_size * -q[j]);
     }
+    grad(X, G);
+    T G_magnitude = 0;
+    for (int i = 0; i < DOF; ++i) {
+        G_magnitude += G[i]*G[i];
+    }
+    G_magnitude = sqrt(G_magnitude);
+    printf("Magnitude of gradient: %f\n", G_magnitude);
+    printf("New function value: %f\n", grad(X, G));
 }
 
 void update(T* X, T* G) {
+    real prev[50], current[50];
+    memcpy(prev, prev_gradient, 50*sizeof(real));
+    memcpy(current, G, 50*sizeof(real));
     for (int i = 0; i < ((m - 1) * DOF); ++i) {
         s[i] = s[i + DOF];
         y[i] = y[i + DOF];
@@ -135,17 +179,17 @@ void update(T* X, T* G) {
         s[(m - 1) * DOF + i] = X[i] - prev_positions[i];
         y[(m - 1) * DOF + i] = G[i] - prev_gradient[i];
     }
+    real y50[50];
+    memcpy(y50, y, 50*sizeof(real));
     for (int i = 0; i < m - 1; ++i) {
         rho[i] = rho[i + 1];
     }
     double s_dot_y = dot_product((s + (m - 1) * DOF), (y + (m - 1) * DOF), DOF);
-    if (s_dot_y == 0) {
-        std::cout << "Error: Dividing by zero. Function is likely already at a minimum.\n";
-        minimized = true;
+    if (abs(s_dot_y) <= 1e-5) {
+        std::cout << "Error: Dividing by zero.\n";
     }
-    else {
-        rho[m - 1] = 1 / s_dot_y;
-    }
+    rho[m - 1] = 1 / s_dot_y;
+    
     for (int i = 0; i < DOF; ++i) {
         prev_positions[i] = X[i];
         prev_gradient[i] = G[i];
@@ -154,25 +198,102 @@ void update(T* X, T* G) {
 
 T linesearch(T p0, T* X, T* G) {
     int max_it = 1000;
-    T c = 0.5;
+    T c1 = 1e-4;
+    T c2 = 0.7;
     T tau = 0.75;
-    T m = dot_product(G, q, DOF);
+    T m_ls = 0.0;
+    for (int i = 0; i < DOF; ++i) {
+        m_ls += G[i] * (-q[i]);
+    }
+    if (m_ls >= 0 ) {
+        printf("ERROR: m should be negative\n");
+         printf("m: %f\n", m_ls);
+
+        for (int i = 0; i < this->m*DOF; ++i) {
+            s[i] = 0;
+            y[i] = 0;
+        }
+        for (int i = 0; i < this->m; ++i) {
+            rho[i] = 0;
+            alpha[i] = 0;
+            gamma[i] = 0;
+        }
+
+        return 0;
+    }
+    printf("m: %f\n", m_ls); 
     T step_size = 1;
-    for (int i = 0; i < max_it; i++) {
-        T sum = 0;
+    printf("q[3]: %f, g[3] %f\n", q[3], G[3]);
+
+    for (int i = 0; i < max_it; ++i) {
         for (int j = 0; j < DOF; ++j) {
             x_plus_step[j] = X[j] - (step_size * q[j]);
         }
         T new_value = grad(x_plus_step, G);
-        if (p0 - new_value >= step_size * -c * m) {
+        if (p0 - new_value >= step_size * -c1 * m_ls) {
+            printf("Armijo satisfied\n");
             return step_size;
-        } else {
+        } 
+        else {
             step_size *= tau;
-            printf("Step_size: %f, p0: %f, new: %f, x+s: %f\n", step_size, p0, new_value, q[50]);
         }
     }
     return 0;
 }
+T new_linesearch(T p0, T* X, T* G) {
+    T c1 = 1e-4;
+    T c2 = 0.9;
+    T m_ls = 0.0;
+    T alpha_low = 0;
+    T alpha_high = 100;
+    T alpha = (alpha_low + alpha_high) / 2;
+    T max_it = 100;
+
+    for (int i = 0; i < DOF; ++i) {
+        m_ls += G[i] * (-q[i]); // m_ls = grad . search direction
+    }
+    if (m_ls >= 0 ) {
+        printf("ERROR: m should be negative\n");
+        printf("m: %f\n", m_ls);
+         
+        for (int i = 0; i < this->m*DOF; ++i) {
+            s[i] = 0;
+            y[i] = 0;
+        }
+        for (int i = 0; i < this->m; ++i) {
+            rho[i] = 0;
+        }
+        return 0;
+    }
+    for (int i = 0; i < max_it; ++i) {
+        alpha = (alpha_low + alpha_high) / 2; //step size
+        if (alpha < 1e-20) {
+            printf("ERROR: linesearch failed because step is too small\n");
+            ++linesearch_failures;
+            printf("# of linesearch failures: %i\n", linesearch_failures);
+            return 0;
+        }
+        for (int j = 0; j < DOF; ++j) {
+            x_plus_step[j] = X[j] - (alpha * q[j]);
+        }
+        grad(x_plus_step, G);
+        if (p0 - grad(x_plus_step, G) < alpha * -c1 *m_ls) { // 1st wolfe not satisfied
+            alpha_high = alpha;
+            continue;
+        }
+        if(abs((dot_product(q, G, DOF))) > abs(c2 * m_ls)) { // 2nd wolfe not satisfied (strong wolfe)
+            alpha_low = alpha;
+            continue;
+        }
+        return alpha;
+    } 
+    printf("Warning: linesearch failed\n");
+    ++linesearch_failures;
+    printf("Upper bound: %f, Lower bound: %f, step: %f\n", alpha_high, alpha_low, alpha);
+    printf("# of linesearch failures: %i\n", linesearch_failures);
+    return alpha;
+}
+
 
 private:
     int m; // Number of previous gradients to use for hessian approximation (5-7)
@@ -180,6 +301,8 @@ private:
     T min_step_size; // terminate minimization with steps smaller than this number
     T max_step_size; // ensures that lbfgs doesn't overshoot minimum
     bool minimized;
+    int steepest_descent_steps;
+    int linesearch_failures;
 
     T *beta; 
     T *gamma; // s projected onto y

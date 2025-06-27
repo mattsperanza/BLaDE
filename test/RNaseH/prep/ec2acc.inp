@@ -62,7 +62,6 @@ parameters file {dir}/toppar/par_all36_prot.prm
 parameters file {dir}/toppar_water_ions/par_water_ions.prm
 
 structure file psf {dir}/minimized.psf
-structure shake hbond
 
 coordinates file pdb {dir}/minimized.pdb
 coordinates box cubi {box} {box} {box} 90 90 90

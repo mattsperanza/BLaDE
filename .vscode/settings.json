@@ -1,0 +1,7 @@
+{
+  "cmake.sourceDirectory": "/dfs8/rhayes1_lab/kkwa/BLaDE/src",
+  "files.associations": {
+    "iostream": "cpp",
+    "random": "cpp"
+  }
+}

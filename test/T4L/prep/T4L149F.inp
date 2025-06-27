@@ -89,7 +89,7 @@ endwhile
    msld removescaling bond urey angle impr 
 
    msld softcore on
-   msld softcore14 off
+   msld softcore14 on
    ! pmel ex ! msld ewaldtype 2 ! default
 
 variables set prevblock 0

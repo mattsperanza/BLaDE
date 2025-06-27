@@ -14,6 +14,7 @@
 
 #include <functional>
 #include "msld/msld.h"
+#include "system/structure.h"
 
 
 
@@ -128,27 +129,39 @@ void State::min_move(int step,int nsteps,System *system)
       recv_energy();
       if (system->verbose>0) display_nrg(system);
       currEnergy=energy[eepotential];
+      printf("Step %i, energy: %f\n", step, currEnergy);
       if (step == 0){
         // Function called by LBFGS class to get energy & gradient 
         std::function<real(real*, real*)> energy_and_grad = [system](real* X, real* G){
           // Copy X onto CUDA device
-          int DOF = system->state->atomCount*3 + system->msld->blockCount;
-          cudaMemcpy(system->state->positionBuffer_d, X, DOF*sizeof(real), cudaMemcpyDefault);
+          int DOF = system->state->atomCount*3;
+          int lc = system->msld->blockCount;
+          cudaMemcpy(system->state->positionBuffer_d+lc, X, DOF*sizeof(real), cudaMemcpyDefault);
+          cudaDeviceSynchronize();
           // Potential & Grad Eval
+          system->domdec->update_domdec(system, true);
           system->potential->calc_force(0, system);
+          cudaDeviceSynchronize();
           // Copy grad(F(X)) into G
-          cudaMemcpy(G, system->state->force_d, DOF*sizeof(real), cudaMemcpyDefault);
+          cudaMemcpy(G, system->state->forceBuffer_d+lc, DOF*sizeof(real), cudaMemcpyDefault);
+          system->state->recv_energy();
           real energy = system->state->energy[eepotential];
           return energy;
         };
 
-        int DOF = system->state->atomCount*3 + system->msld->blockCount;
+        int DOF = system->state->atomCount*3;
+        int lc = system->state->lambdaCount;
         int m = 7; // Past grad depth
-        r->lbfgs = new LBFGS<real>(7, DOF, energy_and_grad);
+        r->lbfgs = new LBFGS<real>(m, DOF, energy_and_grad);
         // Steepest decent step
-        r->lbfgs->init((real*)system->state->positionBuffer, (real*) system->state->forceBuffer, 1e-2);
+        cudaMemcpy(system->state->positionBuffer+lc,
+          system->state->positionBuffer_fd+lc, DOF*sizeof(real), cudaMemcpyDefault);
+        r->lbfgs->init((real*)system->state->positionBuffer+lc, 
+          (real*) system->state->forceBuffer+lc, 1e-5); //changed to 1e-8 and it went down
       }
-      r->lbfgs->minimize_step((real*)system->state->positionBuffer, (real*) system->state->forceBuffer);
+      int lc = system->state->lambdaCount;
+      //r->lbfgs->init((real*)system->state->positionBuffer+lc, (real*) system->state->forceBuffer+lc,  1e-5);
+      r->lbfgs->minimize_step((real*)system->state->positionBuffer+lc, (real*) system->state->forceBuffer+lc);
     }
   }
   else if (r->minType==esd) {
