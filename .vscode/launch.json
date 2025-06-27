@@ -1,0 +1,49 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    
+    {
+      "name": "Python Debugger: Current File",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "cwd": "${workspaceFolder}/test/vac8x8-template/data",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "BLade Release",
+      "type": "cuda-gdb",
+      "debuggerPath": "/opt/apps/cuda/11.7.1/bin/cuda-gdb",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/blade",
+      "args": "msld_prod.inp",
+      "cwd": "${workspaceFolder}/test/RNaseH/",
+      "environment": [
+        {
+          "name": "OMP_NUM_THREADS",
+          "value": "1"
+        }
+      ],
+      "preLaunchTask": "Build Release"
+    },
+    {
+      "name": "BLaDE Debug",
+      "type": "cuda-gdb",
+      "debuggerPath": "/opt/apps/cuda/11.7.1/bin/cuda-gdb",
+      "request": "launch",
+      "program": "${workspaceFolder}/buildDebug/blade",
+      "args": "msld_prod.inp",
+      "cwd": "${workspaceFolder}/test/RNaseH/",
+      "environment": [
+        {
+          "name": "OMP_NUM_THREADS",
+          "value": "1"
+        }
+      ],
+      "preLaunchTask": "Build Debug"
+    }
+  ]
+}

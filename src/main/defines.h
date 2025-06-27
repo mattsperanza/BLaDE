@@ -76,7 +76,7 @@
 
 #define DOUBLE_E
 // #define DOUBLE_F
-#define DOUBLE_X
+//#define DOUBLE_X
 // #define DOUBLE_V
 
 #ifdef DOUBLE

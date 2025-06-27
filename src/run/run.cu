@@ -26,7 +26,7 @@
 Run::Run(System *system)
 {
   step0=0;
-  nsteps=5000;
+  nsteps=1000;
   dt=0.001*PICOSECOND; // ps
   T=300; // K
   gamma=1.0/PICOSECOND; // ps^-1
