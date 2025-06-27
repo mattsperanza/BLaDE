@@ -84,9 +84,9 @@ public:
 
   // All paths 1D histogramming
   int path_count;
-  int warmup_samples = 50.0; // linear ramp of <dU/dL> with how much abf sample weight you have (basically number of samples)
-  real edge_KDE_std = .05; // gaussians go to ~0 around 4*std, ~2% sampling per edge with c=5.5, n=9
-  real regularization = .001; // avoid div by zero
+  int warmup_samples = 0.0; // linear ramp of <dU/dL> with how much abf sample weight you have (basically number of samples)
+  real edge_KDE_std = .02; // gaussians go to ~0 around 4*std, ~2% sampling per edge with std=.05, c=5.5, n=9
+  real regularization = .0001; // avoid div by zero
   real* path_samples_d; // [Ns*(Ns-1)] reduction of weights along each path, including prior
   real* path_sample_offsets_d;
   real* path_unsamples_d; // [Ns*(Ns-1)] reduction of unweights along each path, including prior
@@ -109,8 +109,8 @@ public:
   real* hist_potential_d; // [blockCount] potential from 2d metadynamics
 
   // Metadynamics adjustable parameters
-  real bias_mag = 0.05;
-  real temper_amount = 2.0; 
+  real bias_mag = 0.01;
+  real temper_amount = 3.0; 
   real L_std = .02; 
   real dUdL_std = 4.0;
   // Fixed (for now)
