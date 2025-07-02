@@ -1667,22 +1667,12 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
   Run* r = system->run;
   int helper=(system->idCount==2); 
 
-  if (system->msld->abf && !system->msld->tracking_only){ // ABF force does not depend on current lambda force
+  if (system->msld->abf){
+    cudaMemcpy(system->msld->dUdL_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault);
     system->msld->getforce_abf(system,calcEnergy);
+    system->msld->add_sample(system, step); // 
+    system->msld->log_sampling(system, step); // Only depends on ABF variables being allocated
     cudaEventRecord(r->abfForceComplete, r->ossBias);
-  }
-
-  if (system->msld->oss || system->msld->abf) {
-    // Wait on dU/dL
-    cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
-    cudaStreamWaitEvent(r->ossBias, r->nbrecipComplete, 0);
-    cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
-    cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
-    cudaStreamWaitEvent(r->ossBias, r->abfForceComplete, 0);
-    // Get lambda force terms into dUdL_* arrays, potentially sub <dUdL> from ABF from OSS force
-    system->msld->set_forces(system);
-    // Wait on calculation of dGdF then add OSS forces directly into force array
-    cudaEventRecord(r->ossBiasComplete, r->ossBias);
   }
 
   if (system->msld->oss){
@@ -1712,20 +1702,10 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
       cudaStreamWaitEvent(r->updateStream, r->alchemRecipComplete, 0);
     }
   }
-
-  if (system->msld->oss || system->msld->abf){
-    // Wait on dU/dL from OSS
-    cudaStreamWaitEvent(r->ossBias, r->ossBondedComplete, 0);
-    cudaStreamWaitEvent(r->ossBias, r->alchemDirectComplete, 0);
-    cudaStreamWaitEvent(r->ossBias, r->alchemRecipComplete, 0);
-    // Sampling & Logging of (L, dU/dL) and <dU/dL> data 
-    system->msld->add_sample(system, step); // 
-    system->msld->log_sampling(system, step); // Only depends on ABF variables being allocated
-    cudaEventRecord(r->ossBiasComplete, r->ossBias);
-    cudaStreamWaitEvent(r->updateStream, r->ossBiasComplete, 0);
-  }
+}
 
   // GaMD
+  /*
   if (system->msld->GaMD_total || system->msld->GaMD_torsion || system->msld->GaMD_alchem || system->msld->GaMD_orth){ // Always requires potential energies
     // Wait on V
     cudaStreamWaitEvent(r->gamdBias, r->nbdirectComplete, 0);
@@ -1772,5 +1752,5 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
     }
     cudaStreamWaitEvent(r->updateStream, r->gamdBiasComplete, 0);
   }
-}
+    */
 

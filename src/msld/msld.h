@@ -85,7 +85,7 @@ public:
   int warmup_samples = 0; // linear ramp of <dU/dL> with how much abf sample weight you have (basically number of samples)
   // ABF alone doesn't work well when this is high since rare events are not capitalized on (might just be very slow idk)
   // Then again basing <dU/dL> on 1 sample may introduce artificial barriers if you sampled an outliner
-  real edge_KDE_std = .04; // gaussians go to ~0 around 4*std
+  real edge_KDE_std = .01; // gaussians go to ~0 around 4*std
   // This means samples where sum k!=i,j(lmd k) < .08 have negligible weight
   real* path_samples_d; // [Ns*(Ns-1)] reduction of weights along each path, including prior
   real* path_unsamples_d; // [Ns*(Ns-1)] reduction of unweights along each path, including prior
