@@ -1328,27 +1328,14 @@ __global__ void add_sample_1D_kernel(
         bias += hist_potential[j+1]; 
       }
       bias /= kT;
-      //printf("i: %d, bias: %f\n", i, bias);
       // For every sub in my site
       int count = 0;
       for(int j = start_block; j < start_block+subsPerSite[site]; j++){ // doesn't have path to itself
         if (i == j){ continue; }
         real partner_lambda = lambdas[j+1]; 
         real partner_dUdL = dUdL_msld[j+1];
-        real dUdL_diff = dUdL_msld[i+1]-dUdL_bonded[i+1];
-        // Distance to point on (i,j)-edge of simplex
-        real combined_lambda = (1 - partner_lambda + lambda) / 2.0; // project onto edge so (li=0, lj=1) is at 0
-        real di = lambda - combined_lambda;
-        real dj = partner_lambda - (1 - combined_lambda);
-        real distance2 = sum - lambda*lambda - partner_lambda*partner_lambda; 
-        distance2 += di*di + dj*dj;
-        // Distance from max value of partner, or just the magnitude of all other lambdas in site
-        real dist = (1-lambda-partner_lambda)/edge_std;
-        real weight = exp(-.5*dist*dist); 
-        // Weight sums to 1 at most
-        weight = (partner_lambda + reg) / (1 - lambda + reg*(subsPerSite[site]-1)) < .8 ? 0.0 : 1.0;
-        //printf("i: %d, li: %f, lj: %f, 1-li: %f, 1-li-lj: %f, weight: %f\n", i, lambda, partner_lambda, (1-lambda), 1-lambda-partner_lambda, weight);
-        // Add sample to projected bin in (lij, dU/dLi-dU/dLj) space
+        real dUdL_diff = (dUdL_msld[j+1]-dUdL_bonded[j+1]) - (dUdL_msld[i+1]-dUdL_bonded[i+1]);
+        real weight = lambda + partner_lambda > .95 ? 1.0 : 0;
         if(oss){
           int X = get_histogram_index(lambda, L_2D_bins, L_max, L_min);
           int Y = get_histogram_index(dUdL_diff, dUdL_bins, dUdL_max, dUdL_min);
@@ -1364,7 +1351,6 @@ __global__ void add_sample_1D_kernel(
         path_unweights[hist_bin] += weight;
         path_unsamples[start_path+count] += weight;
         path_samples[start_path+count] += weight*exp(bias);
-
         // Add to weighted path
         weight *= exp(bias); 
         path_weights[hist_bin] += weight;
@@ -1485,26 +1471,20 @@ __global__ void getforce_abf_kernel(
       real dist = lambda-center;
       real partner_center, partner_dUdL, interp;
       real dUdL_abf = 0.0;
-      int partner_id = 0;
       if(dist > 0){ // lambda in upper half of bin -> never true for bin=num_bins-1
         partner_center = center + res;
         partner_dUdL = path_ensemble_dUdL[hist_bin+1];
-        partner_id = hist_bin+1;
         interp = dist / res;
         dUdL_abf = (1 - interp)*dUdL + interp*partner_dUdL;
       } else {
         partner_center = center - res;
         partner_dUdL = path_ensemble_dUdL[hist_bin-1];
-        partner_id = hist_bin-1;
         interp = (lambda - partner_center) / res;
         dUdL_abf = (1 - interp)*partner_dUdL + interp*dUdL;
       }
       // we add -'ve of <dU/dL>
       dUdL_abf_tot += -fl*dUdL_abf;
-      if(i == 6 && false){
-        printf("i: %d, j: %d, li: %f, lj: %f, fl: %f, dUdL_abf: %f, dUdL_abf_tot: %f, lambdaForce[%d]: %f, sum: %f\n",
-          i, j, lambda, partner_lambda, fl, dUdL_abf, dUdL_abf_tot, i+1, lambdaForce[i+1], dUdL_abf + lambdaForce[i+1]);
-      }
+      count++;
     }
     atomicAdd(&lambdaForce[i+1], dUdL_abf_tot);
   }
@@ -1565,20 +1545,17 @@ __global__ void getforce_hist_kernel(
       site_paths += subsPerSite[j]*(subsPerSite[j]-1)/2;
       prev_block += subsPerSite[j];
     }
-    real dUdL = dUdL_msld[iL+1]-dUdL_bonded[iL+1];
     real lam = lambdas[iL+1];
-    real denom = (1 - lam + regularization*(subsPerSite[site]-1));
-    real fl = (lambdas[jL+1] + regularization) / denom;
-    real dfl_dli = -(lambdas[jL+1] + regularization) / (denom*denom);
-    real dfl_dlj = regularization/denom;
+    real lamj = lambdas[jL+1];
+    real dUdL = (dUdL_msld[jL+1]-dUdL_bonded[jL+1]) - (dUdL_msld[iL+1]-dUdL_bonded[iL+1]);
     // Get location in histogram (L, dUdL) => (X, Y) starting from lower left corner of hist
     int X = get_histogram_index(lam, L_bins, L_max, L_min);
     int Y = get_histogram_index(dUdL, dUdL_bins, dUdL_max, dUdL_min);
     int j = X - L_search + iSearch;
     if (j >= X-L_search && j <= X+L_search) {
       if(false && j == X)
-        printf("path: %d, li: %d, lj: %d, li: %f, lj: %f, w: %f, dwdi: %f, dwdj: %f\n",
-               path, iL, jL, lambdas[iL+1], lambdas[jL+1], fl, dfl_dli, dfl_dlj);
+        printf("path: %d, li: %d, lj: %d, li: %f, lj: %f\n",
+               path, iL, jL, lambdas[iL+1], lambdas[jL+1]);
       int L_index = j;
       real mirrorFactor = 1;
       L_index = (L_index < 0) ? -L_index : L_index;
@@ -1608,12 +1585,11 @@ __global__ void getforce_hist_kernel(
           local_dUdL_force += -dUdL_distance/dUdL_std * tmp_bias;
           local_L_force += -L_distance/L_std * tmp_bias;
         }
-        real dproj_dli = .5;
-        real dproj_dlj = -.5;
-        atomicAdd(&dGdF[iL+1], fl*local_dUdL_force); // since we subtracted this lambda force
-        atomicAdd(&lambdaForce[iL+1], dfl_dli*local_bias + fl*local_L_force*dproj_dli);
-        atomicAdd(&lambdaForce[jL+1], dfl_dlj*local_bias);
-        atomicAdd(&hist_potential[iL+1], fl*local_bias);
+        atomicAdd(&dGdF[iL+1], -lamj*local_dUdL_force); // since we subtracted this lambda force
+        atomicAdd(&dGdF[jL+1], lamj*local_dUdL_force); // since we subtracted this lambda force
+        atomicAdd(&lambdaForce[iL+1], lamj*local_L_force);
+        atomicAdd(&lambdaForce[jL+1], local_bias);
+        atomicAdd(&hist_potential[iL+1], lamj*local_bias);
       }
     }
   }

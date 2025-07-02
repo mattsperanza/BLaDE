@@ -110,7 +110,7 @@ public:
 
   // Metadynamics adjustable parameters
   real bias_mag = 0.01;
-  real temper_amount = 3.0; 
+  real temper_amount = 2.0; 
   real L_std = .02; 
   real dUdL_std = 4.0;
   // Fixed (for now)
