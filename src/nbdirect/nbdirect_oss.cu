@@ -101,13 +101,10 @@ __global__ void getforce_nbdirect_oss_kernel(
   struct Cutoffs cutoffs,
   const real3* __restrict__ position,
   real3_f* __restrict__ force,
-  real3_f* __restrict__ alchemForce,
   box_type box,
   const real* __restrict__ lambda,
   real_f* __restrict__ lambdaForce,
-  real_f* __restrict__ lambdaForce_extra,
   real* __restrict__ dGdF, 
-  real* alchem_energy,
   real a
 )
 {
@@ -282,6 +279,7 @@ __global__ void getforce_nbdirect_oss_kernel(
                     lixljtmp = pow(li, a);
                     dlixlj_dli = bi ? a*pow(li, a-1.0) : 0;
                     d2lixlj_dli2 = bi ? a*(a-1.0)*pow(li, a-2.0) : 0;
+                    d2lixlj_dli2 = abs(a-1.0) < 1e-5 ? 0 : d2lixlj_dli2; // if a=1, prevent div by zero
                     dlixlj_dlj = 0; // prevent over-count?
                     d2lixlj_dlj2 = 0;
                     dGdFjtmp = 0;
@@ -308,9 +306,13 @@ __global__ void getforce_nbdirect_oss_kernel(
 
                   dlixlj_dli = bi ? a*ljtmp*pow(li*ljtmp, a-1.0) : 0;
                   dlixlj_dlj = bjtmp ? a*li*pow(li*ljtmp, a-1.0) : 0;
-
-                  d2lixlj_dli2 = bi ? a*(a-1.0)*ljtmp*ljtmp*pow(li*ljtmp, a-2.0) : 0;
-                  d2lixlj_dlj2 = bjtmp ? a*(a-1.0)*li*li*pow(li*ljtmp, a-2.0) : 0;
+                  if (abs(a - 1.0) < 1e-5){ // if a=1, prevent div by zero
+                    d2lixlj_dli2 = 0;
+                    d2lixlj_dlj2 = 0;
+                  } else {
+                    d2lixlj_dli2 = bi ? a*(a-1.0)*ljtmp*ljtmp*pow(li*ljtmp, a-2.0) : 0;
+                    d2lixlj_dlj2 = bjtmp ? a*(a-1.0)*li*li*pow(li*ljtmp, a-2.0) : 0;
+                  }
                   d2lixlj_dli_dlj = bi && bjtmp ? a*a*pow(li*ljtmp, a-1.0) : 0;
                 }
 
@@ -375,6 +377,9 @@ __global__ void getforce_nbdirect_oss_kernel(
                 eij=0;
                 fij=0;
                 fij_ost=0;
+                // fli & flj
+                fli = 0;
+                flj = 0;
                 // Electrostatics (define the above variables)
                 if (usePME) { // precision matters for test, exp vs expf
                   real br=cutoffs.betaEwald*rEff;
@@ -561,33 +566,6 @@ __global__ void getforce_nbdirect_oss_kernel(
               fljtmp_ost+=__shfl_xor_sync(0xFFFFFFFF,fljtmp_ost,16);
               if (iThread==jtmp) flj_ost=fljtmp_ost;
             }
-            // Alchem Forces
-            fjtmp.x+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.x,1);
-            fjtmp.x+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.x,2);
-            fjtmp.x+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.x,4);
-            fjtmp.x+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.x,8);
-            fjtmp.x+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.x,16);
-            if (iThread==jtmp) fj.x=fjtmp.x;
-            fjtmp.y+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.y,1);
-            fjtmp.y+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.y,2);
-            fjtmp.y+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.y,4);
-            fjtmp.y+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.y,8);
-            fjtmp.y+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.y,16);
-            if (iThread==jtmp) fj.y=fjtmp.y;
-            fjtmp.z+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.z,1);
-            fjtmp.z+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.z,2);
-            fjtmp.z+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.z,4);
-            fjtmp.z+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.z,8);
-            fjtmp.z+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.z,16);
-            if (iThread==jtmp) fj.z=fjtmp.z;
-            if (bjtmp) {
-              fljtmp+=__shfl_xor_sync(0xFFFFFFFF,fljtmp,1);
-              fljtmp+=__shfl_xor_sync(0xFFFFFFFF,fljtmp,2);
-              fljtmp+=__shfl_xor_sync(0xFFFFFFFF,fljtmp,4);
-              fljtmp+=__shfl_xor_sync(0xFFFFFFFF,fljtmp,8);
-              fljtmp+=__shfl_xor_sync(0xFFFFFFFF,fljtmp,16);
-              if (iThread==jtmp) flj=fljtmp;
-            }
           }
         }
       }
@@ -596,10 +574,8 @@ __global__ void getforce_nbdirect_oss_kernel(
       if ((iThread)<jCount) {
         if (bj) {
           atomicAdd(&lambdaForce[0xFFFF & bj],flj_ost);
-          atomicAdd(&lambdaForce_extra[0xFFFF & bj],flj);
         }
         at_real3_inc(&force[32*jBlock+iThread],fj_ost);
-        at_real3_inc(&alchemForce[32*jBlock+iThread],fj);
       }
       if (iThread==0) j=atomicInc((unsigned int*)(&jnext),0xFFFFFFFF);
       j=__shfl_sync(0xFFFFFFFF,j,0);
@@ -608,14 +584,10 @@ __global__ void getforce_nbdirect_oss_kernel(
     if ((iThread)<iCount) {
       if (bi) {
         atomicAdd(&lambdaForce[0xFFFF & bi],fli_ost);
-        atomicAdd(&lambdaForce_extra[0xFFFF & bi],fli);
       }
       at_real3_inc(&force[32*iBlock+iThread],fi_ost);
-      at_real3_inc(&alchemForce[32*iBlock+iThread],fi);
     }
   }
-  // Total direct alchemical internal energy
-  real_sum_reduce(lEnergy,alchem_energy);
 }
 
 template <bool flagBox,bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
@@ -640,12 +612,10 @@ void getforce_nbdirect_ossTTTT(System *system,box_type box)
     p->vdwParameters_d,
 #endif
     system->domdec->blockExcls_d,system->run->cutoffs,d->localPosition_d,
-    d->localForce_d,d->localAlchemForce_d, 
+    d->localForce_d,
     box,s->lambda_fd,
     s->lambdaForce_d,
-    system->msld->GaMD_alchem_force_d, // starts with lambda forces
     system->msld->dGdF_d,
-    system->msld->alchem_energy_d,
     system->msld->alpha
   );
 

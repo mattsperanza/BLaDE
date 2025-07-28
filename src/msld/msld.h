@@ -55,6 +55,12 @@ public:
   struct VariableBias *variableBias;
   struct VariableBias *variableBias_d;
 
+  bool new_implicit = true;
+  real_x* theta0_d;
+  real* dcdt_d; // derivative of constraint w.r.t. theta.i
+  real width = 1.0;
+  // fnex param used as c param in both implicit constraints
+
   real alpha = 1.0; // lambda^alpha scaling
 
   // FE Estimation Variables -> need to be on/off before msld::init is called
@@ -84,9 +90,9 @@ public:
 
   // All paths 1D histogramming
   int path_count;
-  int warmup_samples = 0.0; // linear ramp of <dU/dL> with how much abf sample weight you have (basically number of samples)
+  int warmup_samples = 20; // linear ramp of <dU/dL> with how much abf sample weight you have (basically number of samples)
   real edge_KDE_std = .02; // gaussians go to ~0 around 4*std, ~2% sampling per edge with std=.05, c=5.5, n=9
-  real regularization = .0001; // avoid div by zero
+  real regularization = 0.0001; // avoid div by zero
   real* path_samples_d; // [Ns*(Ns-1)] reduction of weights along each path, including prior
   real* path_sample_offsets_d;
   real* path_unsamples_d; // [Ns*(Ns-1)] reduction of unweights along each path, including prior

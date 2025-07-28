@@ -57,9 +57,9 @@ static __forceinline__ __device__ float fasterfc(float a)
 template <bool flagBox, bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
 __global__ void getforce_exclusion_pair_kernel_oss(
   int pairCount,NbExPotential *pairs,Cutoffs cutoffs,
-    real3 *position,real3_f *force, real3_f *alchemForce, box_type box,
-    real *lambda,real_f *lambdaForce, real_f *lambdaForce_extra,
-    real *dGdF, real* alchem_energy) {
+    real3 *position,real3_f *force, box_type box,
+    real *lambda,real_f *lambdaForce, 
+    real *dGdF) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   int ii,jj;
   real r;
@@ -106,7 +106,7 @@ __global__ void getforce_exclusion_pair_kernel_oss(
       real uij=-kqq*erff(br)*rinv;
       // Vanilla force & energy
       lEnergy = li*ljtmp*uij;
-      fij = li*ljtmp*fij_tmp; // no soft
+      fij = li*ljtmp*fij_tmp; // no soft, no alpha scaling since we didn't for recip
       fli = ljtmp*uij;
       flj = bjtmp ? li*uij : 0;
 
@@ -121,27 +121,22 @@ __global__ void getforce_exclusion_pair_kernel_oss(
 
       // Lambda and spatial forces
       atomicAdd(&lambdaForce[b[0]], fli_ost);
-      atomicAdd(&lambdaForce_extra[b[0]], fli);
       if (b[1]) {
         atomicAdd(&lambdaForce[b[1]], fljtmp_ost);
-        atomicAdd(&lambdaForce_extra[b[1]], flj);
       }
       at_real3_scaleinc(&force[ii], fij_ost/r,dr);
       at_real3_scaleinc(&force[jj],-fij_ost/r,dr);
-      at_real3_scaleinc(&alchemForce[ii], fij/r,dr);
-      at_real3_scaleinc(&alchemForce[jj],-fij/r,dr);
     }
   }
-  real_sum_reduce(lEnergy,sEnergy,alchem_energy);
 }
 
 
 template <bool flagBox, bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
 __global__ void getforce_14pair_kernel_oss(
     int pairCount,Nb14Potential *pairs,Cutoffs cutoffs,
-    real3 *position,real3_f *force, real3_f *alchemForce, box_type box,
-    real *lambda,real_f *lambdaForce, real_f *lambdaForce_extra,
-    real *dGdF, real* alchem_energy, real a)
+    real3 *position,real3_f *force, box_type box,
+    real *lambda,real_f *lambdaForce, 
+    real *dGdF, real a)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   int ii,jj;
@@ -188,8 +183,13 @@ __global__ void getforce_14pair_kernel_oss(
       dlixlj_dli = bi ? a*ljtmp*pow(li*ljtmp, a-1.0) : 0;
       dlixlj_dlj = bjtmp ? a*li*pow(li*ljtmp, a-1.0) : 0;
 
-      d2lixlj_dli2 = bi ? a*(a-1)*ljtmp*ljtmp*pow(li*ljtmp, a-2.0) : 0;
-      d2lixlj_dlj2 = bjtmp ? a*(a-1)*li*li*pow(li*ljtmp, a-2.0) : 0;
+      if (abs(a - 1.0) < 1e-5){ // if a=1, prevent div by zero
+        d2lixlj_dli2 = 0;
+        d2lixlj_dlj2 = 0;
+      } else {
+        d2lixlj_dli2 = bi ? a*(a-1.0)*ljtmp*ljtmp*pow(li*ljtmp, a-2.0) : 0;
+        d2lixlj_dlj2 = bjtmp ? a*(a-1.0)*li*li*pow(li*ljtmp, a-2.0) : 0;
+      }
       d2lixlj_dli_dlj = bi && bjtmp ? a*a*pow(li*ljtmp, a-1.0) : 0;
       // don't expect li*li
 
@@ -423,19 +423,14 @@ __global__ void getforce_14pair_kernel_oss(
 
         // OSS & Vanilla forces
         atomicAdd(&lambdaForce[b[0]], fli_ost);
-        atomicAdd(&lambdaForce_extra[b[0]], fli);
         if (b[1]) {
           atomicAdd(&lambdaForce[b[1]], fljtmp_ost);
-          atomicAdd(&lambdaForce_extra[b[1]], flj);
         }
         at_real3_scaleinc(&force[ii], fij_ost/r,dr);
         at_real3_scaleinc(&force[jj],-fij_ost/r,dr);
-        at_real3_scaleinc(&alchemForce[ii], fij/r,dr);
-        at_real3_scaleinc(&alchemForce[jj],-fij/r,dr);
       }
     }
   }
-  real_sum_reduce(lEnergy,sEnergy,alchem_energy);
 }
 
 template <bool flagBox,bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
@@ -453,9 +448,10 @@ void getforce_nb14TTTT_oss(System *system,box_type box)
 
   getforce_14pair_kernel_oss<flagBox,useSoftCore,usevdWSwitch,usePME> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->alchemRecip>>>(
       N,p->nb14s_d,system->run->cutoffs,(real3*)s->position_fd,
-      (real3_f*)s->force_d,(real3_f*)(system->msld->GaMD_alchem_force_d+system->msld->blockCount),box,
-      s->lambda_fd,s->lambdaForce_d, (real_f*)system->msld->GaMD_alchem_force_d, 
-      system->msld->dGdF_d, system->msld->alchem_energy_d, system->msld->alpha);
+      (real3_f*)s->force_d,box,
+      s->lambda_fd,s->lambdaForce_d, 
+      system->msld->dGdF_d, 
+      system->msld->alpha);
 }
 
 template <bool flagBox,bool useSoftCore,bool usevdWSwitch,typename box_type>
@@ -515,10 +511,10 @@ void getforce_nbexT_oss(System *system,box_type box)
 
   // Ewald already soft-cored
   getforce_exclusion_pair_kernel_oss<flagBox,false,false,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->alchemRecip>>>(
-    N,p->nbexs_d,system->run->cutoffs,(real3*)s->position_fd,
-      (real3_f*)s->force_d,(real3_f*)(system->msld->GaMD_alchem_force_d+system->msld->blockCount),box,
-      s->lambda_fd,s->lambdaForce_d, (real_f*)system->msld->GaMD_alchem_force_d, 
-      system->msld->dGdF_d, system->msld->alchem_energy_d);
+    N,p->nbexs_d,system->run->cutoffs,
+    (real3*)s->position_fd, (real3_f*)s->force_d,box,
+    s->lambda_fd,s->lambdaForce_d, 
+    system->msld->dGdF_d);
 }
 
 void getforce_nbex_oss(System *system)

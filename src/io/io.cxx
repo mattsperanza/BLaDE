@@ -367,19 +367,19 @@ void print_meta(int step, System* system){
   // Header for lmd file lines: Sites: #, [subs_per_site]
   // Format: Step num, data for site 1, data for site 2, ...,
   if(step == 0){
-    fprintf(fp, "Info: %d,", system->msld->siteCount-1);
-    for(int i = 1; i < system->msld->siteCount; i++){
+    fprintf(fp, "Info: %d,", system->msld->siteCount);
+    for(int i = 0; i < system->msld->siteCount; i++){
       fprintf(fp, "%d, ", system->msld->blocksPerSite[i]);
     }
     fprintf(fp, "\n");
   }
-  for(int i = 1; i < system->msld->blockCount; i++){ 
+  for(int i = 0; i < system->msld->blockCount; i++){ 
     fprintf(fp, "%f ", system->state->lambda[i]);
   }
   fprintf(fp, "\n\n");
 
   fp=system->run->fpMTD_dUdL;
-  for(int i = 1; i < system->msld->blockCount; i++){
+  for(int i = 0; i < system->msld->blockCount; i++){
     fprintf(fp, "%f ", system->msld->dUdL_msld[i]);
   }
   fprintf(fp, "\n\n");
@@ -408,9 +408,7 @@ void print_dynamics_output(int step,System *system)
       system->state->recv_energy();
       print_nrg(step,system);
     }
-    if (step % system->run->freqMTD == 0 && 
-      system->msld->oss){
-      //&& (!system->msld->update_fe_surface || system->msld->tracking_only)){
+    if (step % system->run->freqMTD == 0){
       system->state->recv_lambda();
       system->msld->recv_meta();
       print_meta(step, system);

@@ -1667,11 +1667,13 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
   Run* r = system->run;
   int helper=(system->idCount==2); 
 
-  if ((system->msld->abf || system->msld->oss) && !system->msld->tracking_only){ // ABF force does not depend on current lambda force
+  if (system->msld->abf || system->msld->oss){
     cudaMemcpyAsync(system->msld->dUdL_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, r->ossBias);
     cudaMemsetAsync(system->msld->hist_potential_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
     cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
-    system->msld->getforce_oss(system, calcEnergy);
+    if(!system->msld->tracking_only){
+      system->msld->getforce_oss(system, calcEnergy);
+    }
     system->msld->add_sample(system, step); 
     system->msld->log_sampling(system, step); 
     cudaEventRecord(r->ossBiasComplete, r->ossBias);
