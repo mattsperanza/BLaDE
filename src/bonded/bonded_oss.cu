@@ -15,6 +15,7 @@ __global__ void getforce_bond_kernel_oss(
     int bond12Count,int bondCount,struct BondPotential *bonds,
     real3 *position,real3_f *force,box_type box,real *lambda,
     real_f *lambdaForce,real softAlpha,real softExp,
+    real* dLdT, real* d2LdT2,
     real* dGdF)
 {
 // NYI - maybe energy should be a double
@@ -97,6 +98,11 @@ __global__ void getforce_bond_kernel_oss(
       real d2U_dl0_dl1 = (d2g_dl0_dl1*h + dg_dl0*dh_dl1 - dg_dl1*dh_dl0 - g*d2h_dl0_dl1) - 2*dU_dl0*dh_dl1/h;
       real d2U_dl12 = (d2g_dl12*h + dg_dl1*dh_dl1 - dg_dl1*dh_dl1 - g*d2h_dl12) - 2*dU_dl1*dh_dl1/h;
 
+      // Convert from lambda to theta, does nothing if we wanted lambda orthogonal bias
+      d2U_dl02 = d2U_dl02*dLdT[b[0]]*dLdT[b[0]] + dU_dl0*d2LdT2[b[0]];
+      d2U_dl12 = d2U_dl12*dLdT[b[1]]*dLdT[b[1]] + dU_dl1*d2LdT2[b[1]];
+      d2U_dl0_dl1 *= dLdT[b[0]]*dLdT[b[1]];
+
       real fl0 = chain[0]*d2U_dl02 + chain[1]*d2U_dl0_dl1;
       real fl1 = chain[0]*d2U_dl0_dl1 + chain[1]*d2U_dl12;
       atomicAdd(&lambdaForce[b[0]], fl0);
@@ -104,19 +110,31 @@ __global__ void getforce_bond_kernel_oss(
         atomicAdd(&lambdaForce[b[1]], fl1);
       }
 
+      d2U_dl0_drij *= dLdT[b[0]];
+      d2U_dl1_drij *= dLdT[b[1]];
       real fij = chain[0]*d2U_dl0_drij + chain[1]*d2U_dl1_drij;
       at_real3_scaleinc(&force[ii], fij/r,dr);
       at_real3_scaleinc(&force[jj],-fij/r,dr);
     } else if (b[0]) {
       // interaction
-      lEnergy=((real)0.5)*bp.kb*(r-bp.b0)*(r-bp.b0);
+      lEnergy=((real)0.5)*bp.kb*(r-bp.b0)*(r-bp.b0); 
       fbond=bp.kb*(r-bp.b0);
 
       // Lambda force
+      real dU_dl0 = l[1]*lEnergy; // always b[0]=true
+      real dU_dl1 = b[1] ? l[0]*lEnergy : 0;
+      real d2U_dl02 = 0;
+      real d2U_dl12 = 0;
       real d2U_dl0_dl1 = b[1] ? lEnergy : 0;
-      real fl0 = chain[1]*d2U_dl0_dl1; // d2U_dl02 = 0
+      // Convert to theta force
+      d2U_dl02 = d2U_dl02*dLdT[b[0]]*dLdT[b[0]] + dU_dl0*d2LdT2[b[0]];
+      d2U_dl12 = d2U_dl12*dLdT[b[1]]*dLdT[b[1]] + dU_dl1*d2LdT2[b[1]]; 
+      d2U_dl0_dl1 *= dLdT[b[0]]*dLdT[b[1]];
+
+      real fl0 = chain[0]*d2U_dl02 + chain[1]*d2U_dl0_dl1; 
+      real fl1 = chain[0]*d2U_dl0_dl1 + chain[1]*d2U_dl12; 
+      // What gets added to other parts of theta array eventually gets added to correct spot
       atomicAdd(&lambdaForce[b[0]], fl0);
-      real fl1 = chain[0]*d2U_dl0_dl1; // d2U_dl12 = 0
       if (b[1]) {
         atomicAdd(&lambdaForce[b[1]], fl1);
       }
@@ -124,6 +142,10 @@ __global__ void getforce_bond_kernel_oss(
       // Spatial force
       real d2U_drij_dl0 = l[1]*fbond;
       real d2U_drij_dl1 = b[1] ? l[0]*fbond : 0;
+      // convert to theta force
+      d2U_drij_dl0 *= dLdT[b[0]];
+      d2U_drij_dl1 *= dLdT[b[1]];
+
       real fij = chain[0]*d2U_drij_dl0 + chain[1]*d2U_drij_dl1;
       at_real3_scaleinc(&force[ii], fij/r,dr);
       at_real3_scaleinc(&force[jj],-fij/r,dr);
@@ -145,13 +167,18 @@ void getforce_bondT_oss(System *system,box_type box)
 
   if (r->calcTermFlag[eebond]==false && r->calcTermFlag[eeurey]==false) return;
 
+  // Decide if we compute chain rule due to lambda or theta
+  real_f* alchem_force = system->msld->oss_theta ? s->thetaForce_d : s->lambdaForce_d;
+
   N12=(r->calcTermFlag[eebond]?p->bond12Count:0);
   N=N12+(r->calcTermFlag[eeurey]?p->bond13Count:0);
   bonds=p->bonds_d+(p->bond12Count-N12);
   if (N>0) getforce_bond_kernel_oss<flagBox,false><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N12,N,bonds,(real3*)s->position_fd,
     (real3_f*)s->force_d,box,s->lambda_fd,
-    s->lambdaForce_d,0,1,
+    alchem_force,0,1,
+    system->msld->dLdT_d,
+    system->msld->d2LdT2_d,
     system->msld->dGdF_d);
 
   N=p->softBondCount;
@@ -161,7 +188,9 @@ void getforce_bondT_oss(System *system,box_type box)
   if (N>0) getforce_bond_kernel_oss<flagBox,true><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N12,N,bonds,(real3*)s->position_fd,
     (real3_f*)s->force_d,box,s->lambda_fd,
-    s->lambdaForce_d,softAlpha,softExp,
+    alchem_force,softAlpha,softExp,
+    system->msld->dLdT_d,
+    system->msld->d2LdT2_d,
     system->msld->dGdF_d);
 }
 
@@ -180,6 +209,7 @@ template <bool flagBox,bool soft,typename box_type>
 __global__ void getforce_angle_kernel_oss(int angleCount,struct AnglePotential *angles,real3 *position,
   real3_f *force,box_type box,real *lambda,
   real_f *lambdaForce,real softExp,
+  real* dLdT, real* d2LdT2,
   real *dGdF)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -243,19 +273,25 @@ __global__ void getforce_angle_kernel_oss(int angleCount,struct AnglePotential *
       dl_dl0 = b[0] ? dl_dl0 : 0;
       real dl_dl1 = soft ? l[0]*softExp*pow(l[0]*l[1], softExp-1) : l[0];
       dl_dl1 = b[1] ? dl_dl1 : 0;
-
       real d2l_dl0_dl1 = soft ? softExp*softExp*pow(l[0]*l[1], softExp-1) : 1;
       d2l_dl0_dl1 = b[0] && b[1] ? d2l_dl0_dl1 : 0;
-
       real d2l_dl02 = soft && b[0] ? softExp*(softExp-1)*pow(l[0], softExp - 2)*pow(l[1], softExp) : 0;
       real d2l_dl12 = soft && b[1] ? softExp*(softExp-1)*pow(l[1], softExp - 2)*pow(l[0], softExp) : 0;
 
       // Lambda forces
       // fl0 = dGdF0*d2U_dl0_dl0 + dGdF1*d2U_dl1_dl0
       // fl1 = dGdF0*d2U_dl0_dl1 + dGdF1*d2U_dl1_dl1
+      real dU_dl0 = dl_dl0 * lEnergy;
+      real dU_dl1 = dl_dl1 * lEnergy;
       real d2U_dl0_dl1 = d2l_dl0_dl1 * lEnergy;
       real d2U_dl02 = d2l_dl02 * lEnergy;
       real d2U_dl12 = d2l_dl12 * lEnergy;
+      // Convert to theta forces
+      d2U_dl02 = d2U_dl02*dLdT[b[0]]*dLdT[b[0]] + dU_dl0*d2LdT2[b[0]];
+      d2U_dl12 = d2U_dl12*dLdT[b[1]]*dLdT[b[1]] + dU_dl1*d2LdT2[b[1]]; 
+      d2U_dl0_dl1 *= dLdT[b[0]]*dLdT[b[1]];
+
+      // Calculate OST forces
       real fl0 = chain[0]*d2U_dl02 + chain[1]*d2U_dl0_dl1;
       real fl1 = chain[0]*d2U_dl0_dl1 + chain[1]*d2U_dl12;
       if (b[0]) {
@@ -268,9 +304,9 @@ __global__ void getforce_angle_kernel_oss(int angleCount,struct AnglePotential *
         printf("Angle has li=lj terms!\n");
       }
 
-      // Spatial Forces
-      real d2U_dphi_dl0 = dl_dl0*fangle;
-      real d2U_dphi_dl1 = dl_dl1*fangle;
+      // Spatial Forces - theta conversion included
+      real d2U_dphi_dl0 = dl_dl0*fangle*dLdT[b[0]];
+      real d2U_dphi_dl1 = dl_dl1*fangle*dLdT[b[1]];
       real tmp = chain[0]*d2U_dphi_dl0 + chain[1]*d2U_dphi_dl1;
       real3_scaleself(&fi,tmp);
       at_real3_inc(&force[ii], fi);
@@ -294,17 +330,21 @@ void getforce_angleT_oss(System *system,box_type box)
 
   if (r->calcTermFlag[eeangle]==false) return;
 
+  real_f* alchem_force = system->msld->oss_theta ? s->thetaForce_d : s->lambdaForce_d;
+
   N=p->angleCount;
   if (N>0) getforce_angle_kernel_oss<flagBox,false><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->angles_d,(real3*)s->position_fd,
     (real3_f*)s->force_d,box,s->lambda_fd,
-    s->lambdaForce_d,1,
+    alchem_force,1,
+    system->msld->dLdT_d, system->msld->d2LdT2_d,
     system->msld->dGdF_d);
   N=p->softAngleCount;
   if (N>0) getforce_angle_kernel_oss<flagBox,true><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->softAngles_d,(real3*)s->position_fd,
-    (real3_f*)s->force_d,box,s->lambda_fd,
+    (real3_f*)s->force_d,box,alchem_force,
     s->lambdaForce_d,softExp,
+    system->msld->dLdT_d, system->msld->d2LdT2_d,
     system->msld->dGdF_d);
 }
 
@@ -348,6 +388,7 @@ template <bool flagBox,class TorsionPotential,bool soft,typename box_type>
 __global__ void getforce_torsion_kernel_oss(int torsionCount,TorsionPotential *torsions,real3 *position,
   real3_f *force,box_type box,real *lambda,
   real_f *lambdaForce,real softExp,
+  real* dLdT, real* d2LdT2,
   real *dGdF)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -442,9 +483,18 @@ __global__ void getforce_torsion_kernel_oss(int torsionCount,TorsionPotential *t
       // Lambda Forces
       // fl0 = dGdF0*d2U_dl0_dl0 + dGdF1*d2U_dl1_dl0 // first term zero if not soft
       // fl1 = dGdF0*d2U_dl0_dl1 + dGdF1*d2U_dl1_dl1 // second term zero if not soft
+      real dU_dl0 = dl_dl0 * lEnergy;
+      real dU_dl1 = dl_dl1 * lEnergy;
       real d2U_dl0_dl1 = d2l_dl0_dl1 * lEnergy;
       real d2U_dl02 = d2l_dl02 * lEnergy;
       real d2U_dl12 = d2l_dl12 * lEnergy;
+      // Convert to theta forces
+      d2U_dl02 = d2U_dl02*dLdT[b[0]]*dLdT[b[0]] + dU_dl0*d2LdT2[b[0]];
+      d2U_dl12 = d2U_dl12*dLdT[b[1]]*dLdT[b[1]] + dU_dl1*d2LdT2[b[1]]; 
+      d2U_dl0_dl1 *= dLdT[b[0]]*dLdT[b[1]];
+      printf("i: %d, dU_dl0: %f, dU_dl1: %f, d2U_dl02: %f, d2U_dl12: %f, d2U_dl0dL1: %f, \n", 
+        i, dU_dl0, dU_dl1, b[0], d2LdT2[b[0]], d2U_dl02, d2U_dl12, d2U_dl0_dl1);
+
       real fl0 = chain[0]*d2U_dl02 + chain[1]*d2U_dl0_dl1;
       real fl1 = chain[0]*d2U_dl0_dl1 + chain[1]*d2U_dl12;
       if (b[0]) {
@@ -457,9 +507,9 @@ __global__ void getforce_torsion_kernel_oss(int torsionCount,TorsionPotential *t
         printf("Torsion has li=lj terms!\n");
       }
 
-      // Spatial Forces
-      real d2U_dphi_dl0 = dl_dl0*ftorsion;
-      real d2U_dphi_dl1 = dl_dl1*ftorsion;
+      // Spatial Forces - theta conversion included
+      real d2U_dphi_dl0 = dl_dl0*ftorsion*dLdT[b[0]];
+      real d2U_dphi_dl1 = dl_dl1*ftorsion*dLdT[b[1]];
       real tmp = chain[0]*d2U_dphi_dl0 + chain[1]*d2U_dphi_dl1;
       real3_scaleself(&fi,tmp);
       at_real3_inc(&force[ii], fi);
@@ -484,19 +534,22 @@ void getforce_diheT_oss(System *system,box_type box)
   int shMem=0;
 
   if (r->calcTermFlag[eedihe]==false) return;
+  real_f* alchem_force = system->msld->oss_theta ? s->thetaForce_d : s->lambdaForce_d;
 
   N=p->diheCount;
   if (N>0) getforce_torsion_kernel_oss<flagBox,DihePotential,false> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->dihes_d,(real3*)s->position_fd,
     (real3_f*) s->force_d, box,
-    s->lambda_fd,s->lambdaForce_d, 1,
+    alchem_force,s->lambdaForce_d, 1,
+    system->msld->dLdT_d, system->msld->d2LdT2_d,
     system->msld->dGdF_d);
 
   N=p->softDiheCount;
   if (N>0) getforce_torsion_kernel_oss<flagBox,DihePotential,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->softDihes_d,(real3*)s->position_fd,
     (real3_f*) s->force_d, box,
-    s->lambda_fd, s->lambdaForce_d, softExp,
+    alchem_force, s->lambdaForce_d, softExp,
+    system->msld->dLdT_d, system->msld->d2LdT2_d,
     system->msld->dGdF_d);
 }
 
@@ -520,20 +573,23 @@ void getforce_imprT_oss(System *system,box_type box)
   int shMem=0;
 
   if (r->calcTermFlag[eeimpr]==false) return;
+  real_f* alchem_force = system->msld->oss_theta ? s->thetaForce_d : s->lambdaForce_d;
 
   N=p->imprCount;
   if (N>0) getforce_torsion_kernel_oss <flagBox,ImprPotential,false> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->imprs_d,(real3*)s->position_fd,
     (real3_f*) s->force_d, box,s->lambda_fd,
-    s->lambdaForce_d, 1,
+    alchem_force, 1,
+    system->msld->dLdT_d, system->msld->d2LdT2_d,
     system->msld->dGdF_d);
   N=p->softImprCount;
   if (N>0) getforce_torsion_kernel_oss <flagBox,ImprPotential,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->softImprs_d,(real3*)s->position_fd,
     (real3_f*) s->force_d,
     box,s->lambda_fd,
-    s->lambdaForce_d,
+    alchem_force,
     softExp,
+    system->msld->dLdT_d, system->msld->d2LdT2_d,
     system->msld->dGdF_d);
 }
 
@@ -556,6 +612,7 @@ __global__ void getforce_cmap_kernel_oss(
   real *lambda,
   real *lambdaForce,
   real softExp,
+  real* dLdT, real* d2LdT2,
   real *dGdF
   )
 {
@@ -729,28 +786,35 @@ __global__ void getforce_cmap_kernel_oss(
     real3_dec(&fk,fj);
     real3_dec(&fj,fi);
 
-    // Derivatives of lambda combination function
-    real dl_dl0 = soft ? l[1]*l[2]*softExp*pow(l[0]*l[1]*l[2], softExp-1) : l[1]*l[2];
-    dl_dl0 = b[0] ? dl_dl0 : 0;
+    // Derivatives of lambda product function
+    real dl_dl0 = soft ? l[1]*l[2]*softExp*pow(l[0]*l[1]*l[2], softExp-1): l[1]*l[2];
+    dl_dl0 = b[0] ? dl_dl0: 0;
     real dl_dl1 = soft ? l[0]*l[2]*softExp*pow(l[0]*l[1]*l[2], softExp-1) : l[0]*l[2];
-    dl_dl1 = b[1] ? dl_dl1 : 0;
+    dl_dl1 = b[1] ? dl_dl1: 0;
     real dl_dl2 = soft ? l[0]*l[1]*softExp*pow(l[0]*l[1]*l[2], softExp-1) : l[0]*l[1];
-    dl_dl2 = b[2] ? dl_dl2 : 0;
+    dl_dl2 = b[2] ? dl_dl2: 0;
 
-    real d2l_dl0_dl1 = soft ? softExp*softExp*l[2]*pow(l[0]*l[1]*l[2], softExp-1) : l[2];
-    d2l_dl0_dl1 = b[0] && b[1] ? d2l_dl0_dl1 : 0;
-    real d2l_dl1_dl2 = soft ? softExp*softExp*l[0]*pow(l[0]*l[1]*l[2], softExp-1) : l[0];
-    d2l_dl1_dl2 = b[1] && b[2] ? d2l_dl1_dl2 : 0;
-    real d2l_dl0_dl2 = soft ? softExp*softExp*l[1]*pow(l[0]*l[1]*l[2], softExp-1) : l[1];
-    d2l_dl0_dl2 = b[0] && b[2] ? d2l_dl0_dl2 : 0;
+    real d2U_dl0_dl1 = soft ? softExp*softExp*l[2]*pow(l[0]*l[1]*l[2], softExp-1) : l[2];
+    d2U_dl0_dl1 = b[0] && b[1] ? d2U_dl0_dl1*lEnergy : 0;
+    real d2U_dl1_dl2 = soft ? softExp*softExp*l[0]*pow(l[0]*l[1]*l[2], softExp-1) : l[0];
+    d2U_dl1_dl2 = b[1] && b[2] ? d2U_dl1_dl2*lEnergy : 0;
+    real d2U_dl0_dl2 = soft ? softExp*softExp*l[1]*pow(l[0]*l[1]*l[2], softExp-1) : l[1];
+    d2U_dl0_dl2 = b[0] && b[2] ? d2U_dl0_dl2*lEnergy : 0;
 
-    real d2l_dl02 = soft && b[0] ? softExp*(softExp-1)*pow(l[0], softExp - 2)*pow(l[1]*l[2], softExp) : 0;
-    real d2l_dl12 = soft && b[1] ? softExp*(softExp-1)*pow(l[1], softExp - 2)*pow(l[0]*l[2], softExp) : 0;
-    real d2l_dl22 = soft && b[2] ? softExp*(softExp-1)*pow(l[2], softExp - 2)*pow(l[0]*l[1], softExp) : 0;
-    // Lambda Forces
-    real fl0 = (chain[0]*d2l_dl02 + chain[1]*d2l_dl0_dl1 + chain[2]*d2l_dl0_dl2)*lEnergy;
-    real fl1 = (chain[0]*d2l_dl0_dl1 + chain[1]*d2l_dl12 + chain[2]*d2l_dl1_dl2)*lEnergy;
-    real fl2 = (chain[0]*d2l_dl0_dl2 + chain[1]*d2l_dl1_dl2 + chain[2]*d2l_dl22)*lEnergy;
+    real d2U_dl02 = soft && b[0] ? softExp*(softExp-1)*pow(l[0], softExp - 2)*pow(l[1]*l[2], softExp)*lEnergy : 0;
+    real d2U_dl12 = soft && b[1] ? softExp*(softExp-1)*pow(l[1], softExp - 2)*pow(l[0]*l[2], softExp)*lEnergy : 0;
+    real d2U_dl22 = soft && b[2] ? softExp*(softExp-1)*pow(l[2], softExp - 2)*pow(l[0]*l[1], softExp)*lEnergy : 0;
+    // Convert to theta
+    d2U_dl02 = d2U_dl02*dLdT[b[0]]*dLdT[b[0]] + dl_dl0*lEnergy*d2LdT2[b[0]];
+    d2U_dl12 = d2U_dl12*dLdT[b[1]]*dLdT[b[1]] + dl_dl1*lEnergy*d2LdT2[b[1]]; 
+    d2U_dl22 = d2U_dl22*dLdT[b[2]]*dLdT[b[2]] + dl_dl2*lEnergy*d2LdT2[b[2]]; 
+    d2U_dl0_dl1 *= dLdT[b[0]]*dLdT[b[1]];
+    d2U_dl1_dl2 *= dLdT[b[1]]*dLdT[b[2]];
+    d2U_dl0_dl2 *= dLdT[b[0]]*dLdT[b[2]];
+    // Forces
+    real fl0 = (chain[0]*d2U_dl02 + chain[1]*d2U_dl0_dl1 + chain[2]*d2U_dl0_dl2);
+    real fl1 = (chain[0]*d2U_dl0_dl1 + chain[1]*d2U_dl12 + chain[2]*d2U_dl1_dl2);
+    real fl2 = (chain[0]*d2U_dl0_dl2 + chain[1]*d2U_dl1_dl2 + chain[2]*d2U_dl22);
     if (b[0]) {
       atomicAdd(&lambdaForce[b[0]], fl0);
       if (b[1]) {
@@ -760,11 +824,11 @@ __global__ void getforce_cmap_kernel_oss(
         }
       }
     }
-    // Spatial OST Forces
+    // Spatial OST Forces - with theta
     // dU/dX = sum(dG/dFi * d2U/dLdX)
-    real d2U_dphi_dl0 = dl_dl0*fcmap;
-    real d2U_dphi_dl1 = dl_dl1*fcmap;
-    real d2U_dphi_dl2 = dl_dl2*fcmap;
+    real d2U_dphi_dl0 = dl_dl0*fcmap*dLdT[b[0]];
+    real d2U_dphi_dl1 = dl_dl1*fcmap*dLdT[b[1]];
+    real d2U_dphi_dl2 = dl_dl2*fcmap*dLdT[b[2]];
     real tmp = chain[0]*d2U_dphi_dl0 + chain[1]*d2U_dphi_dl1 + chain[2]*d2U_dphi_dl2;
     real3_scaleself(&fi,tmp);
     at_real3_inc(&force[ii], fi);
@@ -788,19 +852,24 @@ void getforce_cmapT_oss(System *system,box_type box)
   int shMem=0;
 
   if (r->calcTermFlag[eecmap]==false) return;
+  real_f* alchem_force = system->msld->oss_theta ? s->thetaForce_d : s->lambdaForce_d;
 
   N=p->cmapCount;
   if (N>0) getforce_cmap_kernel_oss<flagBox,false><<<(2*N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->cmaps_d,
     (real3*)s->position_fd, (real3_f*) s->force_d, box,
-    s->lambda_fd,s->lambdaForce_d, 1,
+    s->lambda_fd,
+    alchem_force, 1,
+    system->msld->dLdT_d, system->msld->d2LdT2_d,
     system->msld->dGdF_d);
 
   N=p->softCmapCount;
   if (N>0) getforce_cmap_kernel_oss<flagBox,true><<<(2*N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->softCmaps_d,
     (real3*)s->position_fd, (real3_f*) s->force_d, box,
-    s->lambda_fd,s->lambdaForce_d, softExp,
+    s->lambda_fd,
+    alchem_force, softExp,
+    system->msld->dLdT_d, system->msld->d2LdT2_d,
     system->msld->dGdF_d);
 }
 

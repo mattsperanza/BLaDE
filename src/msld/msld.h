@@ -18,6 +18,14 @@ struct VariableBias {
   int n;
 };
 
+typedef enum leus_func {
+  leus_linear,
+  leus_cubic,
+  leus_quintic,
+  leus_sin2,
+  leus_integral
+} Leus_func;
+
 class Msld {
 public:
   int blockCount;
@@ -59,7 +67,23 @@ public:
   real_x* theta0_d;
   real* dcdt_d; // derivative of constraint w.r.t. theta.i
   real width = 1.0;
-  // fnex param used as c param in both implicit constraints
+
+  // MSLD L-LEUS style theta dynamics combined with ABF &/or orthogonal bias
+  bool L_LEUS = false; // overrides new_implicit
+  bool oss_theta = true;
+  leus_func L_LEUS_function = leus_sin2;
+  real* dUdT_msld_d; // [blockCount]
+  real* dLdT_d; // first derivative of lambda w.r.t. theta
+  real* d2LdT2_d; // second derivative of lambda w.r.t. theta
+
+  real plateau_w = .1;
+  real transition_w = .5;
+  real* offsets_theta_d;
+  real* theta_counts_d;
+  real* weights_theta_d;
+  real* weighted_dUdT_d;
+  real* ensemble_dUdT_d; // ensemble average derivative w.r.t. theta
+  real oss_k = .1;
 
   real alpha = 1.0; // lambda^alpha scaling
 
@@ -216,17 +240,12 @@ public:
   void getforce_atomRestraints(System *system,bool calcEnergy);
   void getforce_chargeRestraints(System *system,bool calcEnergy);
 
-  // GaMD Functions
-  void gamd_update(System* system, bool update_E_k);
-  void gamd_reset(System* system);
-  void getforce_gamd(System* system);
-  void getforce_orth_GaMD(System* system);
-
   // OSS/ABF Functions
   void add_sample(System *system, int step);
   void log_sampling(System *system, int step);
   void init_oss(System* system);
   void getforce_oss(System* system, bool calcEnergy);
+  void oss_lambda_to_theta_force(System* system);
 
   void recv_meta();
 };

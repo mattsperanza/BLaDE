@@ -104,6 +104,8 @@ __global__ void getforce_nbdirect_oss_kernel(
   box_type box,
   const real* __restrict__ lambda,
   real_f* __restrict__ lambdaForce,
+  real* __restrict__ dLdT,
+  real* __restrict__ d2LdT2,
   real* __restrict__ dGdF, 
   real a
 )
@@ -131,6 +133,8 @@ __global__ void getforce_nbdirect_oss_kernel(
   // OST Forces (added into normal force array)
   real3 fi_ost,fj_ost,fjtmp_ost;
   real fli_ost,flj_ost,fljtmp_ost;
+  real dLdTi, dLdTj, d2LdT2i, d2LdT2j;
+  real dLdTjtmp, d2LdT2jtmp;
   // Alchem Forces (normal alchem forces)
   real lEnergy=0;
   real eij;
@@ -160,6 +164,8 @@ __global__ void getforce_nbdirect_oss_kernel(
       dGdFi=0;
       if (bi) {
         li=lambda[0xFFFF & bi];
+        dLdTi = dLdT[0xFFFF & bi];
+        d2LdT2i = d2LdT2[0xFFFF & bi];
         dGdFi=dGdF[0xFFFF & bi];
       }
     }
@@ -220,6 +226,8 @@ __global__ void getforce_nbdirect_oss_kernel(
         dGdFj=0;
         if (bj) {
           lj=lambda[0xFFFF & bj];
+          dLdTj = dLdT[0xFFFF & bj];
+          d2LdT2j = d2LdT2[0xFFFF & bj];
           dGdFj=dGdF[0xFFFF & bj];
         }
       }
@@ -231,7 +239,6 @@ __global__ void getforce_nbdirect_oss_kernel(
       fj=real3_reset<real3>();
       fj_ost=real3_reset<real3>();
 
-      flj=0;
       flj_ost=0;
 
       // If bi && bj are both 0, then we can skip this block-block interaction
@@ -246,11 +253,12 @@ __global__ void getforce_nbdirect_oss_kernel(
             bjtmp=__shfl_sync(0xFFFFFFFF,bj,jtmp);
             ljtmp=__shfl_sync(0xFFFFFFFF,lj,jtmp);
             dGdFjtmp=__shfl_sync(0xFFFFFFFF,dGdFj,jtmp);
+            dLdTjtmp=__shfl_sync(0xFFFFFFFF,dLdTj,jtmp);
+            d2LdT2jtmp=__shfl_sync(0xFFFFFFFF,d2LdT2j,jtmp);
 
             fjtmp=real3_reset<real3>();
             fjtmp_ost=real3_reset<real3>();
 
-            fljtmp=0;
             fljtmp_ost=0;
             if (iThread<iCount && ((1<<jtmp)&exclMask)) {
 #ifdef USE_TEXTURE
@@ -374,12 +382,14 @@ __global__ void getforce_nbdirect_oss_kernel(
                 real d2Up_dlami_dlamj = 0; // The p in this term represents that it is a function of rijp not rij
                 real d2Up_dlami2 = 0;
                 real d2Up_dlamj2 = 0;
+                // Forces for this interaction that get reset
                 eij=0;
                 fij=0;
-                fij_ost=0;
-                // fli & flj
+                fij_ost=0; // physical interactions not accumulated
+                // fli & flj for theta conversion of soft-core interactions
                 fli = 0;
-                flj = 0;
+                fljtmp = 0;
+                // fli_ost & fljtmp_ost are not reset
                 // Electrostatics (define the above variables)
                 if (usePME) { // precision matters for test, exp vs expf
                   real br=cutoffs.betaEwald*rEff;
@@ -469,14 +479,20 @@ __global__ void getforce_nbdirect_oss_kernel(
                     // Vanilla Potential & Forces
                     eij += lixljtmp*eij_tmp;
                     fij += lixljtmp*fij_tmp;// no soft
-                    fli += dlixlj_dli*eij_tmp; 
-                    fljtmp += dlixlj_dli*eij_tmp; 
+                    real dU_dlami = dlixlj_dli*eij_tmp;
+                    real dU_dlamj = dlixlj_dlj*eij_tmp;
                     // OSS calculation (not soft-cored):
                     real d2U_drij_dlami = dlixlj_dli * fij_tmp;
                     real d2U_drij_dlamj = dlixlj_dlj * fij_tmp;
                     real d2U_dlami_dlamj = d2lixlj_dli_dlj * eij_tmp;
                     real d2U_dlami2 = d2lixlj_dli2 * eij_tmp;
                     real d2U_dlamj2 = d2lixlj_dlj2 * eij_tmp;
+                    // Convert from lambda to theta - does nothing if dLdT=1 & d2LdT2=0
+                    d2U_drij_dlami *= dLdTi;
+                    d2U_drij_dlamj *= dLdTjtmp;
+                    d2U_dlami_dlamj *= dLdTi*dLdTjtmp;
+                    d2U_dlami2 = d2U_dlami2*dLdTi*dLdTi + dU_dlami*d2LdT2i;
+                    d2U_dlamj2 = d2U_dlamj2*dLdTjtmp*dLdTjtmp + dU_dlamj*d2LdT2jtmp;
                     // Accumulate ost forces into force variables directly since they aren't soft-cored
                     fij_ost += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
                     fli_ost += dGdFi * d2U_dlami2 + dGdFjtmp * d2U_dlami_dlamj;
@@ -497,14 +513,20 @@ __global__ void getforce_nbdirect_oss_kernel(
                     // Vanilla Potential & Forces
                     eij += lixljtmp*eij_tmp;
                     fij += lixljtmp*fij_tmp; // no soft
-                    fli += dlixlj_dli*eij_tmp; 
-                    fljtmp += dlixlj_dlj*eij_tmp;
+                    real dU_dlami = dlixlj_dli*eij_tmp; 
+                    real dU_dlamj = dlixlj_dlj*eij_tmp;
                     // OSS calculation (not soft-cored):
                     real d2U_drij_dlami = dlixlj_dli * fij_tmp;
                     real d2U_drij_dlamj = dlixlj_dlj * fij_tmp;
                     real d2U_dlami_dlamj = d2lixlj_dli_dlj * eij_tmp;
                     real d2U_dlami2 = d2lixlj_dli2 * eij_tmp;
                     real d2U_dlamj2 = d2lixlj_dlj2 * eij_tmp;
+                    // Convert to theta
+                    d2U_drij_dlami *= dLdTi;
+                    d2U_drij_dlamj *= dLdTjtmp;
+                    d2U_dlami_dlamj *= dLdTi*dLdTjtmp;
+                    d2U_dlami2 = d2U_dlami2*dLdTi*dLdTi + dU_dlami*d2LdT2i;
+                    d2U_dlamj2 = d2U_dlamj2*dLdTjtmp*dLdTjtmp + dU_dlamj*d2LdT2jtmp;
                     // Accumulate ost forces into force variables directly since they aren't soft-cored and don't need chain rule terms
                     fij_ost += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
                     fli_ost += dGdFi * d2U_dlami2 + dGdFjtmp * d2U_dlami_dlamj;
@@ -521,14 +543,21 @@ __global__ void getforce_nbdirect_oss_kernel(
                 real d2U_dlami2 = d2Up_dlami2 + d2U_drijp_dlami*drijp_dlami + dU_drijp * d2rijp_dlami2 + (d2U_drijp_dlami + d2U_drijp2 * drijp_dlami)*drijp_dlami;
                 real d2U_dlamj2 = d2Up_dlamj2 + d2U_drijp_dlamj*drijp_dlamj + dU_drijp * d2rijp_dlamj2 + (d2U_drijp_dlamj + d2U_drijp2 * drijp_dlamj)*drijp_dlamj;
 
+                // Convert to theta
+                d2U_drij_dlami *= dLdTi;
+                d2U_drij_dlamj *= dLdTjtmp;
+                d2U_dlami_dlamj *= dLdTi*dLdTjtmp;
+                d2U_dlami2 = d2U_dlami2*dLdTi*dLdTi + fli*d2LdT2i;
+                d2U_dlamj2 = d2U_dlamj2*dLdTjtmp*dLdTjtmp + flj*d2LdT2jtmp;
+
                 // Soft Interaction
-                fij_ost += dGdFi*d2U_drij_dlami + dGdFjtmp*d2U_drij_dlamj;
                 fli_ost += dGdFi*d2U_dlami2 + dGdFjtmp*d2U_dlami_dlamj;
                 if(bjtmp && (bi&0xFFFF0000)!=(bjtmp&0xFFFF0000)){
                   fljtmp_ost += dGdFi*d2U_dlami_dlamj + dGdFjtmp*d2U_dlamj2;
                 }
 
                 // Accumulate OST forces
+                fij_ost += dGdFi*d2U_drij_dlami + dGdFjtmp*d2U_drij_dlamj;
                 real3_scaleinc(&fi_ost, fij_ost/r,dr);
                 fjtmp_ost=real3_scale<real3>(-fij_ost/r,dr);
 
@@ -605,6 +634,9 @@ void getforce_nbdirect_ossTTTT(System *system,box_type box)
 
   // TODO: Kill program if rSoft > rSwitch
   if (r->calcTermFlag[eenbdirect]==false) return;
+
+  real_f* alchem_force = system->msld->oss_theta ? s->thetaForce_d : s->lambdaForce_d;
+
   getforce_nbdirect_oss_kernel<flagBox,useSoftCore,usevdWSwitch,usePME><<<((32<<WARPSPERBLOCK)*N+(32<<WARPSPERBLOCK)-1)/(32<<WARPSPERBLOCK),(32<<WARPSPERBLOCK),shMem,r->alchemDirect>>>(startBlock,endBlock,d->maxPartnersPerBlock,d->blockBounds_d,d->blockPartnerCount_d,d->blockPartners_d,d->blockVolume_d,d->localNbonds_d,p->vdwParameterCount,
 #ifdef USE_TEXTURE
     p->vdwParameters_tex,
@@ -614,7 +646,8 @@ void getforce_nbdirect_ossTTTT(System *system,box_type box)
     system->domdec->blockExcls_d,system->run->cutoffs,d->localPosition_d,
     d->localForce_d,
     box,s->lambda_fd,
-    s->lambdaForce_d,
+    alchem_force,
+    system->msld->dLdT_d, system->msld->d2LdT2_d,
     system->msld->dGdF_d,
     system->msld->alpha
   );

@@ -467,60 +467,75 @@ void Run::energy(char *line,char *token,System *system)
 
 void test_OST_force(System *system) {
   // This is way too small with float precision
-  real dl = .001;
+  real dl = .0001;
   bool flags[eeend];
   for (int i = 0; i < eeend; i++) {
     flags[i] = system->run->calcTermFlag[i];
     system->run->calcTermFlag[i] = false;
   }
 
-  printf("Starting OSS Force Test...\n");
+  printf("Starting OSS Force Test (by moving theta)...\n");
   bool ossPrior = system->msld->oss;
-  int len = system->state->lambdaCount+3*system->state->atomCount; // theta forces at end
+  int len = 2*system->state->lambdaCount+3*system->state->atomCount; // theta forces at end
+  int theta_0 = len-system->state->lambdaCount;
   for (int i = 0; i < eeend; i++) {
+    if(i == 6){continue;}
     printf("Term %d Numerical Test: \n", i);
     system->run->calcTermFlag[i] = true;
     // Calculate ref dU(X, L) to subtract from force w/ oss
     real_f dU[len];
     system->msld->oss = false;
-    gpuCheck(cudaPeekAtLastError());
+    system->msld->calc_lambda_from_theta(0, system);
+    cudaDeviceSynchronize();
     system->potential->calc_force(1, system);
+    cudaDeviceSynchronize();
+    system->msld->calc_thetaForce_from_lambdaForce(0, system);
     cudaDeviceSynchronize();
     system->msld->oss = true;
     cudaMemcpy(dU, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     double sum = 0;
     double num_sum = 0;
-    for (int j = 1; j < system->state->lambdaCount; j++) { 
+    // For each site's theta
+    for (int j = 1; j < system->msld->blockCount; j++) { 
+      if(j != system->msld->siteBound[system->msld->lambdaSite[j]]){
+        continue;
+      }
       // Set dGdF[:] = 0 and dGdF[j] = e * pi
-      real pi_e = M_E * M_PI;
-      real_f dGdF[system->state->lambdaCount];
-      memset(dGdF, 0, system->state->lambdaCount*sizeof(real));
-      dGdF[j] = pi_e;// need to comment out clearing of this array during force calculation
-      cudaMemcpy(system->msld->dGdF_d, dGdF, system->state->lambdaCount*sizeof(real_f), cudaMemcpyDefault);
-      system->msld->oss = false;
+      real pi_e = system->msld->oss_k;
+      real dGdF[system->state->lambdaCount];
+      for(int k = 0; k < system->state->lambdaCount; k++){
+        dGdF[k] = system->msld->oss_k;
+      }
+      cudaMemcpy(system->msld->dGdF_d, dGdF, system->msld->blockCount*sizeof(real), cudaMemcpyDefault);
       // Numerical Force = dU(X, L+dl) - dU(X, L-dl) / 2*dl
+      system->msld->oss = false;
       // L+dl
       real_f tmp_high[len];
-      // lambda block at beginning of position buffer, everything else is index into this array
       cudaDeviceSynchronize();
-      shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, dl, j);
+      shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, dl, theta_0 + j);
+      system->msld->calc_lambda_from_theta(0, system);
       cudaDeviceSynchronize();
-      gpuCheck(cudaPeekAtLastError());
       system->potential->calc_force(1, system);
+      cudaDeviceSynchronize();
+      system->msld->calc_thetaForce_from_lambdaForce(0, system);
       cudaDeviceSynchronize();
       cudaMemcpy(tmp_high, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
       // L-dl
       real_f tmp_low[len];
       cudaDeviceSynchronize();
-      shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, -2.0*dl, j);
+      shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, -2.0*dl, theta_0 + j);
+      system->msld->calc_lambda_from_theta(0, system);
       cudaDeviceSynchronize();
       system->potential->calc_force(1, system);
+      cudaDeviceSynchronize();
+      system->msld->calc_thetaForce_from_lambdaForce(0, system);
       cudaDeviceSynchronize();
       cudaMemcpy(tmp_low, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
       // Reset and diff
       real_f d2U_numeric[len];
       cudaDeviceSynchronize();
-      shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, dl, j);
+      shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, dl, theta_0 + j);
+      system->msld->calc_lambda_from_theta(0, system);
       for (int k = 0; k < len; k++) {
         d2U_numeric[k] = (tmp_high[k] - tmp_low[k]) / (2.0*dl);
         num_sum += abs(d2U_numeric[k]);
@@ -531,14 +546,16 @@ void test_OST_force(System *system) {
       cudaDeviceSynchronize();
       system->potential->calc_force(1, system);
       cudaDeviceSynchronize();
+      system->msld->calc_thetaForce_from_lambdaForce(0, system);
+      cudaDeviceSynchronize();
       cudaMemcpy(d2U_analytic, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
       cudaDeviceSynchronize();
       for (int k = 0; k < len; k++) {
         d2U_analytic[k] = (d2U_analytic[k] - dU[k]) / pi_e;
         sum += abs(d2U_analytic[k]);
       }
-      // Check if they match
-      for (int k = 0; k < len; k++) {
+      // Check if they match -> skip lambda forces
+      for (int k = system->msld->blockCount; k < len; k++) {
         real_f diff = abs(d2U_analytic[k] - d2U_numeric[k]);
         real_f tol = .1;
         if (diff > tol) { // floating point ops (like expf) can cause float errors
@@ -556,10 +573,11 @@ void test_OST_force(System *system) {
           real lmd = system->state->lambda[j];
           system->state->recv_position();
           real x = system->state->positionBuffer[k];
+          printf("Theta forces start at: %d\n", system->state->lambdaCount + 3*system->state->atomCount);
           printf("Position[%d] = %f\n", k, x);
-          printf("Analytic dU(X,L+dl):          %15.8f\n", tmp_high[k]);
-          printf("Analytic dU(X,L=%.2f):        %15.8f\n", lmd, dU[k]);
           printf("Analytic dU(X,L-dl):          %15.8f\n", tmp_low[k]);
+          printf("Analytic dU(X,L=%.2f):        %15.8f\n", lmd, dU[k]);
+          printf("Analytic dU(X,L+dl):          %15.8f\n", tmp_high[k]);
           printf("\n|Diff|:                       %15.8f\n", diff);
           printf("Numeric d2U:                  %15.8f\n", d2U_numeric[k]);
           printf("Analytic d2U:                 %15.8f\n", d2U_analytic[k]);

@@ -1667,10 +1667,12 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
   Run* r = system->run;
   int helper=(system->idCount==2); 
 
-  if (system->msld->abf || system->msld->oss){
+  if (system->msld->abf || system->msld->oss || system->msld->L_LEUS){
     cudaMemcpyAsync(system->msld->dUdL_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, r->ossBias);
+    cudaMemsetAsync(system->msld->dUdT_msld_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
+    system->msld->oss_lambda_to_theta_force(system); // fill dUdT_msld_d
     cudaMemsetAsync(system->msld->hist_potential_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
-    cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
+    //cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
     if(!system->msld->tracking_only){
       system->msld->getforce_oss(system, calcEnergy);
     }
@@ -1682,13 +1684,11 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
   if (system->msld->oss && !system->msld->tracking_only){
     if (system->id == helper) {
       cudaStreamWaitEvent(r->ossBonded, r->ossBiasComplete, 0);
-      if(!system->msld->oss_remove_bonded){ // If we haven't remved bonded terms, these have a contribution
-        getforce_bond_oss(system);
-        getforce_dihe_oss(system);
-        getforce_impr_oss(system);
-        getforce_angle_oss(system);
-        getforce_cmap_oss(system);
-      }
+      getforce_bond_oss(system);
+      getforce_dihe_oss(system);
+      getforce_impr_oss(system);
+      getforce_angle_oss(system);
+      getforce_cmap_oss(system);
       cudaEventRecord(r->ossBondedComplete, r->ossBonded);
       cudaStreamWaitEvent(r->updateStream, r->ossBondedComplete, 0);
     }

@@ -18,6 +18,7 @@ __global__ void getforce_ewaldself_kernel_oss(
   int atomCount,real *charge,real prefactor,
   int *atomBlock,real *lambdas, 
   real_f *lambdaForce, 
+  real* dLdT, real* d2LdT2,
   real* dGdF)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -33,6 +34,8 @@ __global__ void getforce_ewaldself_kernel_oss(
     lEnergy = prefactor*l*l*q*q;
     real dU_dli = 2*l*prefactor*q*q;
     real d2U_dli2 = 2*prefactor*q*q;
+    // Convert to theta force
+    d2U_dli2 = d2U_dli2*dLdT[b]*dLdT[b] + dU_dli*d2LdT2[b];
     atomicAdd(&lambdaForce[b], dGdF[b]*d2U_dli2);
   }
 }
@@ -51,16 +54,22 @@ void getforce_ewaldself_oss(System *system)
   if (r->usePME==false) return;
   if (r->calcTermFlag[eenbrecipself]==false) return;
 
+  real_f* alchem_force = system->msld->oss_theta ? s->thetaForce_d : s->lambdaForce_d;
+
   getforce_ewaldself_kernel_oss<<<(N+BLNB-1)/BLNB,BLNB,shMem,r->alchemRecip>>>(
     N,p->charge_d,prefactor,m->atomBlock_d, s->lambda_fd,
-    s->lambdaForce_d, m->dGdF_d); 
+    alchem_force,
+    m->dLdT_d, m->d2LdT2_d,
+    m->dGdF_d); 
 }
 
 template <bool flagBox,int order,typename box_type>
 __global__ void getforce_ewald_spread_kernel_oss(
   int atomCount,real *charge,int *atomBlock,
   real3* position,box_type kbox,real *lambda,
-  int3 gridDimPME, real* dGdF, real* ostGrid)
+  int3 gridDimPME, 
+  real* dLdT,
+  real* dGdF, real* ostGrid)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   real q;
@@ -91,7 +100,7 @@ __global__ void getforce_ewald_spread_kernel_oss(
     if (b) {
       dGdFi=dGdF[b];
     }
-    q*=dGdFi; // zero if non-alchemical, no lambda scaling since dQ/dL
+    q*=dGdFi*dLdT[b]; // zero if non-alchemical, no lambda scaling since dQ/dL, convert to theta force if applicable
     xi=position[iAtom];
 
     // Get grid position
@@ -247,6 +256,7 @@ __global__ void getforce_ewald_gather_kernel_oss(
   int3 gridDimPME,
   real *potentialGridPME,
   real *ostPotentialGridPME,
+  real* dLdT, real* d2LdT2,
   real *dGdF,
   real3 *position,
   real3_f *force,
@@ -445,7 +455,11 @@ __global__ void getforce_ewald_gather_kernel_oss(
   // Lambda force
   if (iAtom<atomCount) {
     if (b && threadOfAtom==0) {
-      atomicAdd(&lambdaForce[b], 2*q*gEnergy); // dQ/dL * (T * G)
+      // Lambda -> Theta force
+      // dQ/dL*(T*G*dL/dT)*dL/dT + dQ/dL*(T*Q)*d2L/dL2
+      // TODO: Still not sure about this, thought it should have another factor of dL/dT
+      real d2UdT2 = 2*q*gEnergy + 2*q*lEnergy*d2LdT2[b];
+      atomicAdd(&lambdaForce[b], d2UdT2); // dQ/dL * (T * G)
     }
   }
 
@@ -453,6 +467,7 @@ __global__ void getforce_ewald_gather_kernel_oss(
   if (iAtom<atomCount) {
     if (flagBox) {
       // OST Recip
+      dGdFi *= dLdT[b];
       fgi.z*=2*l*q*gridDimPME.z; // dQ/dr * (T*G) -> every atom feels
       fgi.z+=2*dGdFi*q*gridDimPME.z*fi.z; // dG/dr * (T*Q) -> alchemical atoms feel
       fgi.y*=2*l*q*gridDimPME.y;
@@ -464,12 +479,11 @@ __global__ void getforce_ewald_gather_kernel_oss(
       fgi.x=fgi.x*boxxx(kbox);
     } else {
       // OST Recip
+      dGdFi *= dLdT[b];
       real factor_1=2*l*q;
       real factor_2=2*dGdFi*q; // this is zero if non-alchemical
-      real tmp = gridDimPME.x*(factor_1*fgi.x + factor_2*fi.x);
-      fgi.x = tmp;
-      //fgi.x*=factor_1*gridDimPME.x; // dQ/dr * (T*G) -> every atom?
-      //fgi.x+=factor_2*gridDimPME.x*fi.x; // dG/dr * (T*Q) -> alchemical atoms?
+      fgi.x*=factor_1*gridDimPME.x; // dQ/dr * (T*G*dL/dT) -> every atom?
+      fgi.x+=factor_2*gridDimPME.x*fi.x; // dG/dr * dL/dT * (T*Q) -> alchemical atoms?
       fgi.x*=boxxx(kbox);
       fgi.y*=factor_1*gridDimPME.y;
       fgi.y+=factor_2*gridDimPME.y*fi.y;
@@ -493,7 +507,6 @@ void getforce_ewaldTT_oss(System *system,box_type kbox)
   Run *r=system->run;
   int N=p->atomCount;
   int shMem=BLNB*sizeof(real)/32;
-  real *dGdF = system->msld->dGdF_d;
 
   if (r->usePME==false) return;
   if (r->calcTermFlag[eenbrecip]==false) return;
@@ -508,7 +521,7 @@ void getforce_ewaldTT_oss(System *system,box_type kbox)
   getforce_ewald_spread_kernel_oss<flagBox,order><<<spreadGatherBlocks,BLNB,0,r->alchemRecip>>>(
     N,p->charge_d,m->atomBlock_d,(real3*)s->position_fd,kbox,
     s->lambda_fd,((int3*)p->gridDimPME)[0],
-    dGdF, p->ostGridPME_d);
+    m->dLdT_d, m->dGdF_d, p->ostGridPME_d);
 
   myCufftExecR2C(p->ossPlanFFTPME, p->ostGridPME_d, p->ostFourierGridPME_d);
 
@@ -521,9 +534,11 @@ void getforce_ewaldTT_oss(System *system,box_type kbox)
   myCufftExecC2R(p->ossPlanIFFTPME, p->ostFourierGridPME_d, p->ostPotentialGridPME_d);
 
   // Gather kernel
+  real_f* alchem_force = m->oss_theta ? s->thetaForce_d : s->lambdaForce_d;
   getforce_ewald_gather_kernel_oss<flagBox,order><<<spreadGatherBlocks,BLNB,shMem,r->alchemRecip>>>(
     N,p->charge_d,m->atomBlock_d,((int3*)p->gridDimPME)[0],
-    p->potentialGridPME_d, p->ostPotentialGridPME_d, dGdF,
+    p->potentialGridPME_d, p->ostPotentialGridPME_d, 
+    m->dLdT_d, m->d2LdT2_d, m->dGdF_d,
     (real3*)s->position_fd,
     (real3_f*)s->force_d,
     kbox,s->lambda_fd,s->lambdaForce_d); 

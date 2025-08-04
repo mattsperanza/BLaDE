@@ -59,6 +59,7 @@ __global__ void getforce_exclusion_pair_kernel_oss(
   int pairCount,NbExPotential *pairs,Cutoffs cutoffs,
     real3 *position,real3_f *force, box_type box,
     real *lambda,real_f *lambdaForce, 
+    real* dLdT, real* d2LdT2,
     real *dGdF) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   int ii,jj;
@@ -114,6 +115,10 @@ __global__ void getforce_exclusion_pair_kernel_oss(
       real dU_drij_dli = ljtmp*fij_tmp;
       real dU_drij_dlj = bjtmp ? li*fij_tmp : 0;
       real dU_dlami_dlamj = bi && bjtmp ? uij : 0;
+      // Convert to theta forces
+      dU_drij_dli *= dLdT[b[0]];
+      dU_drij_dlj *= dLdT[b[1]];
+      dU_dlami_dlamj *= dLdT[b[0]]*dLdT[b[1]];
 
       fij_ost = dGdFi * dU_drij_dli + dGdFjtmp * dU_drij_dlj;
       fli_ost = dGdFjtmp * dU_dlami_dlamj;
@@ -136,6 +141,7 @@ __global__ void getforce_14pair_kernel_oss(
     int pairCount,Nb14Potential *pairs,Cutoffs cutoffs,
     real3 *position,real3_f *force, box_type box,
     real *lambda,real_f *lambdaForce, 
+    real* dLdT, real* d2LdT2,
     real *dGdF, real a)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -178,7 +184,7 @@ __global__ void getforce_14pair_kernel_oss(
       dlixlj_dli_orig = ljtmp;
       dlixlj_dlj_orig = li;
       d2lixlj_dli_dlj_orig = bi && bjtmp ? 1 : 0;
-      
+ 
       lixljtmp = pow(li*ljtmp, a);
       dlixlj_dli = bi ? a*ljtmp*pow(li*ljtmp, a-1.0) : 0;
       dlixlj_dlj = bjtmp ? a*li*pow(li*ljtmp, a-1.0) : 0;
@@ -199,6 +205,7 @@ __global__ void getforce_14pair_kernel_oss(
       real fljtmp_ost=0;
       real eij=0;
       real fij=0;
+      // accumulate for theta projection, only for soft-cored interactions
       real fli=0;
       real flj=0;
 
@@ -306,7 +313,7 @@ __global__ void getforce_14pair_kernel_oss(
         }
         else {
           //TODO: Implement this path
-          printf("Coulomb cutoff oss path not implemented!");
+          printf("Coulomb cutoff oss path not implemented!\n");
           assert(false);
           real roff2=cutoffs.rCut*cutoffs.rCut;
           real ron2=cutoffs.rSwitch*cutoffs.rSwitch;
@@ -359,12 +366,20 @@ __global__ void getforce_14pair_kernel_oss(
             real rCutinv3=1/rCut3;
             real fij_tmp=(6*pp.c6*k6*(rinv3-rCutinv3)*rinv3-12*pp.c12*k12*(rinv6-rCutinv3*rCutinv3)*rinv6)*rinv;
             real eij_tmp=pp.c12*k12*(rinv6-rCutinv3*rCutinv3)*(rinv6-rCutinv3*rCutinv3)-pp.c6*k6*(rinv3-rCutinv3)*(rinv3-rCutinv3);
+            real dU_dlami = dlixlj_dli * eij_tmp;
+            real dU_dlamj = dlixlj_dlj * eij_tmp;
             // OSS calculation (not soft-cored):
             real d2U_drij_dlami = dlixlj_dli * fij_tmp;
             real d2U_drij_dlamj = dlixlj_dlj * fij_tmp;
             real d2U_dli_dlj = d2lixlj_dli_dlj * eij_tmp;
             real d2U_dlami2 = d2lixlj_dli2 * eij_tmp;
             real d2U_dlamj2 = d2lixlj_dlj2 * eij_tmp;
+            // Convert from lambda to theta
+            d2U_dli_dlj *= dLdT[b[0]]*dLdT[b[1]];
+            d2U_dlami2 = d2U_dlami2*dLdT[b[0]]*dLdT[b[0]] + dU_dlami*d2LdT2[b[0]];
+            d2U_dlamj2 = d2U_dlamj2*dLdT[b[1]]*dLdT[b[1]] + dU_dlamj*d2LdT2[b[1]];
+            d2U_drij_dlami *= dLdT[b[0]];
+            d2U_drij_dlamj *= dLdT[b[1]];
             // No soft-core = direct accumulation
             fij_ost += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
             fli_ost += dGdFi * d2U_dlami2 + dGdFjtmp * d2U_dli_dlj;
@@ -372,8 +387,6 @@ __global__ void getforce_14pair_kernel_oss(
             // Vanilla Potential & Forces
             eij += lixljtmp*eij_tmp;
             fij += lixljtmp*fij_tmp; // no soft-core
-            fli += dlixlj_dli*eij_tmp;
-            flj += dlixlj_dli*eij_tmp; 
           } else { // Potential Switch
             real c2ofnb=cutoffs.rCut*cutoffs.rCut;
             real c2onnb=cutoffs.rSwitch*cutoffs.rSwitch;
@@ -386,12 +399,20 @@ __global__ void getforce_14pair_kernel_oss(
             real fij_tmp=fsw*(6*pp.c6-12*pp.c12*rinv6)*rinv6*rinv\
               +dfsw*(pp.c12*rinv6-pp.c6)*rinv6;
             real eij_tmp=fsw*(pp.c12*rinv6-pp.c6)*rinv6;
+            real dU_dlami = dlixlj_dli * eij_tmp;
+            real dU_dlamj = dlixlj_dlj * eij_tmp;
             // OSS calculation (not soft-cored):
             real d2U_drij_dlami = dlixlj_dli * fij_tmp;
             real d2U_drij_dlamj = dlixlj_dlj * fij_tmp;
             real d2U_dli_dlj = d2lixlj_dli_dlj * eij_tmp;
             real d2U_dlami2 = d2lixlj_dli2 * eij_tmp;
             real d2U_dlamj2 = d2lixlj_dlj2 * eij_tmp;
+            // Convert from lambda to theta
+            d2U_dli_dlj *= dLdT[b[0]]*dLdT[b[1]];
+            d2U_dlami2 = d2U_dlami2*dLdT[b[0]]*dLdT[b[0]] + dU_dlami*d2LdT2[b[0]];
+            d2U_dlamj2 = d2U_dlamj2*dLdT[b[1]]*dLdT[b[1]] + dU_dlamj*d2LdT2[b[1]];
+            d2U_drij_dlami *= dLdT[b[0]];
+            d2U_drij_dlamj *= dLdT[b[1]];
             // No soft-core = direct accumulation
             fij_ost += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
             fli_ost += dGdFi * d2U_dlami2 + dGdFjtmp * d2U_dli_dlj;
@@ -399,14 +420,12 @@ __global__ void getforce_14pair_kernel_oss(
             // Vanilla Potential & Forces
             eij += lixljtmp*eij_tmp;
             fij += lixljtmp*fij_tmp; // no soft-core
-            fli += dlixlj_dli*eij_tmp;
-            flj += dlixlj_dli*eij_tmp;
           }
         }
 
         // Calculate chain rule derivatives due to soft-coring
-        real d2U_drij_dlami = dU_drijp*d2rijp_drij_dlami + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami) * drijp_drij;
-        real d2U_drij_dlamj = dU_drijp*d2rijp_drij_dlamj + (d2U_drijp_dlamj + d2U_drijp2*drijp_dlamj) * drijp_drij;
+        real d2U_drij_dlami = dU_drijp*d2rijp_drij_dlami + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami)*drijp_drij;
+        real d2U_drij_dlamj = dU_drijp*d2rijp_drij_dlamj + (d2U_drijp_dlamj + d2U_drijp2*drijp_dlamj)*drijp_drij;
 
         // OST lambda force:
         real d2U_dlami_dlamj = d2Up_dlami_dlamj +
@@ -414,12 +433,17 @@ __global__ void getforce_14pair_kernel_oss(
         real d2U_dlami2 = d2Up_dlami2 + d2U_drijp_dlami*drijp_dlami + dU_drijp * d2rijp_dlami2 + (d2U_drijp_dlami + d2U_drijp2 * drijp_dlami)*drijp_dlami;
         real d2U_dlamj2 = d2Up_dlamj2 + d2U_drijp_dlamj*drijp_dlamj + dU_drijp * d2rijp_dlamj2 + (d2U_drijp_dlamj + d2U_drijp2 * drijp_dlamj)*drijp_dlamj;
 
+        // Convert from lambda to theta
+        d2U_drij_dlami *= dLdT[b[0]];
+        d2U_drij_dlamj *= dLdT[b[1]];
+        d2U_dlami_dlamj *= dLdT[b[0]]*dLdT[b[1]];
+        d2U_dlami2 = d2U_dlami2*dLdT[b[0]]*dLdT[b[0]] + fli*d2LdT2[b[0]];
+        d2U_dlamj2 = d2U_dlamj2*dLdT[b[1]]*dLdT[b[1]] + flj*d2LdT2[b[1]];
+
         // OSS Forces
-        fij_ost += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
+        fij_ost += dGdFi*d2U_drij_dlami + dGdFjtmp*d2U_drij_dlamj;
         fli_ost += dGdFi*d2U_dlami2 + dGdFjtmp*d2U_dlami_dlamj;
-        if(bjtmp){
-          fljtmp_ost += dGdFi*d2U_dlami_dlamj + dGdFjtmp*d2U_dlamj2;
-        }
+        fljtmp_ost += dGdFi*d2U_dlami_dlamj + dGdFjtmp*d2U_dlamj2;
 
         // OSS & Vanilla forces
         atomicAdd(&lambdaForce[b[0]], fli_ost);
@@ -446,10 +470,13 @@ void getforce_nb14TTTT_oss(System *system,box_type box)
 
   if (N==0) return;
 
+  real_f* alchem_force = system->msld->oss_theta ? s->thetaForce_d : s->lambdaForce_d;
+
   getforce_14pair_kernel_oss<flagBox,useSoftCore,usevdWSwitch,usePME> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->alchemRecip>>>(
       N,p->nb14s_d,system->run->cutoffs,(real3*)s->position_fd,
       (real3_f*)s->force_d,box,
-      s->lambda_fd,s->lambdaForce_d, 
+      s->lambda_fd,alchem_force, 
+      system->msld->dLdT_d, system->msld->d2LdT2_d,
       system->msld->dGdF_d, 
       system->msld->alpha);
 }
@@ -494,7 +521,6 @@ void getforce_nb14_oss(System *system)
 }
 
 
-
 template <bool flagBox,typename box_type>
 void getforce_nbexT_oss(System *system,box_type box)
 {
@@ -510,10 +536,12 @@ void getforce_nbexT_oss(System *system,box_type box)
   if (r->calcTermFlag[eenbrecipexcl]==false) return;
 
   // Ewald already soft-cored
+  real_f* alchem_force = system->msld->oss_theta ? s->thetaForce_d : s->lambdaForce_d;
   getforce_exclusion_pair_kernel_oss<flagBox,false,false,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->alchemRecip>>>(
     N,p->nbexs_d,system->run->cutoffs,
     (real3*)s->position_fd, (real3_f*)s->force_d,box,
-    s->lambda_fd,s->lambdaForce_d, 
+    s->lambda_fd,alchem_force, 
+    system->msld->dLdT_d, system->msld->d2LdT2_d,
     system->msld->dGdF_d);
 }
 
