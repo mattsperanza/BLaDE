@@ -1571,15 +1571,6 @@ void Potential::reset_force(System *system,bool calcEnergy)
   if (calcEnergy) {
     cudaMemset(system->state->energy_d,0,eeend*sizeof(real_e));
   }
-  int nAtoms = system->state->atomCount;
-  int nL = system->msld->blockCount;
-  int DOF = nAtoms*3 + nL;
-  cudaMemset(system->msld->dUdL_alf_d, 0, nL*sizeof(real));
-  cudaMemset(system->msld->dUdL_abf_d, 0, nL*sizeof(real));
-  cudaMemset(system->msld->dUdL_bonded_d, 0, nL*sizeof(real));
-  cudaMemset(system->msld->GaMD_torsion_force_d, 0, DOF*sizeof(real));
-  cudaMemset(system->msld->GaMD_alchem_force_d, 0, DOF*sizeof(real));
-  cudaMemset(system->msld->alchem_energy_d, 0, sizeof(real));
 }
 
 void Potential::calc_force(int step,System *system) {
@@ -1587,12 +1578,6 @@ void Potential::calc_force(int step,System *system) {
   int helper=(system->idCount==2); // 0 unless there are 2 GPUs, then it's 1.
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
-  }
-  if (system->msld->oss) { // Need energy to add sample for <dU/dL> weighting
-    calcEnergy = calcEnergy || step % system->msld->sample_freq == 0 || step % system->run->freqMTD == 0;
-  }
-  if (system->msld->GaMD_total || system->msld->GaMD_torsion || system->msld->GaMD_alchem){
-    calcEnergy = true;
   }
 #ifdef REPLICAEXCHANGE
   if (system->run->freqREx>0) {
@@ -1667,21 +1652,21 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
   Run* r = system->run;
   int helper=(system->idCount==2); 
 
-  if (system->msld->abf || system->msld->oss || system->msld->L_LEUS){
+  if (system->msld->L_LEUS){
+    // Copy and reset memory
     cudaMemcpyAsync(system->msld->dUdL_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, r->ossBias);
     cudaMemsetAsync(system->msld->dUdT_msld_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
     system->msld->oss_lambda_to_theta_force(system); // fill dUdT_msld_d
-    cudaMemsetAsync(system->msld->hist_potential_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
+    cudaMemsetAsync(system->msld->bias_potential_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
     cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
-    if(!system->msld->tracking_only){
-      system->msld->getforce_oss(system, calcEnergy);
-    }
+    // Get force & sampling
+    system->msld->getforce_oss(system, calcEnergy);
     system->msld->add_sample(system, step); 
     system->msld->log_sampling(system, step); 
     cudaEventRecord(r->ossBiasComplete, r->ossBias);
   }
 
-  if (system->msld->oss && !system->msld->tracking_only){
+  if (system->msld->oss){
     if (system->id == helper) {
       cudaStreamWaitEvent(r->ossBonded, r->ossBiasComplete, 0);
       getforce_bond_oss(system);

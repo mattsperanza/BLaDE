@@ -476,7 +476,7 @@ void getforce_nbdirectTTTT(System *system,box_type box,bool calcEnergy)
     pEnergy, system->msld->alpha);
 
   // TODO: Check if this is valid assumption
-  if ((system->msld->oss && !system->msld->tracking_only) || system->msld->GaMD_alchem || system->msld->GaMD_orth) return;
+  if (system->msld->oss) return;
   system->domdec->unpack_forces(system);
 }
 

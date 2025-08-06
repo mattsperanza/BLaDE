@@ -202,8 +202,6 @@ void getforce_bond_oss(System *system)
   }
 }
 
-
-
 template <bool flagBox,bool soft,typename box_type>
 __global__ void getforce_angle_kernel_oss(int angleCount,struct AnglePotential *angles,real3 *position,
   real3_f *force,box_type box,real *lambda,

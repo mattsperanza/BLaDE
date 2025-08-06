@@ -508,12 +508,12 @@ void test_OST_force(System *system) {
       // Set dGdF[:] = 0 and dGdF[j] = e * pi
       if(j != system->msld->siteBound[system->msld->lambdaSite[j]]){ continue; }
       if(j != 1){ continue; }
-      real pi_e = system->msld->oss_k;
+      real pi_e = M_PI*M_E;
       real dGdF[system->state->lambdaCount];
       memset(dGdF, 0, system->state->lambdaCount*sizeof(real));
       int ji = system->msld->siteBound[system->msld->lambdaSite[j]];
       for(int k = 0; k < system->msld->blocksPerSite[j]; k++){
-        dGdF[ji+k] = system->msld->oss_k;
+        dGdF[ji+k] = pi_e;
       }
       cudaMemcpy(system->msld->dGdF_d, dGdF, system->msld->blockCount*sizeof(real), cudaMemcpyDefault);
       // Numerical Force = dU(X, L+dl) - dU(X, L-dl) / 2*dl

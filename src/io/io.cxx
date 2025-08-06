@@ -386,7 +386,7 @@ void print_meta(int step, System* system){
 
   fp=system->run->fpMTD_HIST;
   for(int i = 0; i < system->msld->blockCount; i++){
-    fprintf(fp, "%f ", system->msld->hist_potential[i]);
+    fprintf(fp, "%f ", system->msld->bias_potential[i]);
   }
   fprintf(fp, "\n\n");
   fflush(NULL);
@@ -462,6 +462,7 @@ void write_checkpoint_file(const char *fnm,System *system)
 
 void write_histogram_file(System* system, std::string file_name) {
   // Print path to file
+  /*
   char cwd[1024];
   std::ofstream file(file_name);
   if (!file) {
@@ -513,6 +514,7 @@ void write_histogram_file(System* system, std::string file_name) {
   }
 
   file.close();
+  */
 }
 
 void read_checkpoint_file(const char *fnm,System *system)

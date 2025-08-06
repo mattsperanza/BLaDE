@@ -64,119 +64,56 @@ public:
   struct VariableBias *variableBias;
   struct VariableBias *variableBias_d;
 
-  bool new_implicit = true;
-  real_x* theta0_d;
-  real* dcdt_d; // derivative of constraint w.r.t. theta.i
-  real width = 1.0;
-
-  // MSLD L-LEUS style theta dynamics combined with ABF &/or orthogonal bias
-  bool L_LEUS = false; // overrides new_implicit
-  bool oss_theta = true;
-  leus_func L_LEUS_function = leus_linear;
-  real* dUdT_msld_d; // [blockCount]
-  real* dLdT_d; // first derivative of lambda w.r.t. theta
-  real* d2LdT2_d; // second derivative of lambda w.r.t. theta
-
-  real plateau_w = 0;
-  real transition_w = 1;
-  real* offsets_theta_d;
-  real* theta_counts_d;
-  real* weights_theta_d;
-  real* weighted_dUdT_d;
-  real* ensemble_dUdT_d; // ensemble average derivative w.r.t. theta
-  real oss_k = .1;
-
   real alpha = 1.0; // lambda^alpha scaling
 
-  // FE Estimation Variables -> need to be on/off before msld::init is called
-  bool update_fe_surface = true; // add samples to oss histogram
-  bool tracking_only = false; // Collect samples in 1D & 2D, but don't use/calculate atomic/lambda forces
-  int sample_freq = 10;
+  // MSLD L-LEUS style theta dynamics
+  bool L_LEUS = true; // overrides new_implicit
+  leus_func L_LEUS_function = leus_sin2;
+  real* dLdT_d; // first derivative of lambda w.r.t. theta
+  real* d2LdT2_d; // second derivative of lambda w.r.t. theta
+  real plateau_w = .1; // sub_0 plateaus = plateau_w / (N_s-1.0)
+  real transition_w = 1;
+  real* site_period_d; // [0, site_period) range of theta sampling in each site
+
+  // FE update & data
+  bool update_fe_surface = true; // add samples to histogram
   int update_steps = -1; // timesteps of sampling while updating FE surface - default to 1/4th of simulation
-  bool standard_tempering = true; // use exp(-max(0, hist_potential[i] - temper_min) / kT) vs. same thing with min_bias
-  real* dUdL_bonded_d; // [blockCount] lambda forces from bonds
-  real* dUdL_alf_d; // [blockCount] lambda forces from alf
-  real* dUdL_abf_d; // [blockCount] lambda force from ABF, OPES
   real* dUdL_msld_d; // [blockCount] lambda forces from force field 
+  real* dUdT_msld_d; // [blockCount]
   real* dUdL_msld; // [blockCount]
-  real* oss_dUdL_d;
+  real* dUdT_msld; // [blockCount]
 
-  // 1D histogramming and tracking of dU/dL distribution
-  bool abf = false; // Subtract average dU/dL using
-  int L_1D_bins = 51; // this is also the max index (51 leads to >.99 as last bin since first and last are half width)
-  real* histogram_1D_d; // [nL * L_1D_bins] counts in bin 
-  real* average_dUdL_d; // [nL * L_1D_bins]
-  real* average_dUdL2_d; // [nL * L_1D_bins]
-  real* variance_dUdL_d; // [nL * L_1D_bins]
-  real* weights_d; // [nL * L_1D_bins] sum_i (exp(bias_i - offset))
-  real* weighted_dUdL_d; // [nL * L_1D_bins] sum_i (dUdL*exp(bias_i - offset)) 
-  real* ensemble_dUdL_d; // [nL * L_1D_bins] sum_i (dUdL*exp(bias_i - offset)) / sum_i (exp(bias_i - offset))
-  real* offsets_d; // [nL * L_1D_bins] offsets for each bin that cancels in ensemble_average
-
-  // All paths 1D histogramming
-  int path_count;
-  int warmup_samples = 20; // linear ramp of <dU/dL> with how much abf sample weight you have (basically number of samples)
-  real edge_KDE_std = .02; // gaussians go to ~0 around 4*std, ~2% sampling per edge with std=.05, c=5.5, n=9
-  real regularization = 0.0001; // avoid div by zero
-  real* path_samples_d; // [Ns*(Ns-1)] reduction of weights along each path, including prior
-  real* path_sample_offsets_d;
-  real* path_unsamples_d; // [Ns*(Ns-1)] reduction of unweights along each path, including prior
-  real* path_weights_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] gaussian weighted distances from edges with bias weighting
-  real* path_unweights_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] gaussian weighted distences from edges without bias weighting
-  real* path_weight_offsets_d; // 
-  real* path_weighted_dUdL_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] weighted dU/dL
-  real* path_weighted_dUdL2_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] weighted dU/dL^2
-  real* path_ensemble_dUdL_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] <dU/dL> = sum(w*dU/dL) / sum(w)
-  real* path_dUdL_variance_d; // [L_1D_bins * sum_sites Ns*(Ns-1)] <dU/dL^2> - <dU/dL>^2 this isn't the most stable estimator
-  real* abf_TI_d; // [nL]
-  real* dABF_dl_d; // [nL]
-
-  // All paths 2D histogramming
+  // 2D histogramming of (T, dU/dT) for each site
   bool oss = false; // Perform Orthogonal Space Sampling calculations
-  bool oss_remove_bonded = true;
-  real* path_histogram_d; // [L_2D_bins*dUdL_bins * sum_sites Ns*(Ns-1)/2] gaussian centers
-  real* dGdF_d; // [blockCount] OSS chain rule multiplier, dGdF[i] * d2U/dlidX
-  real* hist_potential; // [blockCount]
-  real* hist_potential_d; // [blockCount] potential from 2d metadynamics
+  bool oss_theta = true;
+  real* dGdF_d; // [blockCount] OSS chain rule multiplier, dGdF[i] * d2U/dTidX
+  real* bias_potential_d; // [1] total added bias potential at current step
+  real* bias_potential; // [1] total added bias potential current step
+  // 2D histogram memory is layed out to give [nSite][theta][dU/dT] -> dU/dT is most continuous in memory
+  real* oss_histogram_d; // [sum_sites(T_bins[i]*dUdT_bins)] sampled grid points including tempering weight
+  real* oss_potential_d; // [sum_sites(T_bins[i]*dUdT_bins] potential from 2d metadynamics, used for <dU/dT> calculation
+  real* oss_potential;
+  // 1D memory f(theta)
+  real* oss_theta_counts_d; // [Ns*2*L_bins*Ns] # of samples in each theta bin
+  real* oss_ensemble_dUdT_d; // [Ns*2*L_bins*Ns] <dU/dT> computed from histogram
+  int* oss_dUdT_min_d; // index of minimum value dU/dT sample 
+  int* oss_dUdT_max_d; // index of maximum value dU/dT sample
+  real warmup_samples = 200; // # of samples before which <dU/dT> is fully subtracted off in ABF
 
   // Metadynamics adjustable parameters
-  real bias_mag = 0.01;
-  real temper_amount = 2.0; 
-  real L_std = .02; 
-  real dUdL_std = 4.0;
-  // Fixed (for now)
-  real dUdL_max = 600;
-  real dUdL_min = -600;
-  real L_max = 1.0; 
-  real L_min = 0.0;
-  // Derived Parameters
-  int L_2D_bins = 101; // grid resolution should be std/2.0
-  int dUdL_bins = 600;
-  int L_search;
-  int dUdL_search;
-
-  // GaMD Parameters - 3 Stages: [0, init), [init,equil), [equil, nStep)
-  real* alchem_energy; // Internal energy of alchemical system
-  real* alchem_energy_d;
-  int init_steps=1000000;
-  int equil_steps=init_steps+1000000;
-  bool GaMD_total = false;
-  bool GaMD_torsion = false;
-  bool GaMD_alchem = false;
-  bool GaMD_orth = false;
-  bool GaMD_force = false; // calculate orth dGdF & add to dGdF array
-  bool GaMD_low_threshold = true;
-  const static int num_GaMD_stats = 7;
-  const static int GaMD_modes = 4;
-  int GaMD_samples = 0;
-  double total_p_stats[num_GaMD_stats]; // [Vmin, Vmax, Vavg, Vstd, Vstd_max, E, k]
-  double torsion_p_stats[num_GaMD_stats];
-  double alchem_p_stats[num_GaMD_stats]; // Would prefer not do do this as it requires second codepath
-  double* orth_p_stats; // Keep track of dU/dL
-  real* GaMD_orth_boosts;
-  real GaMD_bias_added[GaMD_modes]; // [dV_total, dV_torsion, dV_alchem]
-  real* GaMD_torsion_force_d; // Force just due to torsions
-  real* GaMD_alchem_force_d; // Force just due to alchemical non-bonded interactions (no overlap w/ torsion boost)
+  int sample_freq = 2; // also affects how often <dU/dT> gets calculated (histogram potential evaluations can be expensive)
+  bool oss_new_sample = false; // flag set to true when sample is taken, set to false when <dU/dT> is calculated
+  real bias_mag = 0.005;
+  real temper_amount = 3.0; 
+  real T_std = .02; // requires bins every .01 -> 101 per transition
+  real dUdL_std = 4.0; // requires bins every 2.0
+  real dUdT_max = 1000;
+  real dUdT_min = -1000;
+  // Derived or Fixed Parameters
+  int dUdL_bins = 1000; // should have 2 bins per std
+  int* T_bins; // site_period / grid resolution, should always be integer multiple
+  int L_search; // 5*L_std
+  int dUdL_search; // 5*L_std
 
   int thetaCollBiasCount;
   real *kThetaCollBias;
