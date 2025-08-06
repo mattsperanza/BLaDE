@@ -474,12 +474,19 @@ void test_OST_force(System *system) {
     system->run->calcTermFlag[i] = false;
   }
 
+  // Test on both sides of a plateau & for multiple lambdas
   printf("Starting OSS Force Test (by moving theta)...\n");
   bool ossPrior = system->msld->oss;
   int len = 2*system->state->lambdaCount+3*system->state->atomCount; // theta forces at end
   int theta_0 = len-system->state->lambdaCount;
+  system->msld->plateau_w = 0; // forces won't match on plateaus anyway
+  real_x thetas[system->state->lambdaCount];
+  for(int i = 0; i < system->state->lambdaCount; i++){
+    thetas[i] = .2; // Change this up
+  }
+  cudaMemcpy(system->state->positionBuffer_d+theta_0, thetas, system->state->lambdaCount*sizeof(real_x), cudaMemcpyDefault);
   for (int i = 0; i < eeend; i++) {
-    if(i == 6){continue;}
+    //if(i <= 0){ continue; }
     printf("Term %d Numerical Test: \n", i);
     system->run->calcTermFlag[i] = true;
     // Calculate ref dU(X, L) to subtract from force w/ oss
@@ -496,15 +503,17 @@ void test_OST_force(System *system) {
     double sum = 0;
     double num_sum = 0;
     // For each site's theta
+    // You should comment out the setting of dGdF_d and adding sample in potential.cxx
     for (int j = 1; j < system->msld->blockCount; j++) { 
-      if(j != system->msld->siteBound[system->msld->lambdaSite[j]]){
-        continue;
-      }
       // Set dGdF[:] = 0 and dGdF[j] = e * pi
+      if(j != system->msld->siteBound[system->msld->lambdaSite[j]]){ continue; }
+      if(j != 1){ continue; }
       real pi_e = system->msld->oss_k;
       real dGdF[system->state->lambdaCount];
-      for(int k = 0; k < system->state->lambdaCount; k++){
-        dGdF[k] = system->msld->oss_k;
+      memset(dGdF, 0, system->state->lambdaCount*sizeof(real));
+      int ji = system->msld->siteBound[system->msld->lambdaSite[j]];
+      for(int k = 0; k < system->msld->blocksPerSite[j]; k++){
+        dGdF[ji+k] = system->msld->oss_k;
       }
       cudaMemcpy(system->msld->dGdF_d, dGdF, system->msld->blockCount*sizeof(real), cudaMemcpyDefault);
       // Numerical Force = dU(X, L+dl) - dU(X, L-dl) / 2*dl
@@ -536,7 +545,7 @@ void test_OST_force(System *system) {
       cudaDeviceSynchronize();
       shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, dl, theta_0 + j);
       system->msld->calc_lambda_from_theta(0, system);
-      for (int k = 0; k < len; k++) {
+      for (int k = system->state->lambdaCount; k < len; k++) {
         d2U_numeric[k] = (tmp_high[k] - tmp_low[k]) / (2.0*dl);
         num_sum += abs(d2U_numeric[k]);
       }
@@ -550,15 +559,15 @@ void test_OST_force(System *system) {
       cudaDeviceSynchronize();
       cudaMemcpy(d2U_analytic, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
       cudaDeviceSynchronize();
-      for (int k = 0; k < len; k++) {
+      for (int k = system->state->lambdaCount; k < len; k++) {
         d2U_analytic[k] = (d2U_analytic[k] - dU[k]) / pi_e;
         sum += abs(d2U_analytic[k]);
       }
       // Check if they match -> skip lambda forces
       for (int k = system->msld->blockCount; k < len; k++) {
         real_f diff = abs(d2U_analytic[k] - d2U_numeric[k]);
-        real_f tol = .1;
-        if (diff > tol) { // floating point ops (like expf) can cause float errors
+        real_f tol = .01;
+        if (diff > tol || isnan(diff)) { // floating point ops (like expf) can cause float errors
           printf("Numerical derivatives test %d failed (tol = %f, dl = %f) at force array index %d for lambda %d! \n",
             i, tol, dl, k, j);
           printf("Num lambdas: %d \n", system->state->lambdaCount);

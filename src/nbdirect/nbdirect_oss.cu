@@ -19,7 +19,7 @@
 #else
 // Directly from CHARMM source code, charmm/source/domdec_gpu/gpu_utils.h
 // #warning "From CHARMM, not fully compatible"
-static __forceinline__ __device__ float __internal_fmad(float a, float b, float c)
+static __forceinline__ __device__ real __internal_fmad(real a, real b, real c)
 {
 #if __CUDA_ARCH__ >= 200
   return __fmaf_rn (a, b, c);
@@ -35,22 +35,22 @@ static __forceinline__ __device__ float __internal_fmad(float a, float b, float 
 /*                Ross Walker (SDSC)               */
 //
 // Faster ERFC approximation courtesy of Norbert Juffa. NVIDIA Corporation
-static __forceinline__ __device__ float fasterfc(float a)
+static __forceinline__ __device__ real fasterfc(real a)
 {
   /* approximate log(erfc(a)) with rel. error < 7e-9 */
   float t, x = a;
-  t =                       (float)-1.6488499458192755E-006;
-  t = __internal_fmad(t, x, (float)2.9524665006554534E-005);
-  t = __internal_fmad(t, x, (float)-2.3341951153749626E-004);
-  t = __internal_fmad(t, x, (float)1.0424943374047289E-003);
-  t = __internal_fmad(t, x, (float)-2.5501426008983853E-003);
-  t = __internal_fmad(t, x, (float)3.1979939710877236E-004);
-  t = __internal_fmad(t, x, (float)2.7605379075746249E-002);
-  t = __internal_fmad(t, x, (float)-1.4827402067461906E-001);
-  t = __internal_fmad(t, x, (float)-9.1844764013203406E-001);
-  t = __internal_fmad(t, x, (float)-1.6279070384382459E+000);
+  t =                       (real)-1.6488499458192755E-006;
+  t = __internal_fmad(t, x, (real)2.9524665006554534E-005);
+  t = __internal_fmad(t, x, (real)-2.3341951153749626E-004);
+  t = __internal_fmad(t, x, (real)1.0424943374047289E-003);
+  t = __internal_fmad(t, x, (real)-2.5501426008983853E-003);
+  t = __internal_fmad(t, x, (real)3.1979939710877236E-004);
+  t = __internal_fmad(t, x, (real)2.7605379075746249E-002);
+  t = __internal_fmad(t, x, (real)-1.4827402067461906E-001);
+  t = __internal_fmad(t, x, (real)-9.1844764013203406E-001);
+  t = __internal_fmad(t, x, (real)-1.6279070384382459E+000);
   t = t * x;
-  return exp2f(t);
+  return exp2(t);
 }
 #endif
 
@@ -162,6 +162,8 @@ __global__ void getforce_nbdirect_oss_kernel(
       bi=inp.siteBlock;
       li=1;
       dGdFi=0;
+      dLdTi=0;
+      d2LdT2i=0;
       if (bi) {
         li=lambda[0xFFFF & bi];
         dLdTi = dLdT[0xFFFF & bi];
@@ -223,6 +225,8 @@ __global__ void getforce_nbdirect_oss_kernel(
         }
         bj=jnp.siteBlock;
         lj=1;
+        dLdTj=0;
+        d2LdT2jtmp=0;
         dGdFj=0;
         if (bj) {
           lj=lambda[0xFFFF & bj];
@@ -396,7 +400,7 @@ __global__ void getforce_nbdirect_oss_kernel(
                   real erfcrinv=fasterfc(br)*rinv;
                   real U_dir = kELECTRIC*inp.q*jtmpnp_q*erfcrinv;
                   real dU_drijp_tmp = -kELECTRIC*inp.q*jtmpnp_q*rinv
-                    *(erfcrinv+((real)1.128379167095513)*cutoffs.betaEwald*expf(-br*br));
+                    *(erfcrinv+((real)1.128379167095513)*cutoffs.betaEwald*exp(-br*br));
                   dU_drijp += lixljtmp * dU_drijp_tmp;
                   // Vanilla forces & energy
                   eij += lixljtmp*U_dir;
@@ -406,7 +410,7 @@ __global__ void getforce_nbdirect_oss_kernel(
                   // OSS Forces
                   real two = (real) 2.0;
                   d2U_drijp2 += lixljtmp*two*kELECTRIC*inp.q*jtmpnp_q*rinv*rinv*rinv*(1/M_PI)*
-                    (two*sqrt(M_PI)*br*br*br*expf(-br*br) + two*sqrt(M_PI)*br*expf(-br*br) + M_PI*fasterfc(br));
+                    (two*sqrt(M_PI)*br*br*br*exp(-br*br) + two*sqrt(M_PI)*br*exp(-br*br) + M_PI*fasterfc(br));
                   d2U_drijp_dlami += dlixlj_dli * dU_drijp_tmp;
                   d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
                   d2Up_dlami_dlamj += d2lixlj_dli_dlj * U_dir;
@@ -548,13 +552,12 @@ __global__ void getforce_nbdirect_oss_kernel(
                 d2U_drij_dlamj *= dLdTjtmp;
                 d2U_dlami_dlamj *= dLdTi*dLdTjtmp;
                 d2U_dlami2 = d2U_dlami2*dLdTi*dLdTi + fli*d2LdT2i;
-                d2U_dlamj2 = d2U_dlamj2*dLdTjtmp*dLdTjtmp + flj*d2LdT2jtmp;
+                real d2 = d2U_dlamj2;
+                d2U_dlamj2 = d2U_dlamj2*dLdTjtmp*dLdTjtmp + fljtmp*d2LdT2jtmp;
 
                 // Soft Interaction
                 fli_ost += dGdFi*d2U_dlami2 + dGdFjtmp*d2U_dlami_dlamj;
-                if(bjtmp && (bi&0xFFFF0000)!=(bjtmp&0xFFFF0000)){
-                  fljtmp_ost += dGdFi*d2U_dlami_dlamj + dGdFjtmp*d2U_dlamj2;
-                }
+                fljtmp_ost += dGdFi*d2U_dlami_dlamj + dGdFjtmp*d2U_dlamj2;
 
                 // Accumulate OST forces
                 fij_ost += dGdFi*d2U_drij_dlami + dGdFjtmp*d2U_drij_dlamj;

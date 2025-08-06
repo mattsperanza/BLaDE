@@ -22,6 +22,7 @@ typedef enum leus_func {
   leus_linear,
   leus_cubic,
   leus_quintic,
+  leus_septic,
   leus_sin2,
   leus_integral
 } Leus_func;
@@ -71,13 +72,13 @@ public:
   // MSLD L-LEUS style theta dynamics combined with ABF &/or orthogonal bias
   bool L_LEUS = false; // overrides new_implicit
   bool oss_theta = true;
-  leus_func L_LEUS_function = leus_sin2;
+  leus_func L_LEUS_function = leus_linear;
   real* dUdT_msld_d; // [blockCount]
   real* dLdT_d; // first derivative of lambda w.r.t. theta
   real* d2LdT2_d; // second derivative of lambda w.r.t. theta
 
-  real plateau_w = .1;
-  real transition_w = .5;
+  real plateau_w = 0;
+  real transition_w = 1;
   real* offsets_theta_d;
   real* theta_counts_d;
   real* weights_theta_d;

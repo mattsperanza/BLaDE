@@ -1332,22 +1332,34 @@ __device__ bool solve_constraint(real_x* thetas, real_x* theta0, int subs){
 }
 
 // fills dF[0] = L(T), dF[1] = dLdT, dF[1] = d2LdT2
-__device__ void leus_f(real theta, real transition_w, real plateau_w, real* dF, leus_func func_type){
-  // Transition regions have inclusive bounds, plateaus have exclusive bounds
+__device__ void leus_f(real_x theta, real transition_w, real plateau_w, real_x* dF, leus_func func_type){
+  // Transition regions have inclusive bounds, plateaus have exclusive bounds (if plateau = 0, never hit that region)
   bool forward = theta >= 0.0 && theta <= transition_w;
   bool backward = theta >= transition_w + plateau_w && theta <= 2*transition_w + plateau_w; 
   if (forward || backward){ // forward region 0->j
     theta = backward ? 2*transition_w + plateau_w - theta : theta;
     theta /= transition_w;
-    real dTdT = backward ? -1.0 : 1.0; // d(2*W + w - T)/dT : d(T)/dT -> aren't functions of t, don't effect second derivative
+    real_x dTdT = backward ? -1.0 : 1.0; // d(2*W + w - T)/dT : d(T)/dT -> aren't functions of t, don't effect second derivative
     dTdT *= 1 / transition_w;
     if(func_type == leus_linear){
       dF[0] = theta;
       dF[1] = dTdT;
       dF[2] = 0;
+    } else if (func_type == leus_cubic){ 
+      dF[0] = 3.0*pow(theta, 2.0) - 2.0*pow(theta,3.0);
+      dF[1] = (6.0*theta - 6.0*pow(theta,2.0))*dTdT;
+      dF[2] = (6.0 - 12.0*theta)*dTdT*dTdT;
+    } else if (func_type == leus_quintic){
+      dF[0] = 6.0*pow(theta, 5.0) - 15.0*pow(theta, 4.0) + 10.0*pow(theta, 3.0);
+      dF[1] = (30.0*pow(theta, 4.0) - 60.0*pow(theta, 3.0) + 30.0*pow(theta, 2.0))*dTdT;
+      dF[2] = (120.0*pow(theta, 3.0) - 180.0*pow(theta, 2.0) + 60.0*theta)*dTdT*dTdT;
+    } else if (func_type == leus_septic){
+      dF[0] = 35.0*pow(theta, 4.0) - 84.0*pow(theta, 5.0) + 70.0*pow(theta, 6.0) - 20.0*pow(theta, 7.0);
+      dF[1] = (140.0*pow(theta, 3.0) - 420.0*pow(theta, 4.0) + 420.0*pow(theta, 5.0) - 140.0*pow(theta, 6.0))*dTdT;
+      dF[2] = (420.0*pow(theta, 2.0) - 1680.0*pow(theta, 3.0) + 2100.0*pow(theta, 4.0) - 840.0*pow(theta, 5.0))*dTdT*dTdT;
     } else if (func_type == leus_sin2){
-      real sinT = sin((M_PI/2.0)*theta);
-      real cosT = cos((M_PI/2.0)*theta);
+      real_x sinT = sin((M_PI/2.0)*theta);
+      real_x cosT = cos((M_PI/2.0)*theta);
       dF[0] = sinT*sinT;
       dF[1] = M_PI*sinT*cosT*dTdT;
       dF[2] = .5*pow(M_PI*dTdT, 2.0)*(cosT*cosT - sinT*sinT);
@@ -1367,9 +1379,7 @@ __global__ void calc_lambda_from_theta_kernel(
   real_x *lambda,real_x *theta,
   int siteCount,int *siteBound,
   real fnex, 
-
   bool new_implicit, real_x* theta0, 
-
   bool L_LEUS, leus_func func_type, 
   real plateau_w, real transition_w, 
   real* dLdT, real* d2LdT2 
@@ -1385,25 +1395,26 @@ __global__ void calc_lambda_from_theta_kernel(
     ji=siteBound[i];
     jf=siteBound[i+1];
     if (L_LEUS){ // uses first theta of site, sets all other thetas to zero
-      if(i == 0){ return; } // don't do anything for enviroment lambda/theta
       real subs = jf - ji;
       // Wrap theta to [0,(Ns-1)*(2*W + w) + w), step should never move theta so significantly to require a loop
       real period = (subs-1)*(2*transition_w + plateau_w) + plateau_w; // 2 transition & plateaus for each i!=0, plus gaps for 0 summing to plateau
-      while (theta[ji] < 0){
-        theta[ji] += period;
-      } 
-      while (theta[ji] >= period){
-        theta[ji] -= period;
+      if(ji != 0){
+        while (theta[ji] < 0){
+          theta[ji] += period;
+        } 
+        while (theta[ji] >= period){
+          theta[ji] -= period;
+        }
       }
-      real T = theta[ji];
+      real_x T = theta[ji];
       // Apply LEUS function to site theta
-      real sum = 0;
-      real dsum = 0;
-      real d2sum = 0;
+      real_x sum = 0;
+      real_x dsum = 0;
+      real_x d2sum = 0;
       for(j = 1; j < subs; j++){
-        real dF[3];
+        real_x dF[3];
         // Shift function into place -> i*sub_period + gaps
-        real shift = -(j-1.0)*(2.0*transition_w + plateau_w) - j*plateau_w/(subs-1.0);
+        real_x shift = -(j-1.0)*(2.0*transition_w + plateau_w) - j*plateau_w/(subs-1.0);
         leus_f(T + shift, transition_w, plateau_w, dF, func_type);
         lambda[ji+j] = dF[0];
         dLdT[ji+j] = dF[1];
@@ -1411,7 +1422,9 @@ __global__ void calc_lambda_from_theta_kernel(
         sum += dF[0];
         dsum += dF[1];
         d2sum += dF[2];
-        printf("T: %f, L: %f, L0: %f, dLdT: %f, d2LdT2: %f\n", T, dF[0], 1-dF[0], dF[1], dF[2]);
+        if(true){
+          //printf("T: %f, L: %f, L0: %f, dLdT: %f, d2LdT2: %f\n", T, dF[0], 1-dF[0], dF[1], dF[2]);
+        }
         theta[ji+j] = 0; 
       }
       // f0(theta) = 1 - sum(fi(theta))

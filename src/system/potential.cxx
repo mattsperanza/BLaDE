@@ -1672,7 +1672,7 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
     cudaMemsetAsync(system->msld->dUdT_msld_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
     system->msld->oss_lambda_to_theta_force(system); // fill dUdT_msld_d
     cudaMemsetAsync(system->msld->hist_potential_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
-    //cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
+    cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
     if(!system->msld->tracking_only){
       system->msld->getforce_oss(system, calcEnergy);
     }
@@ -1709,9 +1709,6 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
     }
   }
 }
-
-
-
 
 
   // GaMD

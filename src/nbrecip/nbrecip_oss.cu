@@ -456,9 +456,10 @@ __global__ void getforce_ewald_gather_kernel_oss(
   if (iAtom<atomCount) {
     if (b && threadOfAtom==0) {
       // Lambda -> Theta force
-      // dQ/dL*(T*G*dL/dT)*dL/dT + dQ/dL*(T*Q)*d2L/dL2
+      // dQ/dL*dL/dT*(T*G) + Q*(T*dGdLi*(d^2Q/dL^2*dL/dT + dQ/dL*dL2/dT2))
+      // dQ/dL*dL/dT*(T*G) + dGdLi*(d^2Q/dL^2*dL/dT + dQ/dL*dL2/dT2))*(T*Q)
       // TODO: Still not sure about this, thought it should have another factor of dL/dT
-      real d2UdT2 = 2*q*gEnergy + 2*q*lEnergy*d2LdT2[b];
+      real d2UdT2 = 2*q*gEnergy*dLdT[b] + 2*q*dGdFi*d2LdT2[b]*lEnergy;
       atomicAdd(&lambdaForce[b], d2UdT2); // dQ/dL * (T * G)
     }
   }
@@ -541,7 +542,7 @@ void getforce_ewaldTT_oss(System *system,box_type kbox)
     m->dLdT_d, m->d2LdT2_d, m->dGdF_d,
     (real3*)s->position_fd,
     (real3_f*)s->force_d,
-    kbox,s->lambda_fd,s->lambdaForce_d); 
+    kbox,s->lambda_fd,alchem_force);
 }
 
 template <bool flagBox,typename box_type>

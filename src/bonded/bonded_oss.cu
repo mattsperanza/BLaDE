@@ -102,6 +102,8 @@ __global__ void getforce_bond_kernel_oss(
       d2U_dl02 = d2U_dl02*dLdT[b[0]]*dLdT[b[0]] + dU_dl0*d2LdT2[b[0]];
       d2U_dl12 = d2U_dl12*dLdT[b[1]]*dLdT[b[1]] + dU_dl1*d2LdT2[b[1]];
       d2U_dl0_dl1 *= dLdT[b[0]]*dLdT[b[1]];
+      d2U_dl0_drij *= dLdT[b[0]];
+      d2U_dl1_drij *= dLdT[b[1]];
 
       real fl0 = chain[0]*d2U_dl02 + chain[1]*d2U_dl0_dl1;
       real fl1 = chain[0]*d2U_dl0_dl1 + chain[1]*d2U_dl12;
@@ -110,8 +112,6 @@ __global__ void getforce_bond_kernel_oss(
         atomicAdd(&lambdaForce[b[1]], fl1);
       }
 
-      d2U_dl0_drij *= dLdT[b[0]];
-      d2U_dl1_drij *= dLdT[b[1]];
       real fij = chain[0]*d2U_dl0_drij + chain[1]*d2U_dl1_drij;
       at_real3_scaleinc(&force[ii], fij/r,dr);
       at_real3_scaleinc(&force[jj],-fij/r,dr);
@@ -123,28 +123,27 @@ __global__ void getforce_bond_kernel_oss(
       // Lambda force
       real dU_dl0 = l[1]*lEnergy; // always b[0]=true
       real dU_dl1 = b[1] ? l[0]*lEnergy : 0;
-      real d2U_dl02 = 0;
-      real d2U_dl12 = 0;
-      real d2U_dl0_dl1 = b[1] ? lEnergy : 0;
+      real d2U_dl02 = b[0] == b[1] ? lEnergy : 0;
+      real d2U_dl12 = b[0] == b[1] ? lEnergy : 0;
+      real d2U_dl0_dl1 = b[1] && b[0] && b[0] != b[1] ? lEnergy : 0;
+      // Spatial force
+      real d2U_drij_dl0 = l[1]*fbond;
+      real d2U_drij_dl1 = b[1] ? l[0]*fbond : 0;
       // Convert to theta force
       d2U_dl02 = d2U_dl02*dLdT[b[0]]*dLdT[b[0]] + dU_dl0*d2LdT2[b[0]];
       d2U_dl12 = d2U_dl12*dLdT[b[1]]*dLdT[b[1]] + dU_dl1*d2LdT2[b[1]]; 
       d2U_dl0_dl1 *= dLdT[b[0]]*dLdT[b[1]];
+      d2U_drij_dl0 *= dLdT[b[0]];
+      d2U_drij_dl1 *= dLdT[b[1]];
 
       real fl0 = chain[0]*d2U_dl02 + chain[1]*d2U_dl0_dl1; 
       real fl1 = chain[0]*d2U_dl0_dl1 + chain[1]*d2U_dl12; 
+      //printf("dGdF[%d]: %f, dGdF[%d]: %f\n", b[0], chain[0], b[1], chain[1]);
       // What gets added to other parts of theta array eventually gets added to correct spot
       atomicAdd(&lambdaForce[b[0]], fl0);
       if (b[1]) {
         atomicAdd(&lambdaForce[b[1]], fl1);
       }
-
-      // Spatial force
-      real d2U_drij_dl0 = l[1]*fbond;
-      real d2U_drij_dl1 = b[1] ? l[0]*fbond : 0;
-      // convert to theta force
-      d2U_drij_dl0 *= dLdT[b[0]];
-      d2U_drij_dl1 *= dLdT[b[1]];
 
       real fij = chain[0]*d2U_drij_dl0 + chain[1]*d2U_drij_dl1;
       at_real3_scaleinc(&force[ii], fij/r,dr);
@@ -286,10 +285,15 @@ __global__ void getforce_angle_kernel_oss(int angleCount,struct AnglePotential *
       real d2U_dl0_dl1 = d2l_dl0_dl1 * lEnergy;
       real d2U_dl02 = d2l_dl02 * lEnergy;
       real d2U_dl12 = d2l_dl12 * lEnergy;
+      // Spatial Forces
+      real d2U_dphi_dl0 = dl_dl0*fangle;
+      real d2U_dphi_dl1 = dl_dl1*fangle;
       // Convert to theta forces
       d2U_dl02 = d2U_dl02*dLdT[b[0]]*dLdT[b[0]] + dU_dl0*d2LdT2[b[0]];
       d2U_dl12 = d2U_dl12*dLdT[b[1]]*dLdT[b[1]] + dU_dl1*d2LdT2[b[1]]; 
       d2U_dl0_dl1 *= dLdT[b[0]]*dLdT[b[1]];
+      d2U_dphi_dl0 *= dLdT[b[0]];
+      d2U_dphi_dl1 *= dLdT[b[1]];
 
       // Calculate OST forces
       real fl0 = chain[0]*d2U_dl02 + chain[1]*d2U_dl0_dl1;
@@ -305,8 +309,6 @@ __global__ void getforce_angle_kernel_oss(int angleCount,struct AnglePotential *
       }
 
       // Spatial Forces - theta conversion included
-      real d2U_dphi_dl0 = dl_dl0*fangle*dLdT[b[0]];
-      real d2U_dphi_dl1 = dl_dl1*fangle*dLdT[b[1]];
       real tmp = chain[0]*d2U_dphi_dl0 + chain[1]*d2U_dphi_dl1;
       real3_scaleself(&fi,tmp);
       at_real3_inc(&force[ii], fi);
@@ -492,8 +494,6 @@ __global__ void getforce_torsion_kernel_oss(int torsionCount,TorsionPotential *t
       d2U_dl02 = d2U_dl02*dLdT[b[0]]*dLdT[b[0]] + dU_dl0*d2LdT2[b[0]];
       d2U_dl12 = d2U_dl12*dLdT[b[1]]*dLdT[b[1]] + dU_dl1*d2LdT2[b[1]]; 
       d2U_dl0_dl1 *= dLdT[b[0]]*dLdT[b[1]];
-      printf("i: %d, dU_dl0: %f, dU_dl1: %f, d2U_dl02: %f, d2U_dl12: %f, d2U_dl0dL1: %f, \n", 
-        i, dU_dl0, dU_dl1, b[0], d2LdT2[b[0]], d2U_dl02, d2U_dl12, d2U_dl0_dl1);
 
       real fl0 = chain[0]*d2U_dl02 + chain[1]*d2U_dl0_dl1;
       real fl1 = chain[0]*d2U_dl0_dl1 + chain[1]*d2U_dl12;
@@ -540,7 +540,7 @@ void getforce_diheT_oss(System *system,box_type box)
   if (N>0) getforce_torsion_kernel_oss<flagBox,DihePotential,false> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->dihes_d,(real3*)s->position_fd,
     (real3_f*) s->force_d, box,
-    alchem_force,s->lambdaForce_d, 1,
+    s->lambda_fd, alchem_force, 1,
     system->msld->dLdT_d, system->msld->d2LdT2_d,
     system->msld->dGdF_d);
 
@@ -548,7 +548,7 @@ void getforce_diheT_oss(System *system,box_type box)
   if (N>0) getforce_torsion_kernel_oss<flagBox,DihePotential,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->softDihes_d,(real3*)s->position_fd,
     (real3_f*) s->force_d, box,
-    alchem_force, s->lambdaForce_d, softExp,
+    s->lambda_fd, alchem_force, softExp,
     system->msld->dLdT_d, system->msld->d2LdT2_d,
     system->msld->dGdF_d);
 }

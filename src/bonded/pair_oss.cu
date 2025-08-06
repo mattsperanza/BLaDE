@@ -12,130 +12,6 @@
 
 #include "main/real3.h"
 
-
-
-#ifdef DOUBLE
-#define fasterfc erfc
-#else
-// Directly from CHARMM source code, charmm/source/domdec_gpu/gpu_utils.h
-// #warning "From CHARMM, not fully compatible"
-static __forceinline__ __device__ float __internal_fmad(float a, float b, float c)
-{
-#if __CUDA_ARCH__ >= 200
-  return __fmaf_rn (a, b, c);
-#else // __CUDA_ARCH__ >= 200
-  return a * b + c;
-#endif // __CUDA_ARCH__ >= 200
-}
-
-// Following inline functions are copied from PMEMD CUDA implementation.
-// Credit goes to:
-/*             Scott Le Grand (NVIDIA)             */
-/*               Duncan Poole (NVIDIA)             */
-/*                Ross Walker (SDSC)               */
-//
-// Faster ERFC approximation courtesy of Norbert Juffa. NVIDIA Corporation
-static __forceinline__ __device__ float fasterfc(float a)
-{
-  /* approximate log(erfc(a)) with rel. error < 7e-9 */
-  float t, x = a;
-  t =                       (float)-1.6488499458192755E-006;
-  t = __internal_fmad(t, x, (float)2.9524665006554534E-005);
-  t = __internal_fmad(t, x, (float)-2.3341951153749626E-004);
-  t = __internal_fmad(t, x, (float)1.0424943374047289E-003);
-  t = __internal_fmad(t, x, (float)-2.5501426008983853E-003);
-  t = __internal_fmad(t, x, (float)3.1979939710877236E-004);
-  t = __internal_fmad(t, x, (float)2.7605379075746249E-002);
-  t = __internal_fmad(t, x, (float)-1.4827402067461906E-001);
-  t = __internal_fmad(t, x, (float)-9.1844764013203406E-001);
-  t = __internal_fmad(t, x, (float)-1.6279070384382459E+000);
-  t = t * x;
-  return exp2f(t);
-}
-#endif
-
-template <bool flagBox, bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
-__global__ void getforce_exclusion_pair_kernel_oss(
-  int pairCount,NbExPotential *pairs,Cutoffs cutoffs,
-    real3 *position,real3_f *force, box_type box,
-    real *lambda,real_f *lambdaForce, 
-    real* dLdT, real* d2LdT2,
-    real *dGdF) {
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  int ii,jj;
-  real r;
-  real3 dr;
-  NbExPotential pp;
-  real3 xi,xj;
-  real lEnergy = 0;
-  extern __shared__ real sEnergy[];
-  int b[2];
-
-  if (i<pairCount) {
-    // Geometry
-    pp=pairs[i];
-    ii=pp.idx[0];
-    jj=pp.idx[1];
-    xi=position[ii];
-    xj=position[jj];
-    dr=real3_subpbc<flagBox>(xi,xj,box);
-    r=real3_mag<real>(dr);
-    // Scaling
-    b[0]=0xFFFF & pp.siteBlock[0];
-    b[1]=0xFFFF & pp.siteBlock[1];
-    if (b[0]){ // only perform if alchem atom present
-      // Consistant notation with nbdirect_oss
-      int bi = b[0];
-      int bjtmp = b[1];
-      real li = lambda[b[0]];
-      real ljtmp = lambda[b[1]];
-      real dGdFi = dGdF[b[0]];
-      real dGdFjtmp = dGdF[b[1]];
-      // Force storage
-      real fij_ost=0;
-      real fli_ost=0;
-      real fljtmp_ost=0;
-      real fij=0;
-      real fli=0;
-      real flj=0;
-
-      // NbExclusion correction - never soft-cored so we can just use fij
-      real rinv=1/r;
-      real br=cutoffs.betaEwald*r;
-      real kqq=kELECTRIC*pp.qxq;
-      real fij_tmp=kqq*(erff(br)*rinv-((real)1.128379167095513)*cutoffs.betaEwald*expf(-br*br))*rinv;
-      real uij=-kqq*erff(br)*rinv;
-      // Vanilla force & energy
-      lEnergy = li*ljtmp*uij;
-      fij = li*ljtmp*fij_tmp; // no soft, no alpha scaling since we didn't for recip
-      fli = ljtmp*uij;
-      flj = bjtmp ? li*uij : 0;
-
-      // OST Derivatives - lixlij is always just li*lj for ewald?
-      real dU_drij_dli = ljtmp*fij_tmp;
-      real dU_drij_dlj = bjtmp ? li*fij_tmp : 0;
-      real dU_dlami_dlamj = bi && bjtmp ? uij : 0;
-      // Convert to theta forces
-      dU_drij_dli *= dLdT[b[0]];
-      dU_drij_dlj *= dLdT[b[1]];
-      dU_dlami_dlamj *= dLdT[b[0]]*dLdT[b[1]];
-
-      fij_ost = dGdFi * dU_drij_dli + dGdFjtmp * dU_drij_dlj;
-      fli_ost = dGdFjtmp * dU_dlami_dlamj;
-      fljtmp_ost = dGdFi * dU_dlami_dlamj; // this doesn't over-count due to product rule
-
-      // Lambda and spatial forces
-      atomicAdd(&lambdaForce[b[0]], fli_ost);
-      if (b[1]) {
-        atomicAdd(&lambdaForce[b[1]], fljtmp_ost);
-      }
-      at_real3_scaleinc(&force[ii], fij_ost/r,dr);
-      at_real3_scaleinc(&force[jj],-fij_ost/r,dr);
-    }
-  }
-}
-
-
 template <bool flagBox, bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
 __global__ void getforce_14pair_kernel_oss(
     int pairCount,Nb14Potential *pairs,Cutoffs cutoffs,
@@ -176,29 +52,16 @@ __global__ void getforce_14pair_kernel_oss(
       real dGdFi = dGdF[b[0]];
       real dGdFjtmp = dGdF[b[1]];
       real lixljtmp, dlixlj_dli, dlixlj_dlj, d2lixlj_dli_dlj, d2lixlj_dli2, d2lixlj_dlj2;
-      real lixlj_orig, dlixlj_dli_orig, dlixlj_dlj_orig, d2lixlj_dli_dlj_orig;
       if ((pp.siteBlock[0]&0xFFFF0000)==(pp.siteBlock[1]&0xFFFF0000)) { // same site (m == n)
         printf("Unexpected scaling case occurred! Didn't expect this to run! Contact devs!\n");
       }
-      lixlj_orig = li*ljtmp;
-      dlixlj_dli_orig = ljtmp;
-      dlixlj_dlj_orig = li;
-      d2lixlj_dli_dlj_orig = bi && bjtmp ? 1 : 0;
+      lixljtmp = li*ljtmp;
+      dlixlj_dli = ljtmp;
+      dlixlj_dlj = bjtmp ? li : 0;
+      d2lixlj_dli_dlj = bjtmp && bi != bjtmp ? 1 : 0;
+      d2lixlj_dli2 = bi == bjtmp ? 1 : 0; // 1-4 within same site?
+      d2lixlj_dlj2 = bi == bjtmp ? 1 : 0;
  
-      lixljtmp = pow(li*ljtmp, a);
-      dlixlj_dli = bi ? a*ljtmp*pow(li*ljtmp, a-1.0) : 0;
-      dlixlj_dlj = bjtmp ? a*li*pow(li*ljtmp, a-1.0) : 0;
-
-      if (abs(a - 1.0) < 1e-5){ // if a=1, prevent div by zero
-        d2lixlj_dli2 = 0;
-        d2lixlj_dlj2 = 0;
-      } else {
-        d2lixlj_dli2 = bi ? a*(a-1.0)*ljtmp*ljtmp*pow(li*ljtmp, a-2.0) : 0;
-        d2lixlj_dlj2 = bjtmp ? a*(a-1.0)*li*li*pow(li*ljtmp, a-2.0) : 0;
-      }
-      d2lixlj_dli_dlj = bi && bjtmp ? a*a*pow(li*ljtmp, a-1.0) : 0;
-      // don't expect li*li
-
       // Force storage
       real fij_ost=0;
       real fli_ost=0;
@@ -229,9 +92,9 @@ __global__ void getforce_14pair_kernel_oss(
               rEff=rEff*rdivrs*rdivrs*rdivrs+((real)0.5); // Soft-core: rEff = rL * (.5 + (r/rL)^3 - .5*(r/rL)^4)
               rEff*=rSoft;
               // Don't use lixlj derivatives since the scaling is different
-              real drlam_dlami = -SOFTCORERADIUS*dlixlj_dli_orig;
-              real drlam_dlamj = -SOFTCORERADIUS*dlixlj_dlj_orig;
-              real d2rlam_dli_dlj = -SOFTCORERADIUS*d2lixlj_dli_dlj_orig;
+              real drlam_dlami = -SOFTCORERADIUS*dlixlj_dli;
+              real drlam_dlamj = -SOFTCORERADIUS*dlixlj_dlj;
+              real d2rlam_dli_dlj = -SOFTCORERADIUS*d2lixlj_dli_dlj;
               // li*li case never expected
               real r_rsoft = r / rSoft;
               real r_rsoft3 = r_rsoft * r_rsoft * r_rsoft;
@@ -277,10 +140,10 @@ __global__ void getforce_14pair_kernel_oss(
           real kqq = kELECTRIC*pp.qxq;
           real two = (real) 2.0;
           real U_dir = -kqq*erfrinv;
-          real dU_drijp_tmp = -kqq*rinv*((2/sqrt(M_PI))*cutoffs.betaEwald*expf(-br*br)-erfrinv);
+          real dU_drijp_tmp = -kqq*rinv*((2/sqrt(M_PI))*cutoffs.betaEwald*exp(-br*br)-erfrinv);
           dU_drijp += li*ljtmp * dU_drijp_tmp;
           d2U_drijp2 += -li*ljtmp*two*kqq*rinv*rinv*rinv*(1/M_PI)*
-            (-two*sqrt(M_PI)*br*br*br*expf(-br*br) - two*sqrt(M_PI)*br*expf(-br*br) + M_PI*erf(br));
+            (-two*sqrt(M_PI)*br*br*br*exp(-br*br) - two*sqrt(M_PI)*br*exp(-br*br) + M_PI*erf(br));
           d2U_drijp_dlami += dlixlj_dli * dU_drijp_tmp;
           d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
           d2Up_dlami_dlamj += d2lixlj_dli_dlj * U_dir;
@@ -375,11 +238,11 @@ __global__ void getforce_14pair_kernel_oss(
             real d2U_dlami2 = d2lixlj_dli2 * eij_tmp;
             real d2U_dlamj2 = d2lixlj_dlj2 * eij_tmp;
             // Convert from lambda to theta
-            d2U_dli_dlj *= dLdT[b[0]]*dLdT[b[1]];
-            d2U_dlami2 = d2U_dlami2*dLdT[b[0]]*dLdT[b[0]] + dU_dlami*d2LdT2[b[0]];
-            d2U_dlamj2 = d2U_dlamj2*dLdT[b[1]]*dLdT[b[1]] + dU_dlamj*d2LdT2[b[1]];
-            d2U_drij_dlami *= dLdT[b[0]];
-            d2U_drij_dlamj *= dLdT[b[1]];
+            d2U_dli_dlj *= dLdT[bi]*dLdT[bjtmp];
+            d2U_dlami2 = d2U_dlami2*dLdT[bi]*dLdT[bi] + dU_dlami*d2LdT2[bi];
+            d2U_dlamj2 = d2U_dlamj2*dLdT[bjtmp]*dLdT[bjtmp] + dU_dlamj*d2LdT2[bjtmp];
+            d2U_drij_dlami *= dLdT[bi];
+            d2U_drij_dlamj *= dLdT[bjtmp];
             // No soft-core = direct accumulation
             fij_ost += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
             fli_ost += dGdFi * d2U_dlami2 + dGdFjtmp * d2U_dli_dlj;
@@ -408,11 +271,11 @@ __global__ void getforce_14pair_kernel_oss(
             real d2U_dlami2 = d2lixlj_dli2 * eij_tmp;
             real d2U_dlamj2 = d2lixlj_dlj2 * eij_tmp;
             // Convert from lambda to theta
-            d2U_dli_dlj *= dLdT[b[0]]*dLdT[b[1]];
-            d2U_dlami2 = d2U_dlami2*dLdT[b[0]]*dLdT[b[0]] + dU_dlami*d2LdT2[b[0]];
-            d2U_dlamj2 = d2U_dlamj2*dLdT[b[1]]*dLdT[b[1]] + dU_dlamj*d2LdT2[b[1]];
-            d2U_drij_dlami *= dLdT[b[0]];
-            d2U_drij_dlamj *= dLdT[b[1]];
+            d2U_dli_dlj *= dLdT[bi]*dLdT[bjtmp];
+            d2U_dlami2 = d2U_dlami2*dLdT[bi]*dLdT[bi] + dU_dlami*d2LdT2[bi];
+            d2U_dlamj2 = d2U_dlamj2*dLdT[bjtmp]*dLdT[bjtmp] + dU_dlamj*d2LdT2[bjtmp];
+            d2U_drij_dlami *= dLdT[bi];
+            d2U_drij_dlamj *= dLdT[bi];
             // No soft-core = direct accumulation
             fij_ost += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
             fli_ost += dGdFi * d2U_dlami2 + dGdFjtmp * d2U_dli_dlj;
@@ -434,11 +297,11 @@ __global__ void getforce_14pair_kernel_oss(
         real d2U_dlamj2 = d2Up_dlamj2 + d2U_drijp_dlamj*drijp_dlamj + dU_drijp * d2rijp_dlamj2 + (d2U_drijp_dlamj + d2U_drijp2 * drijp_dlamj)*drijp_dlamj;
 
         // Convert from lambda to theta
-        d2U_drij_dlami *= dLdT[b[0]];
-        d2U_drij_dlamj *= dLdT[b[1]];
-        d2U_dlami_dlamj *= dLdT[b[0]]*dLdT[b[1]];
-        d2U_dlami2 = d2U_dlami2*dLdT[b[0]]*dLdT[b[0]] + fli*d2LdT2[b[0]];
-        d2U_dlamj2 = d2U_dlamj2*dLdT[b[1]]*dLdT[b[1]] + flj*d2LdT2[b[1]];
+        d2U_drij_dlami *= dLdT[bi];
+        d2U_drij_dlamj *= dLdT[bjtmp];
+        d2U_dlami_dlamj *= dLdT[bi]*dLdT[bjtmp];
+        d2U_dlami2 = d2U_dlami2*dLdT[bi]*dLdT[bi] + fli*d2LdT2[bi];
+        d2U_dlamj2 = d2U_dlamj2*dLdT[bjtmp]*dLdT[bjtmp] + flj*d2LdT2[bjtmp];
 
         // OSS Forces
         fij_ost += dGdFi*d2U_drij_dlami + dGdFjtmp*d2U_drij_dlamj;
@@ -447,9 +310,7 @@ __global__ void getforce_14pair_kernel_oss(
 
         // OSS & Vanilla forces
         atomicAdd(&lambdaForce[b[0]], fli_ost);
-        if (b[1]) {
-          atomicAdd(&lambdaForce[b[1]], fljtmp_ost);
-        }
+        atomicAdd(&lambdaForce[b[1]], fljtmp_ost);
         at_real3_scaleinc(&force[ii], fij_ost/r,dr);
         at_real3_scaleinc(&force[jj],-fij_ost/r,dr);
       }
@@ -520,6 +381,91 @@ void getforce_nb14_oss(System *system)
   }
 }
 
+
+template <bool flagBox, bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
+__global__ void getforce_exclusion_pair_kernel_oss(
+  int pairCount,NbExPotential *pairs,Cutoffs cutoffs,
+    real3 *position,real3_f *force, box_type box,
+    real *lambda,real_f *lambdaForce, 
+    real* dLdT, real* d2LdT2,
+    real *dGdF) {
+  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  int ii,jj;
+  real r;
+  real3 dr;
+  NbExPotential pp;
+  real3 xi,xj;
+  real lEnergy = 0;
+  extern __shared__ real sEnergy[];
+  int b[2];
+
+  if (i<pairCount) {
+    // Geometry
+    pp=pairs[i];
+    ii=pp.idx[0];
+    jj=pp.idx[1];
+    xi=position[ii];
+    xj=position[jj];
+    dr=real3_subpbc<flagBox>(xi,xj,box);
+    r=real3_mag<real>(dr);
+    // Scaling
+    b[0]=0xFFFF & pp.siteBlock[0];
+    b[1]=0xFFFF & pp.siteBlock[1];
+    if (b[0]){ // only perform if alchem atom present
+      // Consistant notation with nbdirect_oss
+      int bi = b[0];
+      int bjtmp = b[1];
+      real li = lambda[b[0]];
+      real ljtmp = lambda[b[1]];
+      real dGdFi = dGdF[b[0]];
+      real dGdFjtmp = dGdF[b[1]];
+      // Force storage
+      real fij_ost=0;
+      real fli_ost=0;
+      real fljtmp_ost=0;
+      real fij=0;
+      real fli=0;
+      real flj=0;
+
+      // NbExclusion correction - never soft-cored so we can just use fij
+      real rinv=1/r;
+      real br=cutoffs.betaEwald*r;
+      real kqq=kELECTRIC*pp.qxq;
+      real fij_tmp=kqq*(erf(br)*rinv-((real)1.128379167095513)*cutoffs.betaEwald*exp(-br*br))*rinv;
+      real uij=-kqq*erf(br)*rinv;
+      // Vanilla force & energy
+      lEnergy = li*ljtmp*uij;
+      fij = li*ljtmp*fij_tmp; // no soft, no alpha scaling since we didn't for recip
+      fli = ljtmp*uij;
+      flj = bjtmp ? li*uij : 0;
+
+      // OST Derivatives - lixlij is always just li*lj for ewald?
+      real dU_drij_dli = ljtmp*fij_tmp;
+      real dU_drij_dlj = bjtmp ? li*fij_tmp : 0; // covers product rule
+      real dU_dlami_dlamj = bi && bjtmp && bi != bjtmp ? uij : 0;
+      real d2U_dli2 = bi == bjtmp ? uij : 0; 
+      real d2U_dlj2 = bi == bjtmp ? uij : 0;
+      // Convert to theta forces
+      dU_drij_dli *= dLdT[bi];
+      dU_drij_dlj *= dLdT[bjtmp];
+      dU_dlami_dlamj *= dLdT[bi]*dLdT[bjtmp];
+      d2U_dli2 = d2U_dli2*dLdT[bi]*dLdT[bi] + fli*d2LdT2[bi];
+      d2U_dlj2 = d2U_dlj2*dLdT[bjtmp]*dLdT[bjtmp] + flj*d2LdT2[bjtmp];
+
+      fij_ost = dGdFi*dU_drij_dli + dGdFjtmp*dU_drij_dlj; // product if li=lj
+      fli_ost = dGdFi*d2U_dli2 + dGdFjtmp*dU_dlami_dlamj;
+      fljtmp_ost = dGdFi*dU_dlami_dlamj + dGdFjtmp*d2U_dlj2; 
+
+      // Lambda and spatial forces
+      atomicAdd(&lambdaForce[b[0]], fli_ost);
+      if (b[1]) {
+        atomicAdd(&lambdaForce[b[1]], fljtmp_ost);
+      }
+      at_real3_scaleinc(&force[ii], fij_ost/r,dr);
+      at_real3_scaleinc(&force[jj],-fij_ost/r,dr);
+    }
+  }
+}
 
 template <bool flagBox,typename box_type>
 void getforce_nbexT_oss(System *system,box_type box)

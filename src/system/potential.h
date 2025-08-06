@@ -14,10 +14,11 @@
 // Forward declarations
 class System;
 class TypeName8O;
-bool operator==(const TypeName8O& a,const TypeName8O& b);
-bool operator<(const TypeName8O& a,const TypeName8O& b);
+bool operator==(const TypeName8O &a, const TypeName8O &b);
+bool operator<(const TypeName8O &a, const TypeName8O &b);
 
-typedef enum eeterm {
+typedef enum eeterm
+{
   eebond,
   eeangle,
   eeurey,
@@ -34,22 +35,26 @@ typedef enum eeterm {
   eepotential,
   eekinetic,
   eetotal,
-  eeend} EETerm;
+  eeend
+} EETerm;
 
-struct CountType {
+struct CountType
+{
   int count;
   std::string type;
 };
-bool operator<(const CountType& a,const CountType& b);
+bool operator<(const CountType &a, const CountType &b);
 
-struct BondPotential {
+struct BondPotential
+{
   int idx[2];
   int siteBlock[2];
   real kb;
   real b0;
 };
 
-struct AnglePotential {
+struct AnglePotential
+{
   int idx[3];
   int siteBlock[2];
   real kangle;
@@ -58,7 +63,8 @@ struct AnglePotential {
   real ureyb0;
 };
 
-struct DihePotential {
+struct DihePotential
+{
   int idx[4];
   int siteBlock[2];
   real kdih;
@@ -66,7 +72,8 @@ struct DihePotential {
   real dih0;
 };
 
-struct ImprPotential {
+struct ImprPotential
+{
   int idx[4];
   int siteBlock[2];
   real kimp;
@@ -74,14 +81,16 @@ struct ImprPotential {
   real imp0;
 };
 
-struct CmapPotential {
+struct CmapPotential
+{
   int idx[8];
   int siteBlock[3];
   int ngrid;
   real (*kcmapPtr)[4][4];
 };
 
-struct Nb14Potential {
+struct Nb14Potential
+{
   int idx[2];
   int siteBlock[2];
   real qxq;
@@ -90,54 +99,64 @@ struct Nb14Potential {
   real e14fac;
 };
 
-struct NbExPotential {
+struct NbExPotential
+{
   int idx[2];
   int siteBlock[2];
   real qxq;
 };
 
-struct NbondPotential {
+struct NbondPotential
+{
   int siteBlock;
   real q;
   int typeIdx;
 };
 
-struct VdwPotential {
-  real c12,c6;
+struct VdwPotential
+{
+  real c12, c6;
 };
 
-struct ExclPotential {
+struct ExclPotential
+{
   int idx[2];
 };
 
-struct TriangleCons {
+struct TriangleCons
+{
   int idx[3];
   real b0[3];
 };
 
-struct Branch1Cons {
+struct Branch1Cons
+{
   int idx[2];
   real b0[1];
 };
 
-struct Branch2Cons {
+struct Branch2Cons
+{
   int idx[3];
   real b0[2];
 };
 
-struct Branch3Cons {
+struct Branch3Cons
+{
   int idx[4];
   real b0[3];
 };
 
-struct VirtualSite2 { // Colinear
+struct VirtualSite2
+{ // Colinear
   int vidx;
   int hidx[2];
   real dist;
   real scale;
 };
 
-struct VirtualSite3 { // Bisector is dist is negative
+struct VirtualSite3
+{ // Bisector is dist is negative
   int vidx;
   int hidx[3];
   real dist;
@@ -145,7 +164,8 @@ struct VirtualSite3 { // Bisector is dist is negative
   real phi;
 };
 
-struct NoePotential {
+struct NoePotential
+{
   int i;
   int j;
   real rmin;
@@ -157,15 +177,17 @@ struct NoePotential {
   real nswitch;
 };
 
-struct HarmonicPotential {
+struct HarmonicPotential
+{
   int idx;
   real k;
   real n;
   real3 r0;
 };
 
-class Potential {
-  public:
+class Potential
+{
+public:
   int atomCount;
 
   int bondCount;
@@ -212,8 +234,8 @@ class Potential {
   struct CmapPotential *softCmaps;
   struct CmapPotential *softCmaps_d;
 
-  std::map<TypeName8O,real(*)[4][4]> cmapTypeToPtr;
-  std::map<TypeName8O,real(*)[4][4]> cmapRestTypeToPtr;
+  std::map<TypeName8O, real (*)[4][4]> cmapTypeToPtr;
+  std::map<TypeName8O, real (*)[4][4]> cmapRestTypeToPtr;
 
   int nb14Count;
   std::vector<struct Nb14Potential> nb14s_tmp;
@@ -255,12 +277,12 @@ class Potential {
   real *bGridPME, *bGridPME_d;
   cufftHandle planFFTPME, planIFFTPME;
   cufftHandle ossPlanFFTPME, ossPlanIFFTPME;
-  size_t bufferSizeFFTPME,bufferSizeIFFTPME;
+  size_t bufferSizeFFTPME, bufferSizeIFFTPME;
 
-  std::map<std::string,int> typeCount;
+  std::map<std::string, int> typeCount;
   std::set<struct CountType> typeSort;
   std::vector<std::string> typeList;
-  std::map<std::string,int> typeLookup;
+  std::map<std::string, int> typeLookup;
 
   struct NbondPotential *nbonds;
   struct NbondPotential *nbonds_d;
@@ -271,7 +293,7 @@ class Potential {
   cudaTextureObject_t vdwParameters_tex;
 #endif
 
-  std::map<int,std::set<int> > cons_tmp;
+  std::map<int, std::set<int>> cons_tmp;
   int triangleConsCount;
   std::vector<struct TriangleCons> triangleCons_tmp;
   struct TriangleCons *triangleCons;
@@ -312,9 +334,9 @@ class Potential {
 
   void initialize(System *system);
 
-  void reset_force(System *system,bool calcEnergy);
-  void calc_force(int step,System *system);
-  void enhanced_sampling(System* system, bool calcEnergy, int step);
+  void reset_force(System *system, bool calcEnergy);
+  void calc_force(int step, System *system);
+  void enhanced_sampling(System *system, bool calcEnergy, int step);
 };
 
 #endif
