@@ -1634,7 +1634,6 @@ void Potential::calc_force(int step,System *system) {
     cudaStreamWaitEvent(r->updateStream,r->nbdirectComplete,0);
   }
 
-
   // cudaEventRecord(r->forceComplete,r->updateStream);
   enhanced_sampling(system, calcEnergy, step);
 
@@ -1652,92 +1651,46 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
   Run* r = system->run;
   int helper=(system->idCount==2); 
 
-  if (system->msld->L_LEUS){
+  if (system->msld->oss){
     // Copy and reset memory
     cudaMemcpyAsync(system->msld->dUdL_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, r->ossBias);
     cudaMemsetAsync(system->msld->dUdT_msld_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
     system->msld->oss_lambda_to_theta_force(system); // fill dUdT_msld_d
-    cudaMemsetAsync(system->msld->bias_potential_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
+    cudaMemsetAsync(system->msld->bias_potential_d, 0, system->msld->siteCount*sizeof(real), r->ossBias);
     cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
     // Get force & sampling
     system->msld->getforce_oss(system, calcEnergy);
     system->msld->add_sample(system, step); 
     system->msld->log_sampling(system, step); 
     cudaEventRecord(r->ossBiasComplete, r->ossBias);
-  }
+    cudaStreamWaitEvent(r->updateStream, r->ossBiasComplete, 0);
 
-  if (system->msld->oss){
-    if (system->id == helper) {
-      cudaStreamWaitEvent(r->ossBonded, r->ossBiasComplete, 0);
-      getforce_bond_oss(system);
-      getforce_dihe_oss(system);
-      getforce_impr_oss(system);
-      getforce_angle_oss(system);
-      getforce_cmap_oss(system);
-      cudaEventRecord(r->ossBondedComplete, r->ossBonded);
-      cudaStreamWaitEvent(r->updateStream, r->ossBondedComplete, 0);
-    }
-    if (system->id>=0) {
-      cudaStreamWaitEvent(r->alchemDirect, r->ossBiasComplete, 0);
-      getforce_nbdirect_oss(system);
-      cudaEventRecord(r->alchemDirectComplete, r->alchemDirect);
-      cudaStreamWaitEvent(r->updateStream, r->alchemDirectComplete, 0);
-    }
-    if (system->id==0) {
-      cudaStreamWaitEvent(r->alchemRecip, r->ossBiasComplete, 0);
-      getforce_ewaldself_oss(system);
-      getforce_ewald_oss(system);
-      getforce_nb14_oss(system);
-      getforce_nbex_oss(system);
-      cudaEventRecord(r->alchemRecipComplete, r->alchemRecip);
-      cudaStreamWaitEvent(r->updateStream, r->alchemRecipComplete, 0);
+    if(system->msld->bias_mag > 1e-5){
+      if (system->id == helper) {
+        cudaStreamWaitEvent(r->ossBonded, r->ossBiasComplete, 0);
+        getforce_bond_oss(system);
+        getforce_dihe_oss(system);
+        getforce_impr_oss(system);
+        getforce_angle_oss(system);
+        getforce_cmap_oss(system);
+        cudaEventRecord(r->ossBondedComplete, r->ossBonded);
+        cudaStreamWaitEvent(r->updateStream, r->ossBondedComplete, 0);
+      }
+      if (system->id>=0) {
+        cudaStreamWaitEvent(r->alchemDirect, r->ossBiasComplete, 0);
+        getforce_nbdirect_oss(system);
+        cudaEventRecord(r->alchemDirectComplete, r->alchemDirect);
+        cudaStreamWaitEvent(r->updateStream, r->alchemDirectComplete, 0);
+      }
+      if (system->id==0) {
+        cudaStreamWaitEvent(r->alchemRecip, r->ossBiasComplete, 0);
+        getforce_ewaldself_oss(system);
+        getforce_ewald_oss(system);
+        getforce_nb14_oss(system);
+        getforce_nbex_oss(system);
+        cudaEventRecord(r->alchemRecipComplete, r->alchemRecip);
+        cudaStreamWaitEvent(r->updateStream, r->alchemRecipComplete, 0);
+      }
     }
   }
 }
-
-
-  // GaMD
-  /*
-  if (system->msld->GaMD_total || system->msld->GaMD_torsion){ 
-    // Wait on V
-    cudaStreamWaitEvent(r->gamdBias, r->nbdirectComplete, 0);
-    cudaStreamWaitEvent(r->gamdBias, r->nbrecipComplete, 0);
-    cudaStreamWaitEvent(r->gamdBias, r->biaspotComplete, 0);
-    cudaStreamWaitEvent(r->gamdBias, r->bondedComplete, 0);
-    // Every step of this requires potential energy
-    system->state->recv_energy();
-    // Init
-    if (system->run->step < system->msld->init_steps){
-      real init_left = 
-        ((real)system->msld->init_steps - system->run->step) 
-        / (system->msld->init_steps);
-      if(init_left < .75){ // throw 25% away for equil
-        if (system->run->step == system->msld->init_steps - 1){ // Last step
-          printf("Resetting GaMD for equil!\n");
-          system->msld->gamd_update(system, true);
-          system->msld->gamd_reset(system);
-        } else {
-          system->msld->gamd_update(system, false);
-        }
-      }
-    }
-    // equil
-    else if (system->run->step < system->msld->equil_steps){
-      real equil_left = 
-      ((real)system->msld->equil_steps - system->run->step) 
-      / (system->msld->equil_steps - system->msld->init_steps);
-      if (equil_left < .90){ // Throw 10% away to equil
-        bool update = equil_left < .70; // 20% spent sampling w/o updates to E or k  
-        system->msld->gamd_update(system, update);
-      }
-      system->msld->getforce_gamd(system);
-      system->msld->GaMD_force = true;
-    // prod
-    } else {
-      system->msld->getforce_gamd(system);
-      system->msld->GaMD_force = true;
-    }
-    cudaStreamWaitEvent(r->updateStream, r->gamdBiasComplete, 0);
-  }
-  */
-
