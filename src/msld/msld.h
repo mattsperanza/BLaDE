@@ -68,7 +68,7 @@ public:
 
   // MSLD L-LEUS style theta dynamics
   bool L_LEUS = true; // overrides new_implicit
-  leus_func L_LEUS_function = leus_sin2x;
+  leus_func L_LEUS_function = leus_sin2;
   real* dLdT_d; // first derivative of lambda w.r.t. theta
   real* d2LdT2_d; // second derivative of lambda w.r.t. theta
   real plateau_w = .1; 
@@ -109,9 +109,9 @@ public:
   // Metadynamics adjustable parameters
   bool standard_tempering = false;
   int sample_freq = 5; // also affects how often <dU/dT> gets calculated (histogram potential evaluations can be expensive)
-  real bias_mag = .05; // if it is zero we don't do expensive d2U/dTdX calculation
-  real temper_amount = 3.0; 
-  real temper_offset = 0.0;
+  real bias_mag = .00; // if it is zero we don't do expensive d2U/dTdX calculation
+  real temper_amount = 2.0; 
+  real temper_offset = 1.0;
   real T_std = .02; 
   real dUdT_std = 4.0;  
   real dUdT_max = 2000;

@@ -470,18 +470,23 @@ void write_histogram_file(System* system, std::string file_name) {
     return;
   }
 
-  if (system->msld->oss) {
+  Msld* m = system->msld;
+
+  if (m->oss) {
     // Print average dUdL
-    int nL = system->state->lambdaCount - 1;
-    file << "# Num_Lambdas: " << nL << "\n";
+    int nS = m->siteCount - 1;
+    file << "# Num_Sites: " << nS << "\n";
   
-    int bins = system->msld->L_1D_bins;
+    int total_bins = 0;
+    for(int i = 0; i < nS; i++){
+      total_bins += m->T_bins[i];
+    }
     real* dUdL = (real*)malloc(bins * nL * sizeof(real));
     real* dUdL_d = system->msld->ensemble_dUdL_d;
     cudaMemcpy(dUdL, dUdL_d, bins * nL * sizeof(real), cudaMemcpyDefault);
   
     file << "# ABF <dU/dL>\n";
-    for (int i = 0; i < nL; i++) {
+    for (int i = 0; i < nSite; i++) {
       file << "# Lambda " << i << " Bins " << bins << "\n";
       for (int j = 0; j < bins; j++) {
           file << i << ", " << j << ", " << dUdL[i * bins + j] << "\n";
