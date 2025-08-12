@@ -419,12 +419,53 @@ void parse_msld(char *line,System *system)
     system->selections->dump();
   } else if (strcmp(token, "alpha") == 0){
     system->msld->alpha=io_nextf(line);
-  } else if (strcmp(token, "oss") == 0) {
-    system->msld->oss=io_nextb(line);
   } else if (strcmp(token, "leus") == 0){
     system->msld->L_LEUS=io_nextb(line); 
+  } else if (strcmp(token, "leus_func") == 0){
+    std::string name = io_nexts(line);
+    if(name=="linear"){
+      system->msld->L_LEUS_function=leus_linear;
+    } else if (name=="cubic"){
+      system->msld->L_LEUS_function=leus_cubic;
+    } else if (name=="quintic"){
+      system->msld->L_LEUS_function=leus_quintic;
+    } else if (name=="sin2"){
+      system->msld->L_LEUS_function=leus_sin2;
+    } else if (name=="x-sin"){
+      system->msld->L_LEUS_function=leus_xsin;
+      system->msld->xsin_n = (real)io_nexti(line);
+    } else {
+      printf("Function %s not supported for L-LEUS!", name);
+      exit(1);
+    }
+  } else if (strcmp(token, "plateau_w") == 0){
+    system->msld->plateau_w=io_nextf(line);
+  } else if (strcmp(token, "transition_w") == 0){
+    system->msld->transition_w=io_nextf(line);
+  } else if (strcmp(token, "oss") == 0) {
+    system->msld->oss=io_nextb(line);
+  } else if (strcmp(token, "oss_log_freq") == 0){
+    system->msld->oss_log_freq=io_nexti(line);
+  } else if (strcmp(token, "oss_write_freq")==0){
+    system->msld->oss_write_freq=io_nexti(line);
+  } else if (strcmp(token, "bias_mag") == 0){
+    system->msld->bias_mag=io_nextf(line);
+  } else if (strcmp(token, "standard_tempering") == 0){
+    system->msld->standard_tempering=io_nextb(line);
+  } else if (strcmp(token, "temper_amount") == 0){
+    system->msld->temper_amount=io_nextf(line);
+  } else if (strcmp(token, "temper_offset") == 0){
+    system->msld->temper_offset=io_nextf(line);
   } else if (strcmp(token, "T_std") == 0){
     system->msld->T_std=io_nextf(line);
+  } else if (strcmp(token, "dUdT_std") == 0){
+    system->msld->dUdT_std=io_nextf(line);
+  } else if (strcmp(token, "bins_per_std") == 0){
+    system->msld->bins_per_std=io_nexti(line);
+  } else if (strcmp(token, "n_std_search") == 0){
+    system->msld->n_std_search=io_nexti(line);
+  } else if (strcmp(token, "dUdT_max") == 0){
+    system->msld->dUdT_max=io_nextf(line);
   } else if (strcmp(token, "warmup_samples") == 0){
     system->msld->warmup_samples=io_nexti(line);
   } else if (strcmp(token, "update_steps") == 0){
@@ -810,14 +851,19 @@ static __device__ int safe_histogram_index(real val, int num_bins, real max, rea
 }
 
 void Msld::init_oss(System* system){
-  T_res = T_std / 2.0;
-  dUdT_res = dUdT_std / 2.0;
-  T_search = (int)(5.0*T_std/T_res); // 10
-  dUdT_search = (int)(5.0*dUdT_std/dUdT_res); // 10
+  T_res = T_std / bins_per_std;
+  dUdT_res = dUdT_std / bins_per_std;
+  T_search = (int)(n_std_search*T_std/T_res); // 10 by default
+  dUdT_search = (int)(n_std_search*dUdT_std/dUdT_res); // 10 by default
+  if((2*T_search+1)*(2*dUdT_search+1) > 1024){
+    printf("Please decrease n_std_search or bins_per_std to decrease threads required per histogram evaluation!");
+    exit(1);
+  }
 
   int total_T_bins = 0;
   T_bins = (int*) calloc(siteCount, sizeof(int));
-  dUdT_bins = (int) ((abs(dUdT_max) + abs(dUdT_min)) / dUdT_res) + 1; // histogram has bins exactly on edges 
+  dUdT_min = -dUdT_max;
+  dUdT_bins = (int) ((abs(dUdT_max) + abs(dUdT_min)) / dUdT_res) + 1; // histogram has bins exactly on edges
   for(int i = 1; i < siteCount; i++){
     T_bins[i] = (int) (site_period[i] / T_res) + 1;
     total_T_bins += T_bins[i];
@@ -830,7 +876,6 @@ void Msld::init_oss(System* system){
 
   cudaMalloc(&oss_potential_d, total_T_bins*dUdT_bins*sizeof(real));
   cudaMemset(oss_potential_d, 0, total_T_bins*dUdT_bins*sizeof(real));
-  oss_potential = (real*) calloc(total_T_bins*dUdT_bins, sizeof(real));
 
   cudaMalloc(&oss_ensemble_dUdT_d, total_T_bins*sizeof(real));
   cudaMemset(oss_ensemble_dUdT_d, 0, total_T_bins*sizeof(real));
@@ -843,6 +888,9 @@ void Msld::init_oss(System* system){
 
   cudaMalloc(&oss_max_pot_d, total_T_bins*sizeof(real));
   cudaMemset(oss_max_pot_d, 0, total_T_bins*sizeof(real));
+
+  cudaMalloc(&oss_min_max_d, sizeof(real));
+  cudaMemset(oss_min_max_d, 0, sizeof(real));
 
   int min[total_T_bins];
   for(int i = 0; i < total_T_bins; i++){ min[i] = dUdT_bins-1; }
@@ -860,7 +908,7 @@ void Msld::log_sampling(System* system, int step){
   State* s = system->state;
   Run* r = system->run;
 
-  if(step % (sample_freq*100) != 0 || step == 0){
+  if(step % (oss_log_freq) != 0 || step == 0){ 
     return;
   }
 
@@ -868,10 +916,12 @@ void Msld::log_sampling(System* system, int step){
   for(int i = 0; i < siteCount; i++) { total_T_bins += T_bins[i]; }
   real ensemble_dUdT[total_T_bins], counts[total_T_bins];
   real dGdF[blockCount];
+  real min_max;
   cudaMemcpy(counts, oss_theta_counts_d, total_T_bins*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(ensemble_dUdT, oss_ensemble_dUdT_d, total_T_bins*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(bias_potential, bias_potential_d, siteCount*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(dGdF, dGdF_d, blockCount*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(&min_max, oss_min_max_d, sizeof(real), cudaMemcpyDefault);
   system->state->recv_state();
   system->state->recv_lambda();
 
@@ -880,7 +930,12 @@ void Msld::log_sampling(System* system, int step){
   int start = 0;
   for (int site = 1; site < siteCount; site++) { // Skip environment site
     printf("Step: %ld\n", r->step);
-    printf("Site: %d, theta: %f, hist_bias: %f\n", system->state->theta[prev_subs], site, bias_potential[site]);
+    real U = max(bias_potential[site] - temper_offset, 0.0) / system->state->leapParms1->kT;
+    real decay_local= exp(-U/temper_amount);
+    U = max(min_max - temper_offset, 0.0) / system->state->leapParms1->kT;
+    real decay_global = exp(-U/temper_amount);
+    printf("Site: %d, theta: %f, hist_bias: %f, local decay: %f, global decay: %f\n", 
+      system->state->theta[prev_subs], site, bias_potential[site], decay_local, decay_global);
     real l_sum = 0;
     printf("Lambdas: [");
     for(int i = prev_subs; i < prev_subs+blocksPerSite[site]; i++){
@@ -971,7 +1026,8 @@ __global__ void add_sample_hist_kernel(
   real tempering, real temper_offset, real* bias_potential, real* oss_max_bias,
   // Output
   real* histogram, real* theta_counts, 
-  int* dUdT_sampled_max, int* dUdT_sampled_min
+  int* dUdT_sampled_max, int* dUdT_sampled_min,
+  real* oss_min_max
 ){
   int i = blockIdx.x*blockDim.x+threadIdx.x;
   if(i < siteCount && i != 0){ // none for environment
@@ -989,13 +1045,12 @@ __global__ void add_sample_hist_kernel(
 
     // Find min of max bias in each T
     real bias = max(bias_potential[i]-temper_offset, 0.0);
-    if(!standard_tempering){
-      real min = 1e9;
-      for(int j = theta_start; j < theta_start+T_bins[i]; j++){
-        min = min > oss_max_bias[j] ? oss_max_bias[j] : min;
-      }
-      bias = max(bias_potential[i] - temper_offset, 0.0);
+    real min = 1e9;
+    for(int j = theta_start; j < theta_start+T_bins[i]; j++){
+      min = min > oss_max_bias[j] ? oss_max_bias[j] : min;
     }
+    *oss_min_max = min;
+    bias = max(bias_potential[i] - temper_offset, 0.0);
     real decay = exp(-bias/(tempering*kT));
     //printf("min = %f, current_bias: %f, bias = %f, decay = %f\n", min, bias_potential[i], bias, decay);
     // TODO: PBMeta across site histograms?
@@ -1014,7 +1069,7 @@ __global__ void add_sample_hist_kernel(
   }
 }
 
-void Msld::add_sample(System* system, int step) { // Step = 0 during NPT MC trials, don't add samples
+void Msld::add_sample(System* system, int step) { 
   cudaStream_t stream = 0;
   Run* r = system->run;
   State* s = system->state;
@@ -1023,8 +1078,12 @@ void Msld::add_sample(System* system, int step) { // Step = 0 during NPT MC tria
   if (system->run) {
     stream=system->run->ossBias;
   }
+  // Step = 0 during NPT MC trials, don't add samples
+  if(step == 0 && !update_fe_surface && step < update_steps){
+    return;
+  }
 
-  if(step % sample_freq == 0 && step != 0){
+  if(step % sample_freq == 0){
     real kT = system->state->leapParms1->kT; 
     add_sample_hist_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
       kT, siteCount, blocksPerSite_d,
@@ -1037,10 +1096,17 @@ void Msld::add_sample(System* system, int step) { // Step = 0 during NPT MC tria
       temper_amount, temper_offset, bias_potential_d, oss_max_pot_d,
       // Output
       oss_histogram_d, oss_theta_counts_d,
-      oss_dUdT_max_d, oss_dUdT_min_d);
+      oss_dUdT_max_d, oss_dUdT_min_d, oss_min_max_d);
 
     // updates potential with new sample (only where affected) & recalculates <dU/dT>
     get_ABF_from_hist(system);
+  }
+
+  if(step % oss_write_freq == 0){ // write files every 1k samples (1k-10k steps or 1-20ps)
+    //printf("Writing hist_potential.txt!\n");
+    write_histogram_file(system, "hist_potential.txt", true);
+    //printf("Writing hist_restart.txt!\n");
+    write_histogram_file(system, "hist_restart.txt", false);
   }
 }
 
@@ -1119,7 +1185,7 @@ __global__ void getforce_hist_kernel(
   int iSearch_T = threadIdx.x;    // T search offset
   int iSearch_dUdT = threadIdx.y; // dUdT search offset
   if (iSite >= siteCount) return;
-  if (energy && (iT >= vert_slices || idUdT >= dUdT_bins)) return;
+  if (energy && (iT >= vert_slices || idUdT >= horz_slices)) return;
   
   int start_site = 0;
   int theta_start = 0;
@@ -1137,17 +1203,18 @@ __global__ void getforce_hist_kernel(
   real dUdT_resolution = (dUdT_max-dUdT_min)/(dUdT_bins-1.0);
   if (energy) { // Re-center to evaluate potential at other grid points
     int T_index = safe_histogram_index(thetas[start_site], T_bins[iSite], site_period[iSite], 0);
-    T_index -= floor(vert_slices/2.0) - iT;
+    T_index += -(int)floor(vert_slices/2.0) + iT;
     T = T_index * T_resolution; 
     if (T < 0) { T += site_period[iSite]; } // T periodic
     if (T >= site_period[iSite]) { T -= site_period[iSite]; }
     // Corresponding dUdT from idUdT
     int dUdT_index = safe_histogram_index(dUdT, dUdT_bins, dUdT_max, dUdT_min);
-    dUdT_index -= floor(vert_slices/2.0) - idUdT;
+    //printf("dUdT_index: %d, new_dUdT_id: %d, idUdT: %d\n", dUdT_index, dUdT_index-((int)floor(horz_slices/2.0)+idUdT), idUdT);
+    dUdT_index += -floor(horz_slices/2.0) + idUdT;
     dUdT = dUdT_min + dUdT_index*dUdT_resolution;
   }
   
-  // Point on grid close to (T, dUdT)
+  // Point on grid close to (T, dUdT) where we evalutate potential
   int X = safe_histogram_index(T, T_bins[iSite], site_period[iSite], 0);
   int Y = safe_histogram_index(dUdT, dUdT_bins, dUdT_max, dUdT_min);
   if(energy && iSearch_T == 0 && iSearch_dUdT == 0){ // (0,0) block thread sets potential at block origin to zero 
@@ -1314,9 +1381,9 @@ void Msld::get_ABF_from_hist(System *system){
     stream=system->run->ossBias;
   }
   // Update potential grid with new sample
+  dim3 blockDim(2*T_search+1, 2*dUdT_search+1, 1); // both search params should be 10
   int vert_slices = 2*T_search + 1;
   int horz_slices = 2*dUdT_search + 1;
-  dim3 blockDim(T_search, dUdT_search, 1);
   dim3 gridDim(siteCount-1, vert_slices, horz_slices); // (iSite, iT, idUdT)
   getforce_hist_kernel<<<gridDim, blockDim, shMem, stream>>>(
     siteCount, blocksPerSite_d,
@@ -1347,7 +1414,7 @@ void Msld::get_ABF_from_hist(System *system){
 }
 
 // fills dF[0] = L(T), dF[1] = dLdT, dF[1] = d2LdT2
-__device__ void leus_f(real_x theta, real transition_w, real plateau_w, real_x* dF, leus_func func_type){
+__device__ void leus_f(real_x theta, real transition_w, real plateau_w, real_x* dF, leus_func func_type, real xsin_n){
   // Transition regions have inclusive bounds, plateaus have exclusive bounds (if plateau = 0, never hit that region)
   bool forward = theta >= 0.0 && theta <= transition_w;
   bool backward = theta >= transition_w + plateau_w && theta <= 2*transition_w + plateau_w; 
@@ -1374,9 +1441,8 @@ __device__ void leus_f(real_x theta, real transition_w, real plateau_w, real_x* 
       dF[0] = sinT*sinT;
       dF[1] = M_PI*sinT*cosT*dTdT;
       dF[2] = .5*pow(M_PI*dTdT, 2.0)*(cosT*cosT - sinT*sinT);
-    } else if (func_type == leus_sin2x){
-      real n = 3.0; // n=1 recovers sin^2-like curve
-      real arg = 2*M_PI*n;
+    } else if (func_type == leus_xsin){
+      real arg = 2*M_PI*xsin_n;
       real_x sinT = sin(arg*theta);
       real_x cosT = cos(arg*theta);
       dF[0] = theta - (sinT/arg);
@@ -1398,7 +1464,7 @@ __global__ void calc_lambda_from_theta_kernel(
   real_x *lambda,real_x *theta,
   int siteCount,int *siteBound,
   real fnex, 
-  bool L_LEUS, leus_func func_type, 
+  bool L_LEUS, leus_func func_type, real xsin_n,
   real plateau_w, real transition_w, 
   real* dLdT, real* d2LdT2){
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -1429,7 +1495,7 @@ __global__ void calc_lambda_from_theta_kernel(
         real_x dF[3];
         // Shift function into place
         real_x shift = -(j-1)*(transition_w + plateau_w) - plateau_w;
-        leus_f(T + shift, transition_w, plateau_w, dF, func_type);
+        leus_f(T + shift, transition_w, plateau_w, dF, func_type, xsin_n);
         lambda[ji+j] = dF[0];
         dLdT[ji+j] = dF[1];
         d2LdT2[ji+j] = dF[2];
@@ -1479,7 +1545,7 @@ void Msld::calc_lambda_from_theta(cudaStream_t stream,System *system)
   if (!fix) { // ffix
     calc_lambda_from_theta_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
       s->lambda_d,s->theta_d,siteCount,siteBound_d,fnex,
-      L_LEUS, L_LEUS_function, 
+      L_LEUS, L_LEUS_function, xsin_n,
       plateau_w, transition_w,
       dLdT_d, d2LdT2_d);
   } else {
@@ -1499,7 +1565,7 @@ void Msld::init_lambda_from_theta(cudaStream_t stream,System *system)
   if (!fix) { // ffix
     calc_lambda_from_theta_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
       s->lambda_d,s->theta_d,siteCount,siteBound_d,fnex,
-      L_LEUS, L_LEUS_function, 
+      L_LEUS, L_LEUS_function, xsin_n, 
       plateau_w, transition_w,
       dLdT_d, d2LdT2_d);
   } else {

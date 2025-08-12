@@ -460,9 +460,8 @@ void write_checkpoint_file(const char *fnm,System *system)
   }
 }
 
-void write_histogram_file(System* system, std::string file_name) {
+void write_histogram_file(System* system, std::string file_name, bool potential) {
   // Print path to file
-  /*
   char cwd[1024];
   std::ofstream file(file_name);
   if (!file) {
@@ -472,54 +471,54 @@ void write_histogram_file(System* system, std::string file_name) {
 
   Msld* m = system->msld;
 
-  if (m->oss) {
+  if (m->oss && m->L_LEUS) {
     // Print average dUdL
-    int nS = m->siteCount - 1;
-    file << "# Num_Sites: " << nS << "\n";
+    int nS = m->siteCount;
+    file << "# Num_Sites: " << nS-1 << "\n"; // will be read in as num histograms
   
     int total_bins = 0;
     for(int i = 0; i < nS; i++){
       total_bins += m->T_bins[i];
     }
-    real* dUdL = (real*)malloc(bins * nL * sizeof(real));
-    real* dUdL_d = system->msld->ensemble_dUdL_d;
-    cudaMemcpy(dUdL, dUdL_d, bins * nL * sizeof(real), cudaMemcpyDefault);
+    real* dUdT = (real*)malloc(total_bins * sizeof(real));
+    real* dUdT_d = system->msld->oss_ensemble_dUdT_d;
+    cudaMemcpy(dUdT, dUdT_d, total_bins*sizeof(real), cudaMemcpyDefault);
   
-    file << "# ABF <dU/dL>\n";
-    for (int i = 0; i < nSite; i++) {
-      file << "# Lambda " << i << " Bins " << bins << "\n";
-      for (int j = 0; j < bins; j++) {
-          file << i << ", " << j << ", " << dUdL[i * bins + j] << "\n";
+    file << "# ABF <dU/dT>\n";
+    int accum=0;
+    for (int i = 1; i < nS; i++) {
+      file << "# Site " << i << " Bins " << m->T_bins[i] << "\n";
+      for (int j = accum; j < accum+m->T_bins[i]; j++) {
+          file << i << ", " << j << ", " << dUdT[j] << "\n";
       }
+      accum+=m->T_bins[i];
     }
-    free(dUdL);
+    free(dUdT);
 
-    int L_bins = system->msld->L_2D_bins;
-    real L_max = system->msld->L_max;
-    real L_min = system->msld->L_min;
-    int dUdL_bins = system->msld->dUdL_bins;
-    real dUdL_max = system->msld->dUdL_max;
-    real dUdL_min = system->msld->dUdL_min;
-
-    real* hist_potential = (real*)malloc(L_bins * dUdL_bins * nL * sizeof(real));
-    cudaMemcpy(hist_potential, system->msld->path_histogram_d, L_bins * dUdL_bins * nL * sizeof(real), cudaMemcpyDeviceToHost);
+    real* hist_potential = (real*)malloc(total_bins*m->dUdT_bins*sizeof(real));
+    if(potential){
+      cudaMemcpy(hist_potential, system->msld->oss_potential_d, total_bins*m->dUdT_bins*sizeof(real), cudaMemcpyDeviceToHost);
+    } else { // for restart file
+      cudaMemcpy(hist_potential, system->msld->oss_histogram_d, total_bins*m->dUdT_bins*sizeof(real), cudaMemcpyDeviceToHost);
+    }
 
     file << "# Histogram Potential\n";
-    for (int i = 0; i < nL; i++) {
-      file << "# Lambda " << i << " L_bins: " << L_bins << " L_range: [" << L_min << ", " << L_max << "]"
-         << " dUdL_bins: " << dUdL_bins << " dUdL_range: [" << dUdL_min << ", " << dUdL_max << "] " << "\n";
-      for (int j = 0; j < L_bins; j++) {
-        for (int k = 0; k < dUdL_bins; k++) {
-          int idx = i * L_bins * dUdL_bins + j * dUdL_bins + k;
+    accum=0;
+    for (int i = 1; i < nS; i++) {
+      file << "# Theta " << i << " T_bins: " << m->T_bins[i] << " T_range: [" << 0 << ", " << m->site_period[i] << "]"
+         << " dUdT_bins: " << m->dUdT_bins << " dUdT_range: [" << m->dUdT_min << ", " << m->dUdT_max << "] " << "\n";
+      for (int j = 0; j < m->T_bins[i]; j++) {
+        for (int k = 0; k < m->dUdT_bins; k++) {
+          int idx = (accum+j)*m->dUdT_bins + k;
           file << i << ", " << j << ", " << k << ", " << hist_potential[idx] << "\n";
         }
       }
+      accum+= m->T_bins[i];
     }
     free(hist_potential);
   }
 
   file.close();
-  */
 }
 
 void read_checkpoint_file(const char *fnm,System *system)

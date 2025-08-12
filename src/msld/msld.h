@@ -22,9 +22,8 @@ typedef enum leus_func {
   leus_linear,
   leus_cubic,
   leus_quintic,
-  leus_septic,
   leus_sin2,
-  leus_sin2x,
+  leus_xsin,
 } Leus_func;
 
 class Msld {
@@ -69,10 +68,11 @@ public:
   // MSLD L-LEUS style theta dynamics
   bool L_LEUS = true; // overrides new_implicit
   leus_func L_LEUS_function = leus_sin2;
+  real xsin_n = 1; // number of sub-plateaus in transition + 1
   real* dLdT_d; // first derivative of lambda w.r.t. theta
   real* d2LdT2_d; // second derivative of lambda w.r.t. theta
   real plateau_w = .1; 
-  real transition_w = 2;
+  real transition_w = 2.0;
   real* site_period_d; // [0, site_period) range of theta sampling in each site
   real* site_period; // [0, site_period) range of theta sampling in each site
 
@@ -93,7 +93,6 @@ public:
   // 2D histogram memory is layed out to give [nSite][theta][dU/dT] -> dU/dT is most continuous in memory
   real* oss_histogram_d; // [sum_sites(T_bins[i]*dUdT_bins)] sampled grid points including tempering weight
   real* oss_potential_d; // [sum_sites(T_bins[i]*dUdT_bins] potential from 2d metadynamics, used for <dU/dT> calculation
-  real* oss_potential;
   // 1D memory f(theta)
   real* oss_theta_counts_d; // [Ns*2*L_bins*Ns] # of samples in each theta bin
   bool weighted_dUdL; // boltzmann weight ensemble average <dU/dT>
@@ -101,7 +100,11 @@ public:
   int* oss_dUdT_min_d; //[Ns*T_bins] index of minimum value dU/dT sample 
   int* oss_dUdT_max_d; //[Ns*T_bins] index of maximum value dU/dT sample
   real* oss_max_pot_d; //[Ns*T_bins] max potential at given X in histogram
-  real warmup_samples = 0; // # of samples before <dU/dT> is fully subtracted off in ABF
+  real* oss_min_max_d; // min value of oss_max_pot_d
+  real warmup_samples = 20; // # of samples before <dU/dT> is fully subtracted off in ABF
+
+  int oss_log_freq = 1000; // log every # steps
+  int oss_write_freq = 1000; // write histogram potential and restart files every # steps 
   
   // Linear k*dU/dT bias
   real oss_k = .0; // normally just set this to be zero
@@ -109,14 +112,16 @@ public:
   // Metadynamics adjustable parameters
   bool standard_tempering = false;
   int sample_freq = 5; // also affects how often <dU/dT> gets calculated (histogram potential evaluations can be expensive)
-  real bias_mag = .00; // if it is zero we don't do expensive d2U/dTdX calculation
+  real bias_mag = .01; // if it is zero we don't do expensive d2U/dTdX calculation
   real temper_amount = 2.0; 
   real temper_offset = 1.0;
   real T_std = .02; 
   real dUdT_std = 4.0;  
   real dUdT_max = 2000;
-  real dUdT_min = -dUdT_max;
+  int bins_per_std = 2;
+  int n_std_search = 5; // search this many std in each direction
   // Derived or Fixed Parameters
+  real dUdT_min = -dUdT_max;
   real dUdT_res; // dUdT_std / 2.0
   real T_res; // T_std / 2.0
   int dUdT_bins; 
