@@ -72,7 +72,7 @@ public:
   real* dLdT_d; // first derivative of lambda w.r.t. theta
   real* d2LdT2_d; // second derivative of lambda w.r.t. theta
   real plateau_w = .1; 
-  real transition_w = 2.0;
+  real transition_w = 4.0;
   real* site_period_d; // [0, site_period) range of theta sampling in each site
   real* site_period; // [0, site_period) range of theta sampling in each site
 
@@ -85,6 +85,7 @@ public:
   real* dUdT_msld; // [blockCount]
 
   // 2D histogramming of (T, dU/dT) for each site
+  bool oss_force_test = false;
   bool oss = false; // Perform Orthogonal Space Sampling calculations
   bool oss_theta = true;
   real* dGdF_d; // [blockCount] OSS chain rule multiplier, dGdF[i] * d2U/dTidX
@@ -97,11 +98,13 @@ public:
   real* oss_theta_counts_d; // [Ns*2*L_bins*Ns] # of samples in each theta bin
   bool weighted_dUdL; // boltzmann weight ensemble average <dU/dT>
   real* oss_ensemble_dUdT_d; // [Ns*2*L_bins*Ns] <dU/dT> computed from histogram
+  real* oss_dUdT_var_d; // <(dU/dT)^2> - <dU/dT>^2
+  real* oss_eff_n_d; // sum(exp(U_bias/kT))^2 / sum(exp(2*U_bias/kT))
   int* oss_dUdT_min_d; //[Ns*T_bins] index of minimum value dU/dT sample 
   int* oss_dUdT_max_d; //[Ns*T_bins] index of maximum value dU/dT sample
   real* oss_max_pot_d; //[Ns*T_bins] max potential at given X in histogram
   real* oss_min_max_d; // min value of oss_max_pot_d
-  real warmup_samples = 20; // # of samples before <dU/dT> is fully subtracted off in ABF
+  real warmup_samples = 50; // # of samples before <dU/dT> is fully subtracted off in ABF
 
   int oss_log_freq = 1000; // log every # steps
   int oss_write_freq = 1000; // write histogram potential and restart files every # steps 
@@ -110,6 +113,7 @@ public:
   real oss_k = .0; // normally just set this to be zero
 
   // Metadynamics adjustable parameters
+  bool temper = true;
   bool standard_tempering = false;
   int sample_freq = 5; // also affects how often <dU/dT> gets calculated (histogram potential evaluations can be expensive)
   real bias_mag = .01; // if it is zero we don't do expensive d2U/dTdX calculation

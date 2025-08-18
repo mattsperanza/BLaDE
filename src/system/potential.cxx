@@ -1652,18 +1652,20 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
   int helper=(system->idCount==2); 
 
   if (system->msld->oss){
-    // Copy and reset memory
-    cudaMemcpyAsync(system->msld->dUdL_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, r->ossBias);
-    cudaMemsetAsync(system->msld->dUdT_msld_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
-    system->msld->oss_lambda_to_theta_force(system); // fill dUdT_msld_d
-    cudaMemsetAsync(system->msld->bias_potential_d, 0, system->msld->siteCount*sizeof(real), r->ossBias);
-    cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
-    // Get force & sampling
-    system->msld->getforce_oss(system, calcEnergy);
-    system->msld->add_sample(system, step); 
-    system->msld->log_sampling(system, step); 
-    cudaEventRecord(r->ossBiasComplete, r->ossBias);
-    cudaStreamWaitEvent(r->updateStream, r->ossBiasComplete, 0);
+    if(!system->msld->oss_force_test){
+      // Copy and reset memory
+      cudaMemcpyAsync(system->msld->dUdL_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, r->ossBias);
+      cudaMemsetAsync(system->msld->dUdT_msld_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
+      system->msld->oss_lambda_to_theta_force(system); // fill dUdT_msld_d
+      cudaMemsetAsync(system->msld->bias_potential_d, 0, system->msld->siteCount*sizeof(real), r->ossBias);
+      cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
+      // Get force & sampling
+      system->msld->getforce_oss(system, calcEnergy);
+      system->msld->add_sample(system, step); 
+      system->msld->log_sampling(system, step); 
+      cudaEventRecord(r->ossBiasComplete, r->ossBias);
+      cudaStreamWaitEvent(r->updateStream, r->ossBiasComplete, 0);
+    }
 
     if(system->msld->bias_mag > 1e-5){
       if (system->id == helper) {

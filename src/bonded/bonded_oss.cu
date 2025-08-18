@@ -342,8 +342,9 @@ void getforce_angleT_oss(System *system,box_type box)
   N=p->softAngleCount;
   if (N>0) getforce_angle_kernel_oss<flagBox,true><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
     N,p->softAngles_d,(real3*)s->position_fd,
-    (real3_f*)s->force_d,box,alchem_force,
-    s->lambdaForce_d,softExp,
+    (real3_f*)s->force_d,box,
+    s->lambda_fd,
+    alchem_force,softExp,
     system->msld->dLdT_d, system->msld->d2LdT2_d,
     system->msld->dGdF_d);
 }

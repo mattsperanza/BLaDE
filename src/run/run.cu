@@ -476,6 +476,7 @@ void test_OST_force(System *system) {
 
   // Test on both sides of a plateau & for multiple lambdas
   printf("Starting OSS Force Test (by moving theta)...\n");
+  system->msld->oss_force_test = true;
   bool ossPrior = system->msld->oss;
   int len = 2*system->state->lambdaCount+3*system->state->atomCount; // theta forces at end
   int theta_0 = len-system->state->lambdaCount;
@@ -486,7 +487,6 @@ void test_OST_force(System *system) {
   }
   cudaMemcpy(system->state->positionBuffer_d+theta_0, thetas, system->state->lambdaCount*sizeof(real_x), cudaMemcpyDefault);
   for (int i = 0; i < eeend; i++) {
-    //if(i <= 0){ continue; }
     printf("Term %d Numerical Test: \n", i);
     system->run->calcTermFlag[i] = true;
     // Calculate ref dU(X, L) to subtract from force w/ oss
@@ -503,16 +503,16 @@ void test_OST_force(System *system) {
     double sum = 0;
     double num_sum = 0;
     // For each site's theta
-    // You should comment out the setting of dGdF_d and adding sample in potential.cxx
     for (int j = 1; j < system->msld->blockCount; j++) { 
-      // Set dGdF[:] = 0 and dGdF[j] = e * pi
-      if(j != system->msld->siteBound[system->msld->lambdaSite[j]]){ continue; }
-      if(j != 1){ continue; }
+      if(j != system->msld->siteBound[system->msld->lambdaSite[j]]){ continue; } // only move theta of first sub
+      //if(j != 1){continue;} // something wrong with setting dGdF
+      // Set dGdF[:] = 0 and dGdF[site] = e * pi
       real pi_e = M_PI*M_E;
       real dGdF[system->state->lambdaCount];
       memset(dGdF, 0, system->state->lambdaCount*sizeof(real));
+      int site = system->msld->lambdaSite[j];
       int ji = system->msld->siteBound[system->msld->lambdaSite[j]];
-      for(int k = 0; k < system->msld->blocksPerSite[j]; k++){
+      for(int k = 0; k < system->msld->blocksPerSite[site]; k++){
         dGdF[ji+k] = pi_e;
       }
       cudaMemcpy(system->msld->dGdF_d, dGdF, system->msld->blockCount*sizeof(real), cudaMemcpyDefault);
@@ -613,7 +613,7 @@ void test_OSS_conservation(System* system) {
   int nL = system->state->lambdaCount-1; // no environment
 
   // NPT/NVT for 100k steps adding bias
-  int total = 1000010;
+  int total = 100010;
   int updating = total * .5;
   printf("Running %d steps with bias+update and %d steps just bias to equilibrate!\n", updating, total-updating);
   system->run->freqNRG = 1;
@@ -621,9 +621,7 @@ void test_OSS_conservation(System* system) {
     system->run->step = step;
     system->domdec->update_domdec(system,(step%system->domdec->freqDomdec)==0);
     system->potential->calc_force(step,system);
-    gpuCheck(cudaPeekAtLastError());
     system->state->update(step,system);
-    gpuCheck(cudaPeekAtLastError());
 
     if(step == updating){
       printf("\n\n\nTurning off FE estimation updating!\n\n\n");
@@ -636,23 +634,13 @@ void test_OSS_conservation(System* system) {
       for (int i = 0; i < eetotal; i++) {
         printf("Term %d: %f\n", i, system->state->energy[i]);
       }
-      exit(-1);
+      exit(1);
     }
 
-    if(step % 1000 == 0){
+    if(step % 10000 == 0){
       printf("Step: %d, Pot: %f, Kin: %f, Tot: %f\n",step,system->state->energy[eepotential],system->state->energy[eekinetic],system->state->energy[eetotal]);
-      real dUdL[nL+1], dU_msld[nL+1];
-      cudaMemcpy(dUdL, system->state->lambdaForce_d, (nL+1)*sizeof(real), cudaMemcpyDefault);
-      printf("Lambda Force: [ ");
-      for (int i = 0; i < nL+1; i++) {
-        printf("%f -> %f, ", dU_msld[i], dUdL[i]);
-      }
-      printf(" ]\n");
     }
   }
-
-  // Output Histogram data to histograms.txt
-  //write_histogram_file(system, "histograms.txt");
 
   // Turn on NVE for 500k w/ oss & abf update off
   printf("Running 500k steps with oss to check energy conservation!\n");
@@ -665,23 +653,18 @@ void test_OSS_conservation(System* system) {
    system->state->energy[eepotential],
    system->state->energy[eekinetic],
    system->state->energy[eetotal]);
-  for (int step=1; step<1000000; step++) {
+  for (int step=1; step<5000000; step++) {
     system->domdec->update_domdec(system,(step%system->domdec->freqDomdec)==0);
     system->potential->calc_force(step,system);
-    gpuCheck(cudaPeekAtLastError());
     system->state->update(step,system);
     print_dynamics_output(step,system);
+    // Log
     system->state->recv_energy();
-    // 1 kT = .5922 kcal/mol at 298K?
     real diff = system->state->energy[eetotal] - eStart;
-    real drift = abs(system->state->energy[eetotal] - eStart) * (1/.5922);
-    real drift_step_dof = drift / (step*system->state->leapParms1->dt/1000) / (system->state->atomCount*3 + system->state->lambdaCount - 2);
-    printf("Step: %d, Pot: %f, Kin: %f, Tot: %f, Start Tot: %f, Tot - Start (kcal/mol): %f, |Drift| (kT): %f, Drift/step/dof: %f\n",
-      step,
-      system->state->energy[eepotential],
-      system->state->energy[eekinetic],
-      system->state->energy[eetotal],
-      eStart, diff,
+    real drift = abs(system->state->energy[eetotal] - eStart)/system->state->leapParms1->kT;
+    real drift_step_dof = drift / (step*system->state->leapParms1->dt/1000) / (system->state->atomCount*3 + system->msld->siteCount); // DOF correct only for L_LEUS
+    printf("Step: %d, Pot: %f, Kin: %f, Tot: %f, Start Tot: %f, Tot - Start (kcal/mol): %f, |Drift| (unitless): %f, Drift/step/dof: %f\n",
+      step, system->state->energy[eepotential], system->state->energy[eekinetic], system->state->energy[eetotal], eStart, diff,
       drift, drift_step_dof);
     if (isnan(system->state->energy[eetotal]) || isinf(system->state->energy[eetotal])) {
       printf("Something went wrong!!\n");
@@ -689,7 +672,7 @@ void test_OSS_conservation(System* system) {
       for (int i = 0; i < eetotal; i++) {
         printf("Term %d: %f\n", i, system->state->energy[i]);
       }
-      exit(-1);
+      exit(1);
     }
   }
 }
@@ -731,11 +714,6 @@ void Run::test(char *line,char *token,System *system)
   } else if (testType=="oss_energy_cons") {
     if(system->msld->oss){
       test_OSS_conservation(system);
-    } else {
-      printf("OSS or ABF boolean not set!!!\n");
-      printf("OSS or ABF boolean not set!!!\n");
-      printf("OSS or ABF boolean not set!!!\n");
-      printf("Not running energy conservation test!!!\n");
     }
     return;
   } else {

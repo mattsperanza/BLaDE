@@ -450,6 +450,8 @@ void parse_msld(char *line,System *system)
     system->msld->oss_write_freq=io_nexti(line);
   } else if (strcmp(token, "bias_mag") == 0){
     system->msld->bias_mag=io_nextf(line);
+  } else if (strcmp(token, "temper") == 0){
+    system->msld->temper=io_nextb(line);
   } else if (strcmp(token, "standard_tempering") == 0){
     system->msld->standard_tempering=io_nextb(line);
   } else if (strcmp(token, "temper_amount") == 0){
@@ -880,6 +882,12 @@ void Msld::init_oss(System* system){
   cudaMalloc(&oss_ensemble_dUdT_d, total_T_bins*sizeof(real));
   cudaMemset(oss_ensemble_dUdT_d, 0, total_T_bins*sizeof(real));
 
+  cudaMalloc(&oss_eff_n_d, total_T_bins*sizeof(real));
+  cudaMemset(oss_eff_n_d, 0, total_T_bins*sizeof(real));
+  
+  cudaMalloc(&oss_dUdT_var_d, total_T_bins*sizeof(real));
+  cudaMemset(oss_dUdT_var_d, 0, total_T_bins*sizeof(real));
+
   cudaMalloc(&oss_theta_counts_d, total_T_bins*sizeof(real));
   cudaMemset(oss_theta_counts_d, 0, total_T_bins*sizeof(real));
 
@@ -914,11 +922,13 @@ void Msld::log_sampling(System* system, int step){
 
   int total_T_bins = 0;
   for(int i = 0; i < siteCount; i++) { total_T_bins += T_bins[i]; }
-  real ensemble_dUdT[total_T_bins], counts[total_T_bins];
+  real ensemble_dUdT[total_T_bins], dUdT_var[total_T_bins], counts[total_T_bins], eff_counts[total_T_bins];
   real dGdF[blockCount];
   real min_max;
   cudaMemcpy(counts, oss_theta_counts_d, total_T_bins*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(eff_counts, oss_eff_n_d, total_T_bins*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(ensemble_dUdT, oss_ensemble_dUdT_d, total_T_bins*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(dUdT_var, oss_dUdT_var_d, total_T_bins*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(bias_potential, bias_potential_d, siteCount*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(dGdF, dGdF_d, blockCount*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(&min_max, oss_min_max_d, sizeof(real), cudaMemcpyDefault);
@@ -930,18 +940,18 @@ void Msld::log_sampling(System* system, int step){
   int start = 0;
   for (int site = 1; site < siteCount; site++) { // Skip environment site
     printf("Step: %ld\n", r->step);
-    real U = max(bias_potential[site] - temper_offset, 0.0) / system->state->leapParms1->kT;
-    real decay_local= exp(-U/temper_amount);
-    U = max(min_max - temper_offset, 0.0) / system->state->leapParms1->kT;
-    real decay_global = exp(-U/temper_amount);
-    printf("Site: %d, theta: %f, hist_bias: %f, local decay: %f, global decay: %f\n", 
-      system->state->theta[prev_subs], site, bias_potential[site], decay_local, decay_global);
+    printf("Site: %d, Theta: %f, Lambdas: [", site, system->state->theta[prev_subs]);
     real l_sum = 0;
-    printf("Lambdas: [");
     for(int i = prev_subs; i < prev_subs+blocksPerSite[site]; i++){
       printf(" %f,", system->state->lambda[i]);
     }
     printf("] \n");
+    real U = max(bias_potential[site] - temper_offset, 0.0) / system->state->leapParms1->kT;
+    real decay_local = exp(-U/temper_amount);
+    U = max(min_max - temper_offset, 0.0) / system->state->leapParms1->kT;
+    real decay_global = exp(-U/temper_amount);
+    printf("Bias: %f, Local Tempering: %f, Global Tempering: %f, MinX_MaxY: %f\n",
+      bias_potential[site], decay_local, decay_global, min_max);
     printf("dGdF: [");
     for(int i = prev_subs; i < prev_subs+blocksPerSite[site]; i++){
       printf(" %f,", dGdF[i]);
@@ -951,25 +961,33 @@ void Msld::log_sampling(System* system, int step){
     printf("Sub Period: %f, Period: %f, T_bins: %d\n", period, site_period[site], T_bins[site]);
     real rel[blocksPerSite[site]];
     real dG = 0;
+    real var[blocksPerSite[site]];
+    real dG_var = 0;
     int count = 1;
     printf("dG i->i+1: [");
     for(int i = prev_bins; i < prev_bins+T_bins[site]-1; i++){
       dG += T_res*(ensemble_dUdT[i]+ensemble_dUdT[i+1])/2.0; 
+      dG_var += T_res*T_res*dUdT_var[i];
       real T = T_res*(i+1); // dG at this point
       if(T >= count*period+.5*plateau_w){
-        printf(" %f (T=%f),", dG, T);
         rel[count-1] = dG;
+        var[count-1] = dG_var;
+        printf(" %5.2f +- %5.2f (T=%4.2f),", dG, sqrt(dG_var), T);
         dG = 0;
+        dG_var = 0;
         count++;
       }
     }
     rel[blocksPerSite[site]-1] = dG;
-    printf(" %f (T=%f) ]\n", dG, (T_bins[site]-1.0)*T_res);
+    var[blocksPerSite[site]-1] = dG_var;
+    printf(" %5.2f +- %5.2f (T=%4.2f) ]\n", dG, sqrt(dG_var), (T_bins[site]-1.0)*T_res);
     printf("dG 0->i: [");
     dG = 0;
+    dG_var = 0;
     for(int i = 0; i < blocksPerSite[site]; i++){
       dG += rel[i];
-      printf(" %f,", dG);
+      dG_var += var[i];
+      printf(" %5.2f +- %5.2f,", dG, sqrt(dG_var));
     }
     printf("]\n");
     printf("Samples: [");
@@ -977,6 +995,19 @@ void Msld::log_sampling(System* system, int step){
     count = 1;
     for(int i = 0; i < T_bins[site]-1; i++){
       samples += counts[i];
+      real T = T_res*(i+1); 
+      if(T > count*period){
+        printf(" %f,", samples);
+        samples = 0;
+        count++;
+      }
+    } 
+    printf(" %f ]\n", samples);
+    printf("Effective Samples: [");
+    samples = 0;
+    count = 1;
+    for(int i = 0; i < T_bins[site]-1; i++){
+      samples += eff_counts[i];
       real T = T_res*(i+1); // dG at this point
       if(T > count*period){
         printf(" %f,", samples);
@@ -1044,13 +1075,12 @@ __global__ void add_sample_hist_kernel(
     }
 
     // Find min of max bias in each T
-    real bias = max(bias_potential[i]-temper_offset, 0.0);
-    real min = 1e9;
+    real minimum = 1000;
     for(int j = theta_start; j < theta_start+T_bins[i]; j++){
-      min = min > oss_max_bias[j] ? oss_max_bias[j] : min;
+      minimum = minimum > oss_max_bias[j] ? oss_max_bias[j] : minimum;
     }
-    *oss_min_max = min;
-    bias = max(bias_potential[i] - temper_offset, 0.0);
+    oss_min_max[0] = minimum; // only 1 element
+    real bias = standard_tempering ? max(bias_potential[i]-temper_offset, 0.0) : max(minimum-temper_offset, 0.0);
     real decay = exp(-bias/(tempering*kT));
     //printf("min = %f, current_bias: %f, bias = %f, decay = %f\n", min, bias_potential[i], bias, decay);
     // TODO: PBMeta across site histograms?
@@ -1078,10 +1108,13 @@ void Msld::add_sample(System* system, int step) {
   if (system->run) {
     stream=system->run->ossBias;
   }
-  // Step = 0 during NPT MC trials, don't add samples
-  if(step == 0 && !update_fe_surface && step < update_steps){
+
+  // Step = 0 during NPT MC trials, don't add samples (maybe don't need to do this)
+  if(step == 0 || !update_fe_surface){
     return;
   }
+
+  update_fe_surface = step < update_steps; // last sample if false
 
   if(step % sample_freq == 0){
     real kT = system->state->leapParms1->kT; 
@@ -1316,7 +1349,9 @@ __global__ void hist_ensemble_dUdL_kernel(
     // Inputs
     real* potential_grid, real* histogram, real* theta_counts, real oss_k,
     // Output
-    real* oss_ensemble_dUdT, real* oss_max_potential
+    real* oss_ensemble_dUdT, 
+    real* oss_dUdT_var, real* oss_eff_n,
+    real* oss_max_potential
 ) {
   int site = blockIdx.x+1;
   int tid = threadIdx.x;
@@ -1324,7 +1359,9 @@ __global__ void hist_ensemble_dUdL_kernel(
     real dUdT_res = (dUdT_max - dUdT_min) / (dUdT_bins - 1.0);
     real offset = 0.0;
     real weighted_dUdT = 0;
+    real weighted_dUdT2 = 0;
     real Z = 0;
+    real Z2 = 0;
     real max_bias = 0;
     int start_1D = 0;
     for(int j = 0; j < site; j++){
@@ -1349,23 +1386,31 @@ __global__ void hist_ensemble_dUdL_kernel(
           if (current_bias > offset) {
             real correction = exp(offset - current_bias); // Zero on first execution since -INFINITY
             weighted_dUdT *= correction;
+            weighted_dUdT2 *= correction;
             Z *= correction;
+            Z2 *= correction;
             offset = current_bias;
           }
           weighted_dUdT += dUdT * exp(current_bias - offset);
+          weighted_dUdT2 += dUdT*dUdT*exp(current_bias - offset);
           Z += exp(current_bias - offset);
+          Z2 += exp(2*(current_bias - offset)); // Z^2
         } else { // Uniform weighting
           weighted_dUdT += dUdT * histogram[grid_index];
+          weighted_dUdT2 += dUdT*dUdT * histogram[grid_index];
           Z += histogram[grid_index];
+          Z2 += histogram[grid_index]*histogram[grid_index];
         }
       }
       oss_ensemble_dUdT[start_1D + X] = Z > 1e-5 ? weighted_dUdT / Z : 0.0;
-      if(abs(X - center_X) < 5){
-        //printf("site: %d, X: %d, T: %f, <dU/dT>: %f, low: %d, high: %d, max_bias: %f\n", site, X, thetas[site], oss_ensemble_dUdT[start_1D+X], low, high, max_bias);
-      }
+      oss_dUdT_var[start_1D + X] = Z > 1e-5 ? weighted_dUdT2 / Z : 0.0;
+      oss_eff_n[start_1D + X] = Z2 > 1e-5 ? Z*Z / Z2 : 0.0;
       // Linear ramp
       oss_ensemble_dUdT[start_1D+X] *= theta_counts[start_1D+X] < warmup_samples ? theta_counts[start_1D+X]/warmup_samples : 1.0;
       oss_max_potential[start_1D+X] = max_bias*kT; // kT will get multiplied back later
+      if(abs(X - center_X) < 5){
+        //printf("site: %d, X: %d, T: %f, <dU/dT>: %f, low: %d, high: %d, max_bias: %f\n", site, X, thetas[site], oss_ensemble_dUdT[start_1D+X], low, high, max_bias);
+      }
     } 
   }
 }
@@ -1410,7 +1455,8 @@ void Msld::get_ABF_from_hist(System *system){
     // Inputs
     oss_potential_d, oss_histogram_d, oss_theta_counts_d, oss_k,
     // Outputs
-    oss_ensemble_dUdT_d, oss_max_pot_d);
+    oss_ensemble_dUdT_d, oss_dUdT_var_d, oss_eff_n_d,
+    oss_max_pot_d);
 }
 
 // fills dF[0] = L(T), dF[1] = dLdT, dF[1] = d2LdT2
