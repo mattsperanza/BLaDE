@@ -1653,6 +1653,10 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
 
   if (system->msld->oss){
     if(!system->msld->oss_force_test){
+      cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
+      cudaStreamWaitEvent(r->ossBias, r->nbrecipComplete, 0);
+      cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
+      cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
       // Copy and reset memory
       cudaMemcpyAsync(system->msld->dUdL_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, r->ossBias);
       cudaMemsetAsync(system->msld->dUdT_msld_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);

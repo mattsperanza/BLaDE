@@ -780,7 +780,6 @@ void Msld::initialize(System *system)
     memset(theta, 0, blockCount*sizeof(real_x));
   }
 
-  // Of total # of steps, use 1/4th to develop bias as default
   // blockCount
   dUdT_msld = (real*)malloc(blockCount*sizeof(real));
   cudaMalloc(&dUdT_msld_d, blockCount*sizeof(real));
@@ -796,6 +795,7 @@ void Msld::initialize(System *system)
   bias_potential = (real*)malloc(siteCount*sizeof(real));
   cudaMalloc(&bias_potential_d, siteCount*sizeof(real)); 
   cudaMemset(bias_potential_d, 0, siteCount*sizeof(real)); 
+  // Of total # of steps, use 1/4th to develop bias as default
   if (update_steps == -1){
     update_steps = .25*system->run->nsteps;
   }
@@ -1102,10 +1102,10 @@ __global__ void add_sample_hist_kernel(
     }
     pb_scale = pb_meta ? exp(-bias_potential[i]/kT)/pb_scale : 1.0;
 
-    // Location of point on histogram and equivalent point on other side of theta curve
+    // Location of point on histogram
     int X = safe_histogram_index(T, T_bins[i], site_period[i], 0);
     int Y = safe_histogram_index(dUdT, dUdT_bins, dUdT_max, dUdT_min);
-    //printf(" (T: %f, dUdT: %f), (X1: %d, Y1: %d), T_bins: %d\n", T, dUdT, X, Y, T_bins[i]);
+    //printf("i: %d, (T: %f, dUdT: %f), (X1: %d, Y1: %d), T_bins: %d\n", i, T, dUdT, X, Y, T_bins[i]);
     if(X >= 0 && X <= T_bins[i]-1 && Y >= 0 && Y <= dUdT_bins-1){
       theta_counts[theta_start + X] += 1.0;
       int hist_index = (theta_start+X)*dUdT_bins + Y;
@@ -1259,10 +1259,10 @@ __global__ void getforce_hist_kernel(
   real dUdT_resolution = (dUdT_max-dUdT_min)/(dUdT_bins-1.0);
   if (energy) { // Re-center to evaluate potential at other grid points
     int T_index = safe_histogram_index(T, T_bins[iSite], site_period[iSite], 0);
-    T_index += -(int)floor(vert_slices/2.0) + iT;
+    T_index += -floor(vert_slices/2.0) + iT;
     T = T_index * T_resolution; 
     if (T < 0) { T += site_period[iSite]; } // T periodic
-    if (T >= site_period[iSite]) { T -= site_period[iSite]; }
+    if (T > site_period[iSite]) { T -= site_period[iSite]; } // would make this inclusive, but theres a bin exactly on site_period
     // Corresponding dUdT from idUdT
     int dUdT_index = safe_histogram_index(dUdT, dUdT_bins, dUdT_max, dUdT_min);
     dUdT_index += -floor(horz_slices/2.0) + idUdT;
@@ -1338,7 +1338,7 @@ __global__ void getforce_pb_meta_kernel(
         sum += exp(-bias_potential[j]/kT);
       }
       real pb_chain = exp(-bias_potential[i]/kT) / sum;
-      lEnergy = -kT*log(sum);
+      lEnergy = -kT*log(sum)/(siteCount-1.0);
       atomicAdd(total_bias, lEnergy);
       atomicAdd(&thetaForce[ji], dGdT[ji]*pb_chain);
       for (int j = ji; j < jf; j++){
@@ -1354,7 +1354,7 @@ __global__ void getforce_pb_meta_kernel(
   // Energy, if requested
   if (energy) {
     __syncthreads();
-    real_sum_reduce(lEnergy,sEnergy,energy);
+    //real_sum_reduce(lEnergy,sEnergy,energy);
   }
 }
 
@@ -1453,7 +1453,7 @@ __global__ void hist_ensemble_dUdT_kernel(
     if(X < 0) { X += T_bins[site]; }
     int low = dUdT_sampled_min[start_1D + X];
     int high = dUdT_sampled_max[start_1D + X];
-    if(high >= low && low >= 0 && high < dUdT_bins){ // if no samples this isn't true
+    if(high >= low && low >= 0 && high < dUdT_bins && X >= 0 && X < T_bins[site]){ // if no samples this isn't true
       for (int y = low; y <= high; y++) {
         real dUdT = dUdT_min + y*dUdT_res;
         int grid_index = (start_1D+X)*dUdT_bins + y;
