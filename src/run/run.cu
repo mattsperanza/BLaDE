@@ -631,13 +631,13 @@ void test_OSS_conservation(System* system) {
     if (isnan(system->state->energy[eetotal]) || isinf(system->state->energy[eetotal])) {
       printf("Something went wrong!!\n");
       printf("Energies: \n");
-      for (int i = 0; i < eetotal; i++) {
+      for (int i = 0; i < eeend; i++) {
         printf("Term %d: %f\n", i, system->state->energy[i]);
       }
       exit(1);
     }
 
-    if(step % 10000 == 0){
+    if(step % 1000 == 0){
       printf("Step: %d, Pot: %f, Kin: %f, Tot: %f\n",step,system->state->energy[eepotential],system->state->energy[eekinetic],system->state->energy[eetotal]);
     }
   }

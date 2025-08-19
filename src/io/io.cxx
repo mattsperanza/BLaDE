@@ -17,6 +17,8 @@
 #include <fstream>
 #include <iostream>
 #include <ostream>
+#include <sstream>
+#include <cstdio>  
 
 #include "io/variables.h"
 #include "system/parameters.h"
@@ -461,16 +463,17 @@ void write_checkpoint_file(const char *fnm,System *system)
 }
 
 void write_histogram_file(System* system, std::string file_name, bool potential) {
+  // Write to temporary file
+  std::string temp_file_name = file_name + ".tmp";
+  
   // Print path to file
   char cwd[1024];
-  std::ofstream file(file_name);
+  std::ofstream file(temp_file_name);
   if (!file) {
-    std::cerr << "Error: Unable to open file " << file_name << " for writing." << std::endl;
+    std::cerr << "Error: Unable to open file " << temp_file_name << " for writing." << std::endl;
     return;
   }
-
   Msld* m = system->msld;
-
   if (m->oss && m->L_LEUS) {
     // Print average dUdL
     int nS = m->siteCount;
@@ -519,6 +522,71 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
   }
 
   file.close();
+  
+  // Atomic
+  if (std::rename(temp_file_name.c_str(), file_name.c_str()) != 0) {
+    std::cerr << "Error: Failed to rename " << temp_file_name << " to " << file_name << std::endl;
+  }
+}
+
+// Assumes we haven't changed any OST parameters in .inp file
+bool read_histogram_file(System* system, std::string file_name) {
+    Msld* m = system->msld;
+    std::ifstream file(file_name);
+    if (!file) {
+        std::cerr << "Unable to open file " << file_name << " for restart." << std::endl;
+        return false;
+    }
+
+    printf("Reading OSS sampling from file!\n");
+    real* hist_potential = (real*)malloc(m->total_T_bins * m->dUdT_bins * sizeof(real));
+    int* max_dUdT_id = (int*)malloc(m->total_T_bins*sizeof(int));
+    cudaMemcpy(max_dUdT_id, m->oss_dUdT_max_d, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
+    int* min_dUdT_id = (int*)malloc(m->total_T_bins*sizeof(int));
+    cudaMemcpy(min_dUdT_id, m->oss_dUdT_min_d, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
+
+    // Skip to histogram section
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.find("# Histogram Potential") != std::string::npos) {
+            break;
+        }
+    }
+    // Read histogram data
+    int site, bin_idx, k_idx;
+    real hist_value;
+    char comma;
+    while (std::getline(file, line)) {
+        if (line[0] == '#') {
+            continue; // Skip comment lines
+        }
+        std::istringstream iss(line);
+        if (iss >> site >> comma >> bin_idx >> comma >> k_idx >> comma >> hist_value) {
+            int accum = 0;
+            for (int i = 1; i < site; i++) { // unchecked site indexing
+                accum += m->T_bins[i];
+            }
+            int X = accum+bin_idx;
+            if(X >= m->total_T_bins || X < 0 || k_idx < 0 || k_idx >= m->dUdT_bins){
+              printf("Something changed in OST settings, reading an out of bounds index!! X: %d, Y: %d\n", X, k_idx);
+              printf("Exiting...");
+              exit(1);
+            }
+            int idx = X*m->dUdT_bins + k_idx;
+            if (k_idx > max_dUdT_id[X]){ max_dUdT_id[X] = k_idx; }
+            if (k_idx < min_dUdT_id[X]){ min_dUdT_id[X] = k_idx; }
+            hist_potential[idx] = hist_value;
+        }
+    }
+    cudaMemcpy(system->msld->oss_histogram_d, hist_potential, m->total_T_bins * m->dUdT_bins * sizeof(real), cudaMemcpyHostToDevice);
+    cudaMemcpy(m->oss_dUdT_max_d, max_dUdT_id, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
+    cudaMemcpy(m->oss_dUdT_min_d, min_dUdT_id, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
+    free(hist_potential);
+    free(max_dUdT_id);
+    free(min_dUdT_id);
+    file.close();
+    printf("Finished reading OSS sampling from file!\n");
+    return true;
 }
 
 void read_checkpoint_file(const char *fnm,System *system)

@@ -88,7 +88,8 @@ public:
   bool oss_force_test = false;
   bool oss = false; // Perform Orthogonal Space Sampling calculations
   bool oss_theta = true;
-  real* dGdF_d; // [blockCount] OSS chain rule multiplier, dGdF[i] * d2U/dTidX
+  real* dGdF_d; // [blockCount] OSS chain rule multiplier due to gaussians, dGdF[i] * d2U/dTidX
+  real* dGdT_d; // [blockCount] theta force due to gaussians, only filled in at first sub of each site
   real* bias_potential_d; // [siteCount] total added bias potential at current step
   real* bias_potential; // [siteCount] total added bias potential current step
   // 2D histogram memory is layed out to give [nSite][theta][dU/dT] -> dU/dT is most continuous in memory
@@ -104,7 +105,7 @@ public:
   int* oss_dUdT_max_d; //[Ns*T_bins] index of maximum value dU/dT sample
   real* oss_max_pot_d; //[Ns*T_bins] max potential at given X in histogram
   real* oss_min_max_d; // min value of oss_max_pot_d
-  real warmup_samples = 50; // # of samples before <dU/dT> is fully subtracted off in ABF
+  real warmup_samples = 30; // # of samples before <dU/dT> is fully subtracted off in ABF
 
   int oss_log_freq = 1000; // log every # steps
   int oss_write_freq = 1000; // write histogram potential and restart files every # steps 
@@ -113,6 +114,9 @@ public:
   real oss_k = .0; // normally just set this to be zero
 
   // Metadynamics adjustable parameters
+  bool oss_restartable = false;
+  bool oss_restart_success = false;
+  bool pb_meta = true;
   bool temper = true;
   bool standard_tempering = false;
   int sample_freq = 5; // also affects how often <dU/dT> gets calculated (histogram potential evaluations can be expensive)
@@ -131,6 +135,7 @@ public:
   int dUdT_bins; 
   int* T_bins_d; // [siteCount] site_period / grid resolution + 1, should always be integer multiple
   int* T_bins;
+  int total_T_bins;
   int T_search; // 5*T_std/res 
   int dUdT_search; // 5*dUdT_std/res
 
@@ -202,7 +207,7 @@ public:
   void log_sampling(System *system, int step);
   void add_sample(System *system, int step);
   void getforce_oss(System* system, bool calcEnergy);
-  void get_ABF_from_hist(System* system);
+  void update_ABF_from_hist(System* system, int vert_slices, int horz_slices, bool relative_indexing);
 
   // L_LEUS
   void oss_lambda_to_theta_force(System* system);

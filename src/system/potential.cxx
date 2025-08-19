@@ -1659,6 +1659,7 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
       system->msld->oss_lambda_to_theta_force(system); // fill dUdT_msld_d
       cudaMemsetAsync(system->msld->bias_potential_d, 0, system->msld->siteCount*sizeof(real), r->ossBias);
       cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
+      cudaMemsetAsync(system->msld->dGdT_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
       // Get force & sampling
       system->msld->getforce_oss(system, calcEnergy);
       system->msld->add_sample(system, step); 

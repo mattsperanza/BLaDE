@@ -168,6 +168,11 @@ void getforce_bondT_oss(System *system,box_type box)
 
   // Decide if we compute chain rule due to lambda or theta
   real_f* alchem_force = system->msld->oss_theta ? s->thetaForce_d : s->lambdaForce_d;
+  if(softExp <= 2.0 && p->softBondCount > 0){
+    printf("OSS does not handle softExp <= 2! Please use 3 or greater, or check bonded_oss.cu.\n");
+    printf("Exiting...");
+    exit(1);
+  }
 
   N12=(r->calcTermFlag[eebond]?p->bond12Count:0);
   N=N12+(r->calcTermFlag[eeurey]?p->bond13Count:0);
@@ -331,6 +336,11 @@ void getforce_angleT_oss(System *system,box_type box)
   if (r->calcTermFlag[eeangle]==false) return;
 
   real_f* alchem_force = system->msld->oss_theta ? s->thetaForce_d : s->lambdaForce_d;
+  if(softExp <= 2.0 && p->softAngleCount > 0){
+    printf("OSS does not handle softExp <= 2! Please use 3 or greater, or check bonded_oss.cu.\n");
+    printf("Exiting...");
+    exit(1);
+  }
 
   N=p->angleCount;
   if (N>0) getforce_angle_kernel_oss<flagBox,false><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
@@ -534,6 +544,11 @@ void getforce_diheT_oss(System *system,box_type box)
 
   if (r->calcTermFlag[eedihe]==false) return;
   real_f* alchem_force = system->msld->oss_theta ? s->thetaForce_d : s->lambdaForce_d;
+  if(softExp <= 2.0 && p->softDiheCount > 0){
+    printf("OSS does not handle softExp <= 2! Please use 3 or greater, or check bonded_oss.cu.\n");
+    printf("Exiting...");
+    exit(1);
+  }
 
   N=p->diheCount;
   if (N>0) getforce_torsion_kernel_oss<flagBox,DihePotential,false> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
@@ -573,6 +588,11 @@ void getforce_imprT_oss(System *system,box_type box)
 
   if (r->calcTermFlag[eeimpr]==false) return;
   real_f* alchem_force = system->msld->oss_theta ? s->thetaForce_d : s->lambdaForce_d;
+  if(softExp <= 2.0 && p->softImprCount > 0){
+    printf("OSS does not handle softExp <= 2! Please use 3 or greater, or check bonded_oss.cu.\n");
+    printf("Exiting...");
+    exit(1);
+  }
 
   N=p->imprCount;
   if (N>0) getforce_torsion_kernel_oss <flagBox,ImprPotential,false> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
@@ -852,6 +872,11 @@ void getforce_cmapT_oss(System *system,box_type box)
 
   if (r->calcTermFlag[eecmap]==false) return;
   real_f* alchem_force = system->msld->oss_theta ? s->thetaForce_d : s->lambdaForce_d;
+  if(softExp <= 2.0 && p->softCmapCount > 0){
+    printf("OSS does not handle softExp <= 2! Please use 3 or greater, or check bonded_oss.cu.\n");
+    printf("Exiting...");
+    exit(1);
+  }
 
   N=p->cmapCount;
   if (N>0) getforce_cmap_kernel_oss<flagBox,false><<<(2*N+BLBO-1)/BLBO,BLBO,shMem,r->ossBonded>>>(
