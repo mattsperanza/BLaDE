@@ -35,8 +35,11 @@ class Run {
   std::string fnmCPO;
   std::string pathMTD;
   std::string fnmMTD_LMD;
+  std::string fnmMTD_THETA;
   std::string fnmMTD_dUdL;
+  std::string fnmMTD_dUdT;
   std::string fnmMTD_HIST;
+  std::string fnmMTD_BIAS;
   XDRFILE *fpXTC;
   XDRFILE *fpXLMD;
   FILE *fpLMD;
@@ -44,6 +47,9 @@ class Run {
   FILE *fpMTD_LMD;
   FILE *fpMTD_dUdL;
   FILE *fpMTD_HIST;
+  FILE *fpMTD_BIAS;
+  FILE *fpMTD_THETA;
+  FILE *fpMTD_dUdT;
   int freqXTC;
   int freqLMD;
   int freqNRG;

@@ -1658,6 +1658,7 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
       cudaMemsetAsync(system->msld->dUdT_msld_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
       system->msld->oss_lambda_to_theta_force(system); // fill dUdT_msld_d
       cudaMemsetAsync(system->msld->bias_potential_d, 0, system->msld->siteCount*sizeof(real), r->ossBias);
+      cudaMemsetAsync(system->msld->total_bias_d, 0, sizeof(real), r->ossBias);
       cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
       cudaMemsetAsync(system->msld->dGdT_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
       // Get force & sampling
@@ -1668,7 +1669,7 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
       cudaStreamWaitEvent(r->updateStream, r->ossBiasComplete, 0);
     }
 
-    if(system->msld->bias_mag > 1e-5){
+    if(system->msld->bias_mag > 1e-5 || system->msld->oss_force_test){
       if (system->id == helper) {
         cudaStreamWaitEvent(r->ossBonded, r->ossBiasComplete, 0);
         getforce_bond_oss(system);

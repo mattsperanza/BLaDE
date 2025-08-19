@@ -888,6 +888,10 @@ void Msld::init_oss(System* system){
   cudaMalloc(&oss_potential_d, total_T_bins*dUdT_bins*sizeof(real));
   cudaMemset(oss_potential_d, 0, total_T_bins*dUdT_bins*sizeof(real));
 
+  cudaMalloc(&total_bias_d, sizeof(real));
+  cudaMemset(total_bias_d, 0, sizeof(real));
+  total_bias = (real*)malloc(sizeof(real));
+
   cudaMalloc(&oss_ensemble_dUdT_d, total_T_bins*sizeof(real));
   cudaMemset(oss_ensemble_dUdT_d, 0, total_T_bins*sizeof(real));
 
@@ -917,6 +921,7 @@ void Msld::init_oss(System* system){
 
 void Msld::recv_meta(){
   cudaMemcpy(bias_potential, bias_potential_d, siteCount*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(total_bias, total_bias_d, sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(dUdL_msld, dUdL_msld_d, blockCount*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(dUdT_msld, dUdT_msld_d, blockCount*sizeof(real), cudaMemcpyDefault);
 }
@@ -1098,12 +1103,13 @@ __global__ void add_sample_hist_kernel(
     pb_scale = pb_meta ? exp(-bias_potential[i]/kT)/pb_scale : 1.0;
 
     // Location of point on histogram and equivalent point on other side of theta curve
-    int X = theta_start + safe_histogram_index(T, T_bins[i], site_period[i], 0);
+    int X = safe_histogram_index(T, T_bins[i], site_period[i], 0);
     int Y = safe_histogram_index(dUdT, dUdT_bins, dUdT_max, dUdT_min);
     //printf(" (T: %f, dUdT: %f), (X1: %d, Y1: %d), T_bins: %d\n", T, dUdT, X, Y, T_bins[i]);
     if(X >= 0 && X <= T_bins[i]-1 && Y >= 0 && Y <= dUdT_bins-1){
       theta_counts[theta_start + X] += 1.0;
-      int hist_index = X*dUdT_bins + Y;
+      int hist_index = (theta_start+X)*dUdT_bins + Y;
+      //printf("i: %d, Index: %d, theta_start: %d, X: %d, Y: %d\n", i, hist_index, theta_start, X, Y);
       histogram[hist_index] += decay*pb_scale;
       dUdT_sampled_max[theta_start+X] = Y > dUdT_sampled_max[theta_start+X] ? Y : dUdT_sampled_max[theta_start+X];
       dUdT_sampled_min[theta_start+X] = Y < dUdT_sampled_min[theta_start+X] ? Y : dUdT_sampled_min[theta_start+X];
@@ -1318,7 +1324,7 @@ __global__ void getforce_pb_meta_kernel(
   bool pb_meta, 
   real* bias_potential, real* dGdT, real* dGdF,
   // Outputs
-  real* thetaForce, real_e* energy // dGdF is also an output
+  real* thetaForce, real* total_bias, real_e* energy // dGdF is also an output
 ){
   int i=blockIdx.x*blockDim.x+threadIdx.x; // site
   real lEnergy = 0;
@@ -1333,13 +1339,15 @@ __global__ void getforce_pb_meta_kernel(
       }
       real pb_chain = exp(-bias_potential[i]/kT) / sum;
       lEnergy = -kT*log(sum);
+      atomicAdd(total_bias, lEnergy);
       atomicAdd(&thetaForce[ji], dGdT[ji]*pb_chain);
       for (int j = ji; j < jf; j++){
         dGdF[j] *= pb_chain;
       }
     } else { // simple sum of histograms
-      atomicAdd(&thetaForce[ji], dGdT[ji]);
       lEnergy = bias_potential[i];
+      atomicAdd(total_bias, lEnergy);
+      atomicAdd(&thetaForce[ji], dGdT[ji]);
     }
   }
 
@@ -1407,11 +1415,11 @@ void Msld::getforce_oss(System *system, bool calcEnergy) {
     pb_meta,
     bias_potential_d, dGdT_d, dGdF_d,
     // Outputs
-    s->thetaForce_d, pEnergy);
+    s->thetaForce_d, total_bias_d, pEnergy);
 }
 
 __global__ void hist_ensemble_dUdT_kernel(
-    real kT, int nSite, real* thetas,
+    real kT, int nSite, real* thetas, int* siteBound,
     int* T_bins, real* site_periods,
     int dUdT_bins, real dUdT_max, real dUdT_min,
     int* dUdT_sampled_max, int* dUdT_sampled_min,
@@ -1423,8 +1431,8 @@ __global__ void hist_ensemble_dUdT_kernel(
     real* oss_dUdT_var, real* oss_eff_n,
     real* oss_max_potential
 ) {
-  int site = blockIdx.x+1;
-  int tid = threadIdx.x;
+  int site = threadIdx.x+1;
+  int tid = blockIdx.x;
   if (site < nSite && tid < slice_count) { // each site
     real dUdT_res = (dUdT_max - dUdT_min) / (dUdT_bins - 1.0);
     real offset = 0.0;
@@ -1438,7 +1446,7 @@ __global__ void hist_ensemble_dUdT_kernel(
     for(int j = 0; j < site; j++){
       start_1D += T_bins[j];
     }
-    int X = safe_histogram_index(thetas[site], T_bins[site], site_periods[site], 0);
+    int X = safe_histogram_index(thetas[siteBound[site]], T_bins[site], site_periods[site], 0);
     int center_X = X;
     X += -floor(slice_count/2.0) + tid;
     if(X > T_bins[site]) { X -= T_bins[site]; }
@@ -1480,8 +1488,9 @@ __global__ void hist_ensemble_dUdT_kernel(
         oss_ensemble_dUdT[start_1D+X] *= samples/warmup_samples;
       }
       oss_max_potential[start_1D+X] = max_bias*kT; // kT will get multiplied back later
-      if(abs(X - center_X) < 5){
-        //printf("site: %d, X: %d, T: %f, <dU/dT>: %f, low: %d, high: %d, max_bias: %f\n", site, X, thetas[site], oss_ensemble_dUdT[start_1D+X], low, high, max_bias);
+      if(abs(X - center_X) < 5 && false){
+        printf("site: %d, X: %d, T: %f, <dU/dT>: %f, low: %d, high: %d, max_bias: %f\n", 
+          site, X, thetas[siteBound[site]], oss_ensemble_dUdT[start_1D+X], low, high, max_bias);
       }
     } 
   }
@@ -1514,11 +1523,11 @@ void Msld::update_ABF_from_hist(System *system, int vert_slices, int horz_slices
     oss_potential_d);
 
   // Compute <dU/dT> in region where potential got updated
-  dim3 blockDim1(vert_slices, 1, 1); 
-  dim3 gridDim1(siteCount-1, 1, 1);
+  dim3 blockDim1(siteCount-1, 1, 1); 
+  dim3 gridDim1(vert_slices, 1, 1);
   // relative_indexing doesn't really matter in X direction since it will get wrapped
   hist_ensemble_dUdT_kernel<<<gridDim1, blockDim1, 0, stream>>>(
-    s->leapParms1->kT, siteCount, s->theta_fd, 
+    s->leapParms1->kT, siteCount, s->theta_fd, siteBound_d,
     T_bins_d, site_period_d, 
     dUdT_bins, dUdT_max, dUdT_min, 
     oss_dUdT_max_d, oss_dUdT_min_d, 

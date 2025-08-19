@@ -41,9 +41,12 @@ Run::Run(System *system)
   fnmXTC="default.xtc";
   fnmLMD="default.lmd";
   fnmNRG="default.nrg";
-  fnmMTD_LMD = "oss_lmd.dat"; 
-  fnmMTD_dUdL = "oss_dUdL.dat";
-  fnmMTD_HIST = "oss_hist.dat";
+  fnmMTD_LMD = "data/oss_lmd.dat"; 
+  fnmMTD_THETA = "data/oss_theta.dat"; 
+  fnmMTD_dUdL = "data/oss_dUdL.dat";
+  fnmMTD_dUdT = "data/oss_dUdT.dat";
+  fnmMTD_HIST = "data/oss_hist.dat";
+  fnmMTD_BIAS = "data/oss_bias.dat";
   fnmCPI="";
   fnmCPO="default.cpt";
   fpXTC=NULL;
@@ -51,8 +54,11 @@ Run::Run(System *system)
   fpLMD=NULL;
   fpNRG=NULL;
   fpMTD_LMD=NULL;
+  fpMTD_THETA=NULL;
   fpMTD_dUdL=NULL;
+  fpMTD_dUdT=NULL;
   fpMTD_HIST=NULL;
+  fpMTD_BIAS=NULL;
   freqXTC=1000;
   freqLMD=10;
   freqNRG=10;
@@ -350,6 +356,18 @@ void Run::set_variable(char *line,char *token,System *system)
     if (fpMTD_HIST) fclose(fpMTD_HIST);
     fpMTD_HIST=NULL;
     fnmMTD_HIST=io_nexts(line);
+  } else if (strcmp(token, "fnmMTD_BIAS")==0){
+    if (fpMTD_BIAS) fclose(fpMTD_BIAS);
+    fpMTD_BIAS=NULL;
+    fnmMTD_BIAS=io_nexts(line);
+  } else if (strcmp(token, "fnmMTD_dUdT")==0){
+    if (fpMTD_dUdT) fclose(fpMTD_dUdT);
+    fpMTD_dUdT=NULL;
+    fnmMTD_dUdT=io_nexts(line);
+  } else if (strcmp(token, "fnmMTD_THETA")==0){
+    if (fpMTD_THETA) fclose(fpMTD_THETA);
+    fpMTD_THETA=NULL;
+    fnmMTD_THETA=io_nexts(line);
   } else if (strcmp(token,"fnmcpi")==0) {
     fnmCPI=io_nexts(line);
   } else if (strcmp(token,"fnmcpo")==0) {
@@ -816,8 +834,11 @@ void Run::dynamics_initialize(System *system)
   if (!fpREx && freqREx>0) fpREx=fpopen(fnmREx.c_str(),"w");
 #endif
   if (!fpMTD_LMD) fpMTD_LMD=fpopen(fnmMTD_LMD.c_str(),"w");
+  if (!fpMTD_THETA) fpMTD_THETA=fpopen(fnmMTD_THETA.c_str(),"w");
   if (!fpMTD_dUdL) fpMTD_dUdL=fpopen(fnmMTD_dUdL.c_str(),"w");
+  if (!fpMTD_dUdT) fpMTD_dUdT=fpopen(fnmMTD_dUdT.c_str(),"w");
   if (!fpMTD_HIST) fpMTD_HIST=fpopen(fnmMTD_HIST.c_str(),"w");
+  if (!fpMTD_BIAS) fpMTD_BIAS=fpopen(fnmMTD_BIAS.c_str(),"w");
 
   // Finish setting up MSLD
   system->msld->initialize(system);

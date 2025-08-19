@@ -67,7 +67,7 @@ public:
 
   // MSLD L-LEUS style theta dynamics
   bool L_LEUS = true; // overrides new_implicit
-  leus_func L_LEUS_function = leus_sin2;
+  leus_func L_LEUS_function = leus_xsin;
   real xsin_n = 1; // number of sub-plateaus in transition + 1
   real* dLdT_d; // first derivative of lambda w.r.t. theta
   real* d2LdT2_d; // second derivative of lambda w.r.t. theta
@@ -90,8 +90,10 @@ public:
   bool oss_theta = true;
   real* dGdF_d; // [blockCount] OSS chain rule multiplier due to gaussians, dGdF[i] * d2U/dTidX
   real* dGdT_d; // [blockCount] theta force due to gaussians, only filled in at first sub of each site
-  real* bias_potential_d; // [siteCount] total added bias potential at current step
-  real* bias_potential; // [siteCount] total added bias potential current step
+  real* bias_potential_d; // [siteCount] added bias potential at current step due to site histogram
+  real* bias_potential; // [siteCount] added bias potential current step due to site histogram
+  real* total_bias_d; //  pb meta bias
+  real* total_bias; // pb beta bias
   // 2D histogram memory is layed out to give [nSite][theta][dU/dT] -> dU/dT is most continuous in memory
   real* oss_histogram_d; // [sum_sites(T_bins[i]*dUdT_bins)] sampled grid points including tempering weight
   real* oss_potential_d; // [sum_sites(T_bins[i]*dUdT_bins] potential from 2d metadynamics, used for <dU/dT> calculation
@@ -107,6 +109,10 @@ public:
   real* oss_min_max_d; // min value of oss_max_pot_d
   real warmup_samples = 30; // # of samples before <dU/dT> is fully subtracted off in ABF
 
+  // Restarts
+  bool oss_restartable = false;
+  bool oss_restart_success = false;
+
   int oss_log_freq = 1000; // log every # steps
   int oss_write_freq = 1000; // write histogram potential and restart files every # steps 
   
@@ -114,8 +120,6 @@ public:
   real oss_k = .0; // normally just set this to be zero
 
   // Metadynamics adjustable parameters
-  bool oss_restartable = false;
-  bool oss_restart_success = false;
   bool pb_meta = true;
   bool temper = true;
   bool standard_tempering = false;

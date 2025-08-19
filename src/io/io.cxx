@@ -386,11 +386,28 @@ void print_meta(int step, System* system){
   }
   fprintf(fp, "\n\n");
 
-  fp=system->run->fpMTD_HIST;
+  fp=system->run->fpMTD_THETA;
   for(int i = 0; i < system->msld->blockCount; i++){
+    fprintf(fp, "%f ", system->state->theta[i]);
+  }
+  fprintf(fp, "\n\n");
+
+  fp=system->run->fpMTD_dUdT;
+  for(int i = 0; i < system->msld->blockCount; i++){
+    fprintf(fp, "%f ", system->msld->dUdT_msld[i]);
+  }
+  fprintf(fp, "\n\n");
+
+  fp=system->run->fpMTD_HIST;
+  for(int i = 0; i < system->msld->siteCount; i++){
     fprintf(fp, "%f ", system->msld->bias_potential[i]);
   }
   fprintf(fp, "\n\n");
+
+  fp=system->run->fpMTD_BIAS;
+  fprintf(fp, "%f ", *system->msld->total_bias);
+  fprintf(fp, "\n\n");
+
   fflush(NULL);
 }
 
@@ -479,10 +496,7 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
     int nS = m->siteCount;
     file << "# Num_Sites: " << nS-1 << "\n"; // will be read in as num histograms
   
-    int total_bins = 0;
-    for(int i = 0; i < nS; i++){
-      total_bins += m->T_bins[i];
-    }
+    int total_bins = m->total_T_bins;
     real* dUdT = (real*)malloc(total_bins * sizeof(real));
     real* dUdT_d = system->msld->oss_ensemble_dUdT_d;
     cudaMemcpy(dUdT, dUdT_d, total_bins*sizeof(real), cudaMemcpyDefault);
