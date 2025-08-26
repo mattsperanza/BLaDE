@@ -1646,12 +1646,12 @@ void Potential::calc_force(int step,System *system) {
   }
 }
 
-// OSS & GaMD
+// OSS & Local Elevation
 void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
   Run* r = system->run;
   int helper=(system->idCount==2); 
 
-  if (system->msld->oss){
+  if (system->msld->oss || system->msld->LE){
     if(!system->msld->oss_force_test){
       cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
       cudaStreamWaitEvent(r->ossBias, r->nbrecipComplete, 0);
@@ -1666,14 +1666,14 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
       cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
       cudaMemsetAsync(system->msld->dGdT_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
       // Get force & sampling
-      system->msld->getforce_oss(system, calcEnergy);
+      system->msld->getforce_bias(system, calcEnergy);
       system->msld->add_sample(system, step); 
       system->msld->log_sampling(system, step); 
       cudaEventRecord(r->ossBiasComplete, r->ossBias);
       cudaStreamWaitEvent(r->updateStream, r->ossBiasComplete, 0);
     }
 
-    if(system->msld->bias_mag > 1e-5 || system->msld->oss_force_test){
+    if(system->msld->bias_mag > 1e-5 || system->msld->oss_force_test && system->msld->oss){
       if (system->id == helper) {
         cudaStreamWaitEvent(r->ossBonded, r->ossBiasComplete, 0);
         getforce_bond_oss(system);

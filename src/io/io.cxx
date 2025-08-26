@@ -404,9 +404,22 @@ void print_meta(int step, System* system){
   }
   fprintf(fp, "\n\n");
 
+  fp=system->run->fpLMD_F;
+  for(int i = 0; i < system->msld->blockCount; i++){
+    fprintf(fp, "%f ", system->state->lambdaForce[i]);
+  }
+  fprintf(fp, "\n\n");
+
+  fp=system->run->fpTHETA_F;
+  for(int i = 0; i < system->msld->blockCount; i++){
+    fprintf(fp, "%f ", system->state->thetaForce[i]);
+  }
+  fprintf(fp, "\n\n");
+
   fp=system->run->fpMTD_BIAS;
   fprintf(fp, "%f ", *system->msld->total_bias);
   fprintf(fp, "\n\n");
+
 
   fflush(NULL);
 }

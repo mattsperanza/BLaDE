@@ -72,7 +72,7 @@ public:
   real* dLdT_d; // first derivative of lambda w.r.t. theta
   real* d2LdT2_d; // second derivative of lambda w.r.t. theta
   real plateau_w = .1; 
-  real transition_w = 4.0;
+  real transition_w = 1.0;
   real* site_period_d; // [0, site_period) range of theta sampling in each site
   real* site_period; // [0, site_period) range of theta sampling in each site
 
@@ -109,6 +109,9 @@ public:
   real* oss_min_max_d; // min value of oss_max_pot_d
   real warmup_samples = 30; // # of samples before <dU/dT> is fully subtracted off in ABF
 
+  // Linear offset
+  bool linear_shift = false; // subtract linear term which enforces cycle closure of ABF
+
   // Restarts
   bool oss_restartable = false;
   bool oss_restart_success = false;
@@ -116,9 +119,6 @@ public:
   int oss_log_freq = 1000; // log every # steps
   int oss_write_freq = 1000; // write histogram potential and restart files every # steps 
   
-  // Linear k*dU/dT bias
-  real oss_k = .0; // normally just set this to be zero
-
   // Metadynamics adjustable parameters
   bool pb_meta = true;
   bool temper = true;
@@ -129,7 +129,7 @@ public:
   real temper_offset = 1.0;
   real T_std = .02; 
   real dUdT_std = 4.0;  
-  real dUdT_max = 2000;
+  real dUdT_max = 1000;
   int bins_per_std = 2;
   int n_std_search = 5; // search this many std in each direction
   // Derived or Fixed Parameters
@@ -142,6 +142,17 @@ public:
   int total_T_bins;
   int T_search; // 5*T_std/res 
   int dUdT_search; // 5*dUdT_std/res
+
+  real oss_k = 0.0;
+
+  // Local Elevation
+  bool LE = false;
+  real f_red = .95;
+  real k_LE = .01; // 1e-3 kJ/mol = .239e-3 kcal/mol
+  real* R_d; // [site] starts at 1, add 1 for every double sweep across theta period
+  int* visited_bins_d; // [site] keeps track of sum of double sweep
+  int* theta_sweep_d; // [site*L_bins] keeps track of double sweeps
+  real* M_d; // [site*L_bins] Memory, theta bias is memory dotted with cubic bsplines
 
   int thetaCollBiasCount;
   real *kThetaCollBias;
@@ -210,7 +221,7 @@ public:
   void init_oss(System* system);
   void log_sampling(System *system, int step);
   void add_sample(System *system, int step);
-  void getforce_oss(System* system, bool calcEnergy);
+  void getforce_bias(System* system, bool calcEnergy);
   void update_ABF_from_hist(System* system, int vert_slices, int horz_slices, bool relative_indexing);
 
   // L_LEUS

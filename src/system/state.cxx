@@ -312,7 +312,9 @@ void State::recv_position()
 void State::recv_lambda()
 {
   cudaMemcpy(lambda,lambda_d,lambdaCount*sizeof(real_x),cudaMemcpyDeviceToHost);
+  cudaMemcpy(lambdaForce,lambdaForce_d,lambdaCount*sizeof(real_f),cudaMemcpyDeviceToHost);
   cudaMemcpy(theta,theta_d,lambdaCount*sizeof(real_x),cudaMemcpyDeviceToHost);
+  cudaMemcpy(thetaForce,thetaForce_d,lambdaCount*sizeof(real_f),cudaMemcpyDeviceToHost);
 }
 
 void State::recv_energy()

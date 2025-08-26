@@ -47,6 +47,8 @@ Run::Run(System *system)
   fnmMTD_dUdT = "data/oss_dUdT.dat";
   fnmMTD_HIST = "data/oss_hist.dat";
   fnmMTD_BIAS = "data/oss_bias.dat";
+  fnmLMD_F = "data/dUdL.dat";
+  fnmTHETA_F = "data/dUdT.dat";
   fnmCPI="";
   fnmCPO="default.cpt";
   fpXTC=NULL;
@@ -59,6 +61,8 @@ Run::Run(System *system)
   fpMTD_dUdT=NULL;
   fpMTD_HIST=NULL;
   fpMTD_BIAS=NULL;
+  fpLMD_F=NULL;
+  fpTHETA_F=NULL;
   freqXTC=1000;
   freqLMD=10;
   freqNRG=10;
@@ -839,6 +843,8 @@ void Run::dynamics_initialize(System *system)
   if (!fpMTD_dUdT) fpMTD_dUdT=fpopen(fnmMTD_dUdT.c_str(),"w");
   if (!fpMTD_HIST) fpMTD_HIST=fpopen(fnmMTD_HIST.c_str(),"w");
   if (!fpMTD_BIAS) fpMTD_BIAS=fpopen(fnmMTD_BIAS.c_str(),"w");
+  if (!fpLMD_F) fpLMD_F=fpopen(fnmLMD_F.c_str(), "w");
+  if (!fpTHETA_F) fpTHETA_F=fpopen(fnmTHETA_F.c_str(), "w");
 
   // Finish setting up MSLD
   system->msld->initialize(system);

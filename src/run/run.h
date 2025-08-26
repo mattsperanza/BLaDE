@@ -36,14 +36,18 @@ class Run {
   std::string pathMTD;
   std::string fnmMTD_LMD;
   std::string fnmMTD_THETA;
-  std::string fnmMTD_dUdL;
-  std::string fnmMTD_dUdT;
+  std::string fnmLMD_F; // dUdL overall
+  std::string fnmTHETA_F; // dUdT overall
+  std::string fnmMTD_dUdL; // dUdL msld
+  std::string fnmMTD_dUdT; // dUdT msld
   std::string fnmMTD_HIST;
   std::string fnmMTD_BIAS;
   XDRFILE *fpXTC;
   XDRFILE *fpXLMD;
   FILE *fpLMD;
   FILE *fpNRG;
+  FILE *fpLMD_F;
+  FILE *fpTHETA_F;
   FILE *fpMTD_LMD;
   FILE *fpMTD_dUdL;
   FILE *fpMTD_HIST;
