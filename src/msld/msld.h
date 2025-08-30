@@ -66,93 +66,109 @@ public:
   real alpha = 1.0; // lambda^alpha scaling
 
   // MSLD L-LEUS style theta dynamics
+  // Periodic function starts with sub 0 plateau, then transitions to sub 1, then sub 1 plateau
   bool L_LEUS = true; // overrides new_implicit
   leus_func L_LEUS_function = leus_xsin;
-  real xsin_n = 1; // number of sub-plateaus in transition + 1
+  real xsin_n = 1; // number of sub-plateaus in transition + 1 (only for xsin function)
   real* dLdT_d; // first derivative of lambda w.r.t. theta
   real* d2LdT2_d; // second derivative of lambda w.r.t. theta
-  real plateau_w = .1; 
-  real transition_w = 1.0;
+  real plateau_w = .1; // Length of physical regions for each substituent
+  real transition_w = 1.0; // Length of transition regions between sequential subsituents
   real* site_period_d; // [0, site_period) range of theta sampling in each site
   real* site_period; // [0, site_period) range of theta sampling in each site
 
-  // FE update & data
-  bool update_fe_surface = true; // add samples to histogram
-  int update_steps = -1; // timesteps of sampling while updating FE surface - default to 1/4th of simulation
+  // FE update & data -> all forms of sampling are updated similtantiously whether set or not
+  bool update_fe_surface = true; // add samples to histograms
+  int sample_freq = 2; // <dU/dT> from 2D gets updated with every sample
+  int update_steps = -1; // steps before turning update_fe_surface false - default to 1/4th of simulation
   real* dUdL_msld_d; // [blockCount] lambda forces from force field 
-  real* dUdT_msld_d; // [blockCount]
+  real* dUdT_msld_d; // [blockCount] theta forces from force field
   real* dUdL_msld; // [blockCount]
   real* dUdT_msld; // [blockCount]
+  real* theta_temp_d; // temperature of theta particles in L-LEUS
+  real* theta_temp;
+  real samples=0;
+  // Restarts & Logging
+  bool restartable = false;
+  bool restart_success = false;
+  int log_freq = 1000; // log every # steps
+  int write_freq = 1000; // write restart files every # steps 
+  // Supported enhanced sampling options - these only work with L_LEUS interpolation function
+  bool meta = false; // Feel samples from 1D histogram -> tempered on own potential
+  bool oss = false; // Feel samples from 2D histogram -> tempered on own potential
+  bool LE = false; // Feel samples from LE memory -> transition tempered
+  bool abf = false; // Feel opposite of average force -> turns on oss 
 
-  // 2D histogramming of (T, dU/dT) for each site
-  bool oss_force_test = false;
-  bool oss = false; // Perform Orthogonal Space Sampling calculations
-  bool oss_theta = true;
-  real* dGdF_d; // [blockCount] OSS chain rule multiplier due to gaussians, dGdF[i] * d2U/dTidX
-  real* dGdT_d; // [blockCount] theta force due to gaussians, only filled in at first sub of each site
-  real* bias_potential_d; // [siteCount] added bias potential at current step due to site histogram
-  real* bias_potential; // [siteCount] added bias potential current step due to site histogram
-  real* total_bias_d; //  pb meta bias
-  real* total_bias; // pb beta bias
-  // 2D histogram memory is layed out to give [nSite][theta][dU/dT] -> dU/dT is most continuous in memory
-  real* oss_histogram_d; // [sum_sites(T_bins[i]*dUdT_bins)] sampled grid points including tempering weight
-  real* oss_potential_d; // [sum_sites(T_bins[i]*dUdT_bins] potential from 2d metadynamics, used for <dU/dT> calculation
-  // 1D memory f(theta)
-  real* oss_theta_counts_d; // [Ns*2*L_bins*Ns] # of samples in each theta bin
-  bool weighted_dUdL; // boltzmann weight ensemble average <dU/dT>
-  real* oss_ensemble_dUdT_d; // [Ns*2*L_bins*Ns] <dU/dT> computed from histogram
-  real* oss_dUdT_var_d; // <(dU/dT)^2> - <dU/dT>^2
-  real* oss_eff_n_d; // sum(exp(U_bias/kT))^2 / sum(exp(2*U_bias/kT))
-  int* oss_dUdT_min_d; //[Ns*T_bins] index of minimum value dU/dT sample 
-  int* oss_dUdT_max_d; //[Ns*T_bins] index of maximum value dU/dT sample
-  real* oss_max_pot_d; //[Ns*T_bins] max potential at given X in histogram
-  real* oss_min_max_d; // min value of oss_max_pot_d
-  real warmup_samples = 30; // # of samples before <dU/dT> is fully subtracted off in ABF
-
-  // Linear offset
-  bool linear_shift = false; // subtract linear term which enforces cycle closure of ABF
-
-  // Restarts
-  bool oss_restartable = false;
-  bool oss_restart_success = false;
-
-  int oss_log_freq = 1000; // log every # steps
-  int oss_write_freq = 1000; // write histogram potential and restart files every # steps 
-  
-  // Metadynamics adjustable parameters
-  bool pb_meta = true;
-  bool temper = true;
-  bool standard_tempering = false;
-  int sample_freq = 5; // also affects how often <dU/dT> gets calculated (histogram potential evaluations can be expensive)
-  real bias_mag = .01; // if it is zero we don't do expensive d2U/dTdX calculation
-  real temper_amount = 2.0; 
-  real temper_offset = 1.0;
+  // 1D, along T
+  real* theta_histogram_d; // [Ns*L_bins[i]] sample count in each theta bin
+  real* histogram_1D_d; // [Ns*L_bins[i]] 1D meta tempered sample count in each theta bin
+  real* potential_1D_d; // [Ns*L_bins[i]] 1D meta potential
+  real* ensemble_dUdT_d; // [Ns*2*L_bins*Ns] <dU/dT> computed from histogram
+  real* variance_dUdT_d; // <(dU/dT)^2> - <dU/dT>^2
+  real* effective_sample_n_d; // sum(exp(U_bias/kT))^2 / sum(exp(2*U_bias/kT))
+  int* min_dUdT_index_d; //[Ns*T_bins] index of minimum value dU/dT sample 
+  int* max_dUdT_index_d; //[Ns*T_bins] index of maximum value dU/dT sample
+  // 2D, along (T, dU/dT)
+  real* histogram_2D_d; // [dUdT_bins*T_bins[i]] sampled grid points including tempering weight
+  real* potential_2D_d; // [dUdT_bins*T_bins[i]] potential from 2d metadynamics, used for <dU/dT> calculation
+  // Grid adjustable parameters - used for 1D meta as well
   real T_std = .02; 
-  real dUdT_std = 4.0;  
-  real dUdT_max = 1000;
-  int bins_per_std = 2;
-  int n_std_search = 5; // search this many std in each direction
-  // Derived or Fixed Parameters
+  real dUdT_max = 700;
+  real dUdT_std = 2.0;  
+  int bins_per_std = 2; 
+  int n_std_search = 5; 
+  // Grid derived Parameters
   real dUdT_min = -dUdT_max;
-  real dUdT_res; // dUdT_std / 2.0
-  real T_res; // T_std / 2.0
-  int dUdT_bins; 
+  real T_res; // T_std / bins_per_std
+  real dUdT_res; // dUdT_std / bins_per_std
+  int dUdT_bins; // abs(dUdT_max) + abs(dUdT_min) / T_res + 1
   int* T_bins_d; // [siteCount] site_period / grid resolution + 1, should always be integer multiple
   int* T_bins;
-  int total_T_bins;
-  int T_search; // 5*T_std/res 
-  int dUdT_search; // 5*dUdT_std/res
+  int total_T_bins; // sum of T_bins
+  int T_search; // n_std_search*T_std/res 
+  int dUdT_search; // n_std_search*dUdT_std/res
 
-  real oss_k = 0.0;
+  // 1D Meta
+  real meta_bias_mag = .01; // Constant prefactor on meta gaussian sum
+  bool weight_meta_abf = false; // Weight ABF samples by exp(meta_bias/kT)
+  real* meta_bias_d; // [siteCount] bias due to 1D meta
+  real* meta_bias;
+  // 2D Meta 
+  real oss_bias_mag = .005; // Constant prefactor on OSS gaussian sum 
+  bool oss_theta = true;
+  bool oss_force_test = false;
+  real* oss_bias_d; // [siteCount] added bias potential at current step due to site histogram
+  real* oss_bias; // [siteCount] added bias potential current step due to site histogram
+  real* dGdF_d; // [blockCount] OSS chain rule multiplier due to gaussians, dGdF[i] * d2U/dTidX
+  real* max_pot_d; // [Ns*T_bins] max potential at given X in histogram
+  // Adds U_bias = oss_k*dU_msld/dT
+  real oss_k = 0.0; 
+  // Metadynamics adjustable parameters - 1D & 2D
+  bool temper = true;
+  real bias_mult = 1.0; // multiplier onto ost bias that bias_potential[i] does not pick up
+  real temper_amount = 2.0; // exp(-bias_pot/(amount*kT))
+  real temper_offset = 0; // exp(-max(0, bias_pot-offset)/(amount*kT))
 
-  // Local Elevation
-  bool LE = false;
-  real f_red = .95;
-  real k_LE = .01; // 1e-3 kJ/mol = .239e-3 kcal/mol
-  real* R_d; // [site] starts at 1, add 1 for every double sweep across theta period
-  int* visited_bins_d; // [site] keeps track of sum of double sweep
-  int* theta_sweep_d; // [site*L_bins] keeps track of double sweeps
-  real* M_d; // [site*L_bins] Memory, theta bias is memory dotted with cubic bsplines
+  // ABF From 2D histogram defined above
+  real warmup_samples = 30; // linear ramp with # of samples in theta bin
+  real* abf_bias_d;
+  real* abf_bias;
+  real* dUdT_abf_d; // [siteCount] force added from abf = -<dU/dT>
+  real* dUdT_abf;
+  
+  // Local Elevation -> M[T] += LE_k * pow(f_red, R)
+  real* LE_bias;
+  real* LE_bias_d; // [site] bias from each LE bias
+  real f_red = .6;
+  real LE_k = .0293; // 1e-2 kJ/mol = .239e-2 kcal/mol
+  real LE_T_res = .1; // Resolution of LE memory grid
+  real LE_total_bins; // sum(site_period[i])/LE_T_res - total bins from all sites
+  int* LE_bins_d; // [site] site_period[i]/LE_T_res - total bins in each site
+  int* LE_bins;
+  real* LE_R_d; // [site] starts at 1, add 1 for every double sweep across theta period
+  int* LE_visited_bins_d; // [site] keeps track of sum of double sweep
+  int* LE_theta_sweep_d; // [site*L_bins] keeps track of double sweeps
+  real* LE_M_d; // [site*L_bins] Memory, theta bias is memory dotted with cubic bsplines
 
   int thetaCollBiasCount;
   real *kThetaCollBias;
@@ -217,16 +233,14 @@ public:
   void getforce_atomRestraints(System *system,bool calcEnergy);
   void getforce_chargeRestraints(System *system,bool calcEnergy);
 
-  // OSS/ABF Functions
-  void init_oss(System* system);
-  void log_sampling(System *system, int step);
-  void add_sample(System *system, int step);
+  // Enhanced Sampling Functions
+  void init_enhanced_sampling(System* system);
+  void copy_reset_memory(System* system);
   void getforce_bias(System* system, bool calcEnergy);
+  void add_sample(System *system, int step);
+  void log_sampling(System *system, int step);
   void update_ABF_from_hist(System* system, int vert_slices, int horz_slices, bool relative_indexing);
-
-  // L_LEUS
   void oss_lambda_to_theta_force(System* system);
-
   void recv_meta();
 };
 

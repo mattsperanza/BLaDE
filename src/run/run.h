@@ -40,6 +40,7 @@ class Run {
   std::string fnmTHETA_F; // dUdT overall
   std::string fnmMTD_dUdL; // dUdL msld
   std::string fnmMTD_dUdT; // dUdT msld
+  std::string fnmMTD_dUdT_abf; // dUdT_abf 
   std::string fnmMTD_HIST;
   std::string fnmMTD_BIAS;
   XDRFILE *fpXTC;
@@ -54,6 +55,7 @@ class Run {
   FILE *fpMTD_BIAS;
   FILE *fpMTD_THETA;
   FILE *fpMTD_dUdT;
+  FILE *fpMTD_dUdT_abf;
   int freqXTC;
   int freqLMD;
   int freqNRG;

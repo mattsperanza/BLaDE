@@ -45,6 +45,7 @@ Run::Run(System *system)
   fnmMTD_THETA = "data/oss_theta.dat"; 
   fnmMTD_dUdL = "data/oss_dUdL.dat";
   fnmMTD_dUdT = "data/oss_dUdT.dat";
+  fnmMTD_dUdT_abf = "data/dUdT_abf.dat";
   fnmMTD_HIST = "data/oss_hist.dat";
   fnmMTD_BIAS = "data/oss_bias.dat";
   fnmLMD_F = "data/dUdL.dat";
@@ -59,6 +60,7 @@ Run::Run(System *system)
   fpMTD_THETA=NULL;
   fpMTD_dUdL=NULL;
   fpMTD_dUdT=NULL;
+  fpMTD_dUdT_abf=NULL;
   fpMTD_HIST=NULL;
   fpMTD_BIAS=NULL;
   fpLMD_F=NULL;
@@ -841,6 +843,7 @@ void Run::dynamics_initialize(System *system)
   if (!fpMTD_THETA) fpMTD_THETA=fpopen(fnmMTD_THETA.c_str(),"w");
   if (!fpMTD_dUdL) fpMTD_dUdL=fpopen(fnmMTD_dUdL.c_str(),"w");
   if (!fpMTD_dUdT) fpMTD_dUdT=fpopen(fnmMTD_dUdT.c_str(),"w");
+  if (!fpMTD_dUdT_abf) fpMTD_dUdT_abf=fpopen(fnmMTD_dUdT_abf.c_str(),"w");
   if (!fpMTD_HIST) fpMTD_HIST=fpopen(fnmMTD_HIST.c_str(),"w");
   if (!fpMTD_BIAS) fpMTD_BIAS=fpopen(fnmMTD_BIAS.c_str(),"w");
   if (!fpLMD_F) fpLMD_F=fpopen(fnmLMD_F.c_str(), "w");

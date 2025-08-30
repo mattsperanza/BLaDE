@@ -475,7 +475,7 @@ void getforce_nbdirectTTTT(System *system,box_type box,bool calcEnergy)
     d->localPosition_d,d->localForce_d,box,s->lambda_fd,s->lambdaForce_d,
     pEnergy, system->msld->alpha);
 
-  if (system->msld->oss && system->msld->bias_mag > 1e-5) return; // This gets done in nbdirect_oss (but not if bias_mag = 0)
+  if (system->msld->oss) return; // This gets done in nbdirect_oss (but not if oss_bias_mag = 0)
   system->domdec->unpack_forces(system);
 }
 

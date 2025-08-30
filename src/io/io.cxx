@@ -398,9 +398,15 @@ void print_meta(int step, System* system){
   }
   fprintf(fp, "\n\n");
 
+  fp=system->run->fpMTD_dUdT_abf;
+  for(int i = 0; i < system->msld->siteCount; i++){
+    fprintf(fp, "%f ", system->msld->dUdT_abf[i]);
+  }
+  fprintf(fp, "\n\n");
+
   fp=system->run->fpMTD_HIST;
   for(int i = 0; i < system->msld->siteCount; i++){
-    fprintf(fp, "%f ", system->msld->bias_potential[i]);
+    fprintf(fp, "%f ", system->msld->oss_bias[i]);
   }
   fprintf(fp, "\n\n");
 
@@ -417,7 +423,7 @@ void print_meta(int step, System* system){
   fprintf(fp, "\n\n");
 
   fp=system->run->fpMTD_BIAS;
-  fprintf(fp, "%f ", *system->msld->total_bias);
+  fprintf(fp, "%f ", 0); // TODO: Calculate this
   fprintf(fp, "\n\n");
 
 
@@ -511,7 +517,7 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
   
     int total_bins = m->total_T_bins;
     real* dUdT = (real*)malloc(total_bins * sizeof(real));
-    real* dUdT_d = system->msld->oss_ensemble_dUdT_d;
+    real* dUdT_d = system->msld->ensemble_dUdT_d;
     cudaMemcpy(dUdT, dUdT_d, total_bins*sizeof(real), cudaMemcpyDefault);
   
     file << "# ABF <dU/dT>\n";
@@ -527,9 +533,9 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
 
     real* hist_potential = (real*)malloc(total_bins*m->dUdT_bins*sizeof(real));
     if(potential){
-      cudaMemcpy(hist_potential, system->msld->oss_potential_d, total_bins*m->dUdT_bins*sizeof(real), cudaMemcpyDeviceToHost);
+      cudaMemcpy(hist_potential, system->msld->potential_2D_d, total_bins*m->dUdT_bins*sizeof(real), cudaMemcpyDeviceToHost);
     } else { // for restart file
-      cudaMemcpy(hist_potential, system->msld->oss_histogram_d, total_bins*m->dUdT_bins*sizeof(real), cudaMemcpyDeviceToHost);
+      cudaMemcpy(hist_potential, system->msld->histogram_2D_d, total_bins*m->dUdT_bins*sizeof(real), cudaMemcpyDeviceToHost);
     }
 
     file << "# Histogram Potential\n";
@@ -568,9 +574,9 @@ bool read_histogram_file(System* system, std::string file_name) {
     printf("Reading OSS sampling from file!\n");
     real* hist_potential = (real*)malloc(m->total_T_bins * m->dUdT_bins * sizeof(real));
     int* max_dUdT_id = (int*)malloc(m->total_T_bins*sizeof(int));
-    cudaMemcpy(max_dUdT_id, m->oss_dUdT_max_d, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
+    cudaMemcpy(max_dUdT_id, m->max_dUdT_index_d, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
     int* min_dUdT_id = (int*)malloc(m->total_T_bins*sizeof(int));
-    cudaMemcpy(min_dUdT_id, m->oss_dUdT_min_d, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
+    cudaMemcpy(min_dUdT_id, m->min_dUdT_index_d, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
 
     // Skip to histogram section
     std::string line;
@@ -605,9 +611,9 @@ bool read_histogram_file(System* system, std::string file_name) {
             hist_potential[idx] = hist_value;
         }
     }
-    cudaMemcpy(system->msld->oss_histogram_d, hist_potential, m->total_T_bins * m->dUdT_bins * sizeof(real), cudaMemcpyHostToDevice);
-    cudaMemcpy(m->oss_dUdT_max_d, max_dUdT_id, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
-    cudaMemcpy(m->oss_dUdT_min_d, min_dUdT_id, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
+    cudaMemcpy(system->msld->histogram_2D_d, hist_potential, m->total_T_bins * m->dUdT_bins * sizeof(real), cudaMemcpyHostToDevice);
+    cudaMemcpy(m->max_dUdT_index_d, max_dUdT_id, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
+    cudaMemcpy(m->min_dUdT_index_d, min_dUdT_id, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
     free(hist_potential);
     free(max_dUdT_id);
     free(min_dUdT_id);

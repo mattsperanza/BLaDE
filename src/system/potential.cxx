@@ -1649,31 +1649,26 @@ void Potential::calc_force(int step,System *system) {
 // OSS & Local Elevation
 void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
   Run* r = system->run;
+  Msld* m = system->msld;
   int helper=(system->idCount==2); 
 
-  if (system->msld->oss || system->msld->LE){
-    if(!system->msld->oss_force_test){
+  if (m->oss || m->abf || m->meta || m->LE){ // one being on means all are being tracked
+    if(!m->oss_force_test){ // skip sampling if force testing
       cudaStreamWaitEvent(r->ossBias, r->nbdirectComplete, 0);
       cudaStreamWaitEvent(r->ossBias, r->nbrecipComplete, 0);
       cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
       cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
-      // Copy and reset memory
-      cudaMemcpyAsync(system->msld->dUdL_msld_d, system->state->lambdaForce_d, system->msld->blockCount*sizeof(real), cudaMemcpyDefault, r->ossBias);
-      cudaMemsetAsync(system->msld->dUdT_msld_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
-      system->msld->oss_lambda_to_theta_force(system); // fill dUdT_msld_d
-      cudaMemsetAsync(system->msld->bias_potential_d, 0, system->msld->siteCount*sizeof(real), r->ossBias);
-      cudaMemsetAsync(system->msld->total_bias_d, 0, sizeof(real), r->ossBias);
-      cudaMemsetAsync(system->msld->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
-      cudaMemsetAsync(system->msld->dGdT_d, 0, system->msld->blockCount*sizeof(real), r->ossBias);
       // Get force & sampling
-      system->msld->getforce_bias(system, calcEnergy);
-      system->msld->add_sample(system, step); 
-      system->msld->log_sampling(system, step); 
+      m->copy_reset_memory(system); // copy dU/dL, calculate dU/dT, clear dGdF, dGdL and potentials
+      m->getforce_bias(system, calcEnergy);
+      m->add_sample(system, step); // Sample felt in next step
+      m->log_sampling(system, step); 
       cudaEventRecord(r->ossBiasComplete, r->ossBias);
       cudaStreamWaitEvent(r->updateStream, r->ossBiasComplete, 0);
     }
 
-    if(system->msld->bias_mag > 1e-5 || system->msld->oss_force_test && system->msld->oss){
+    if(m->oss){
+      // Wait for bias kernels to end & force update stream to wait
       if (system->id == helper) {
         cudaStreamWaitEvent(r->ossBonded, r->ossBiasComplete, 0);
         getforce_bond_oss(system);
