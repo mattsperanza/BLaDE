@@ -70,22 +70,22 @@ public:
   bool L_LEUS = true; // overrides new_implicit
   leus_func L_LEUS_function = leus_xsin;
   real xsin_n = 1; // number of sub-plateaus in transition + 1 (only for xsin function)
-  real* dLdT_d; // first derivative of lambda w.r.t. theta
-  real* d2LdT2_d; // second derivative of lambda w.r.t. theta
+  real* dLdT_d; // [blockCount] first derivative of lambda w.r.t. theta
+  real* d2LdT2_d; // [blockCount] second derivative of lambda w.r.t. theta
   real plateau_w = .1; // Length of physical regions for each substituent
   real transition_w = 1.0; // Length of transition regions between sequential subsituents
-  real* site_period_d; // [0, site_period) range of theta sampling in each site
-  real* site_period; // [0, site_period) range of theta sampling in each site
+  real* site_period_d; // [siteCount] [0, site_period) range of theta sampling in each site
+  real* site_period; // [siteCount] [0, site_period) range of theta sampling in each site
 
   // FE update & data -> all forms of sampling are updated similtantiously whether set or not
   bool update_fe_surface = true; // add samples to histograms
   int sample_freq = 2; // <dU/dT> from 2D gets updated with every sample
   int update_steps = -1; // steps before turning update_fe_surface false - default to 1/4th of simulation
   real* dUdL_msld_d; // [blockCount] lambda forces from force field 
-  real* dUdT_msld_d; // [blockCount] theta forces from force field
   real* dUdL_msld; // [blockCount]
+  real* dUdT_msld_d; // [blockCount] theta forces from force field
   real* dUdT_msld; // [blockCount]
-  real* theta_temp_d; // temperature of theta particles in L-LEUS
+  real* theta_temp_d; // [blockCount] temperature of theta particles
   real* theta_temp;
   real samples=0;
   // Restarts & Logging
@@ -97,20 +97,18 @@ public:
   bool meta = false; // Feel samples from 1D histogram -> tempered on own potential
   bool oss = false; // Feel samples from 2D histogram -> tempered on own potential
   bool LE = false; // Feel samples from LE memory -> transition tempered
-  bool abf = false; // Feel opposite of average force -> turns on oss 
+  bool abf = false; // Feel opposite of average force
 
   // 1D, along T
-  real* theta_histogram_d; // [Ns*L_bins[i]] sample count in each theta bin
-  real* histogram_1D_d; // [Ns*L_bins[i]] 1D meta tempered sample count in each theta bin
-  real* potential_1D_d; // [Ns*L_bins[i]] 1D meta potential
-  real* ensemble_dUdT_d; // [Ns*2*L_bins*Ns] <dU/dT> computed from histogram
-  real* variance_dUdT_d; // <(dU/dT)^2> - <dU/dT>^2
-  real* effective_sample_n_d; // sum(exp(U_bias/kT))^2 / sum(exp(2*U_bias/kT))
-  int* min_dUdT_index_d; //[Ns*T_bins] index of minimum value dU/dT sample 
-  int* max_dUdT_index_d; //[Ns*T_bins] index of maximum value dU/dT sample
+  real* theta_histogram_d; // [total_T_bins] sample count in each theta bin
+  real* histogram_1D_d; // [total_T_bins] 1D meta tempered sample count in each theta bin
+  real* potential_1D_d; // [total_T_bins] 1D meta potential
+  real* max_pot_d; // [total_T_bins] max potential at given X in histogram
+  int* min_dUdT_index_d; //[total_T_bins] index of minimum value dU/dT sample 
+  int* max_dUdT_index_d; //[total_T_bins] index of maximum value dU/dT sample
   // 2D, along (T, dU/dT)
-  real* histogram_2D_d; // [dUdT_bins*T_bins[i]] sampled grid points including tempering weight
-  real* potential_2D_d; // [dUdT_bins*T_bins[i]] potential from 2d metadynamics, used for <dU/dT> calculation
+  real* histogram_2D_d; // [dUdT_bins*total_T_bins] 2D meta tempered sample count in (T, dU/dT) bin
+  real* potential_2D_d; // [dUdT_bins*total_T_bins] 2D potential from OSS metadynamics
   // Grid adjustable parameters - used for 1D meta as well
   real T_std = .02; 
   real dUdT_max = 700;
@@ -129,18 +127,16 @@ public:
   int dUdT_search; // n_std_search*dUdT_std/res
 
   // 1D Meta
-  real meta_bias_mag = .01; // Constant prefactor on meta gaussian sum
-  bool weight_meta_abf = false; // Weight ABF samples by exp(meta_bias/kT)
+  real meta_bias_mag = .0; // Needs to be set if meta should do anything
   real* meta_bias_d; // [siteCount] bias due to 1D meta
   real* meta_bias;
   // 2D Meta 
-  real oss_bias_mag = .005; // Constant prefactor on OSS gaussian sum 
-  bool oss_theta = true;
-  bool oss_force_test = false;
+  real oss_bias_mag = .0; // Needs to be set if oss should do anything
+  bool oss_theta = true; // Compute dGdF*d2U/dXdT or dGdF*d2U/dXdL, L is not supported yet
+  bool oss_force_test = false; // set to true to skip calculation steps during force testing
   real* oss_bias_d; // [siteCount] added bias potential at current step due to site histogram
   real* oss_bias; // [siteCount] added bias potential current step due to site histogram
   real* dGdF_d; // [blockCount] OSS chain rule multiplier due to gaussians, dGdF[i] * d2U/dTidX
-  real* max_pot_d; // [Ns*T_bins] max potential at given X in histogram
   // Adds U_bias = oss_k*dU_msld/dT
   real oss_k = 0.0; 
   // Metadynamics adjustable parameters - 1D & 2D
@@ -149,9 +145,18 @@ public:
   real temper_amount = 2.0; // exp(-bias_pot/(amount*kT))
   real temper_offset = 0; // exp(-max(0, bias_pot-offset)/(amount*kT))
 
-  // ABF From 2D histogram defined above
-  real warmup_samples = 30; // linear ramp with # of samples in theta bin
-  real* abf_bias_d;
+  // ABF
+  bool abf_oss = false; // compute weighted ABF from 2D histogram potential
+  bool abf_umbrella = false; // compute weighted ABF from Torrie-Valleau reweighting - via offset exp sum
+  bool abf_unweighted = true; // compute unweighted ABF
+  real abf_warmup_samples = 100; // step-function after which ABF is added to theta force
+  real* abf_weighted_dUdT_d; // [total_T_bins] sum(dU/dT*exp(bias/kT))
+  real* abf_weighted_dUdT2_d; // total_T_bins] sum(dU/dT^2*exp(bias/kT))
+  real* abf_weights_d; // [total_T_bins] sum(exp(bias/kT))
+  real* abf_offsets_d;
+  real* abf_ensemble_dUdT_d; // [total_T_bins] <dU/dT> computed from histogram or weighted_dUdT/weights_d
+  real* abf_variance_dUdT_d; // [total_T_bins] <(dU/dT)^2> - <dU/dT>^2
+  real* abf_bias_d; // [siteCount] bias from each ABF (how to compute)
   real* abf_bias;
   real* dUdT_abf_d; // [siteCount] force added from abf = -<dU/dT>
   real* dUdT_abf;
@@ -167,8 +172,8 @@ public:
   int* LE_bins;
   real* LE_R_d; // [site] starts at 1, add 1 for every double sweep across theta period
   int* LE_visited_bins_d; // [site] keeps track of sum of double sweep
-  int* LE_theta_sweep_d; // [site*L_bins] keeps track of double sweeps
-  real* LE_M_d; // [site*L_bins] Memory, theta bias is memory dotted with cubic bsplines
+  int* LE_theta_sweep_d; // [LE_total_bins] keeps track of double sweeps
+  real* LE_M_d; // [LE_total_bins] Memory, theta bias is memory dotted with cubic bsplines
 
   int thetaCollBiasCount;
   real *kThetaCollBias;

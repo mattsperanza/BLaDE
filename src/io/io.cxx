@@ -517,7 +517,7 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
   
     int total_bins = m->total_T_bins;
     real* dUdT = (real*)malloc(total_bins * sizeof(real));
-    real* dUdT_d = system->msld->ensemble_dUdT_d;
+    real* dUdT_d = system->msld->abf_ensemble_dUdT_d;
     cudaMemcpy(dUdT, dUdT_d, total_bins*sizeof(real), cudaMemcpyDefault);
   
     file << "# ABF <dU/dT>\n";

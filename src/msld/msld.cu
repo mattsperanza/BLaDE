@@ -460,6 +460,12 @@ void parse_msld(char *line,System *system)
     system->msld->meta=io_nextb(line);
   } else if (strcmp(token, "LE_k") == 0){
     system->msld->LE_k=io_nextf(line);
+  } else if (strcmp(token, "abf_oss") == 0){
+    system->msld->abf_oss=io_nextb(line);
+  } else if (strcmp(token, "abf_umbrella") == 0){
+    system->msld->abf_umbrella=io_nextb(line);
+  } else if (strcmp(token, "abf_unweighted") == 0){
+    system->msld->abf_unweighted=io_nextb(line);
   } else if (strcmp(token, "oss_k") == 0){
     system->msld->oss_k=io_nextf(line);
   } else if (strcmp(token, "oss_bias_mag") == 0){
@@ -485,7 +491,7 @@ void parse_msld(char *line,System *system)
   } else if (strcmp(token, "dUdT_max") == 0){
     system->msld->dUdT_max=io_nextf(line);
   } else if (strcmp(token, "warmup_samples") == 0){
-    system->msld->warmup_samples=io_nexti(line);
+    system->msld->abf_warmup_samples=io_nexti(line);
   } else if (strcmp(token, "update_steps") == 0){
     system->msld->update_steps=io_nexti(line);
   } else if (strcmp(token, "update_fe") == 0) {
@@ -865,6 +871,9 @@ void Msld::init_enhanced_sampling(System* system){
   theta_temp = (real*)malloc(siteCount*sizeof(real));
   cudaMalloc(&theta_temp_d, siteCount*sizeof(real)); 
   cudaMemset(theta_temp_d, 0, siteCount*sizeof(real)); 
+
+  cudaMalloc(&theta_histogram_d, siteCount*sizeof(real)); 
+  cudaMemset(theta_histogram_d, 0, siteCount*sizeof(real)); 
   
   // Potential
   oss_bias = (real*)malloc(siteCount*sizeof(real));
@@ -929,16 +938,28 @@ void Msld::init_enhanced_sampling(System* system){
   cudaMemset(max_pot_d, 0, total_T_bins*sizeof(real));
 
   // ABF
-  cudaMalloc(&ensemble_dUdT_d, total_T_bins*sizeof(real));
-  cudaMemset(ensemble_dUdT_d, 0, total_T_bins*sizeof(real));
+  cudaMalloc(&abf_ensemble_dUdT_d, total_T_bins*sizeof(real));
+  cudaMemset(abf_ensemble_dUdT_d, 0, total_T_bins*sizeof(real));
 
-  cudaMalloc(&effective_sample_n_d, total_T_bins*sizeof(real));
-  cudaMemset(effective_sample_n_d, 0, total_T_bins*sizeof(real));
-  
-  cudaMalloc(&variance_dUdT_d, total_T_bins*sizeof(real));
-  cudaMemset(variance_dUdT_d, 0, total_T_bins*sizeof(real));
+  cudaMalloc(&abf_variance_dUdT_d, total_T_bins*sizeof(real));
+  cudaMemset(abf_variance_dUdT_d, 0, total_T_bins*sizeof(real));
 
-  // Speed up <dU/dT> calculations
+  cudaMalloc(&abf_offsets_d, total_T_bins*sizeof(real));
+  cudaMemset(abf_offsets_d, 0, total_T_bins*sizeof(real));
+
+  cudaMalloc(&abf_weights_d, total_T_bins*sizeof(real));
+  cudaMemset(abf_weights_d, 0, total_T_bins*sizeof(real));
+
+  cudaMalloc(&abf_weighted_dUdT_d, total_T_bins*sizeof(real));
+  cudaMemset(abf_weighted_dUdT_d, 0, total_T_bins*sizeof(real));
+
+  cudaMalloc(&abf_weighted_dUdT2_d, total_T_bins*sizeof(real));
+  cudaMemset(abf_weighted_dUdT2_d, 0, total_T_bins*sizeof(real));
+
+  cudaMalloc(&abf_ensemble_dUdT_d, total_T_bins*sizeof(real));
+  cudaMemset(abf_ensemble_dUdT_d, 0, total_T_bins*sizeof(real));
+
+  // Speed up <dU/dT> calculations for abf_oss
   cudaMalloc(&max_dUdT_index_d, total_T_bins*sizeof(int));
   cudaMemset(max_dUdT_index_d, 0, total_T_bins*sizeof(int));
 
@@ -950,6 +971,9 @@ void Msld::init_enhanced_sampling(System* system){
   // Meta
   cudaMalloc(&histogram_1D_d, total_T_bins*sizeof(real));
   cudaMemset(histogram_1D_d, 0, total_T_bins*sizeof(real));
+
+  cudaMalloc(&potential_1D_d, total_T_bins*sizeof(real));
+  cudaMemset(potential_1D_d, 0, total_T_bins*sizeof(real));
 
   // Local Elevation
   cudaMalloc(&LE_M_d, LE_total_bins*sizeof(real));
@@ -996,13 +1020,12 @@ void Msld::log_sampling(System* system, int step){
     return;
   }
 
-  real ensemble_dUdT[total_T_bins], dUdT_var[total_T_bins], counts[total_T_bins], eff_counts[total_T_bins];
+  real ensemble_dUdT[total_T_bins], dUdT_var[total_T_bins], counts[total_T_bins];
   real dGdF[blockCount];
   real min_max;
   cudaMemcpy(counts, histogram_1D_d, total_T_bins*sizeof(real), cudaMemcpyDefault);
-  cudaMemcpy(eff_counts, effective_sample_n_d, total_T_bins*sizeof(real), cudaMemcpyDefault);
-  cudaMemcpy(ensemble_dUdT, ensemble_dUdT_d, total_T_bins*sizeof(real), cudaMemcpyDefault);
-  cudaMemcpy(dUdT_var, variance_dUdT_d, total_T_bins*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(ensemble_dUdT, abf_ensemble_dUdT_d, total_T_bins*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(dUdT_var, abf_variance_dUdT_d, total_T_bins*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(dGdF, dGdF_d, blockCount*sizeof(real), cudaMemcpyDefault);
   recv_meta(); // bias, dUdT_msld, dUdL_msld, d2UdT2, dUdT_abf
 
@@ -1081,19 +1104,6 @@ void Msld::log_sampling(System* system, int step){
       }
     } 
     printf(" %f ]\n", samples);
-    printf("Effective Samples: [");
-    samples = 0;
-    count = 1;
-    for(int i = 0; i < T_bins[site]-1; i++){
-      samples += eff_counts[i];
-      real T = T_res*(i+1); // dG at this point
-      if(T > count*period){
-        printf(" %f,", samples);
-        samples = 0;
-        count++;
-      }
-    } 
-    printf(" %f ]\n", samples);
     if(LE){
       printf("Site R: %f, k_LE*f_red^R: %f\n", R[site], LE_k*pow(f_red, R[site]));
       printf("M: [");
@@ -1145,15 +1155,19 @@ __global__ void add_sample_hist_kernel(
   int dUdT_bins, real dUdT_max, real dUdT_min,
   real transition_w, real plateau_w, 
   // Input
-  bool temper, bool weight_meta_abf,
+  bool temper, bool abf_umbrella, bool abf_unweighted,
   real* thetas, real* dUdT_msld, 
   real tempering, real temper_offset, 
   real* oss_bias, real* meta_bias,
+  real warmup_samples,
   real k_LE, real f_red, 
-  // Output - OSS
-  real* theta_counts,
-  real* histogram_2D, real* histogram_1D, 
+  // Output - Meta
+  real* theta_counts, real* histogram_2D, real* histogram_1D, 
   int* dUdT_sampled_max, int* dUdT_sampled_min,
+  // Output - ABF
+  real* weights, real* offsets, 
+  real* weighted_dUdT, real* weighted_dUdT2, 
+  real* ensemble_dUdT, real* variance_dUdT,
   // Output - LE
   real* R, int* visited_bins, 
   int* theta_sweep, real* M 
@@ -1162,58 +1176,80 @@ __global__ void add_sample_hist_kernel(
   if(i < siteCount && i != 0){ // none for environment
     int start_site = 0;
     int theta_start = 0;
+    int LE_theta_start = 0;
     for(int j = 0; j < i; j++){
       start_site += blocksPerSite[j];
       theta_start += T_bins[j];
+      LE_theta_start += LE_bins[j];
     }
+
     // Add sample to 1D and 2D Meta on (T, dU/dT)
     real T = thetas[start_site];
     real dUdT = 0;
     for(int j = 0; j < blocksPerSite[i]; j++){
       dUdT += dUdT_msld[start_site+j];
     }
-    real bias = max(oss_bias[i]-temper_offset, 0.0);
-    real oss_decay = temper ? exp(-bias/(tempering*kT)) : 1.0;
-    oss_decay = weight_meta_abf ? exp(meta_bias[i]/kT) : 1.0; // OSS & this option should not be possible, so decay should be 1 
-    bias = max(meta_bias[i]-temper_offset, 0.0);
-    real meta_decay = temper ? exp(-bias/(tempering*kT)) : 1.0;
-    // Location of point on histogram
     int X = safe_histogram_index(T, T_bins[i], site_period[i], 0);
     int Y = safe_histogram_index(dUdT, dUdT_bins, dUdT_max, dUdT_min);
     if(X >= 0 && X <= T_bins[i]-1 && Y >= 0 && Y <= dUdT_bins-1){
       theta_counts[theta_start + X] += 1.0;
-      histogram_1D[theta_start + X] += meta_decay;
+      // Meta
+      real bias = max(meta_bias[i]-temper_offset, 0.0);
+      real decay = temper ? exp(-bias/(tempering*kT)) : 1.0;
+      histogram_1D[theta_start + X] += decay;
+      // OSS
+      bias = max(oss_bias[i]-temper_offset, 0.0);
+      decay = temper ? exp(-bias/(tempering*kT)) : 1.0;
       int hist_index = (theta_start+X)*dUdT_bins + Y;
-      histogram_2D[hist_index] += oss_decay;
+      histogram_2D[hist_index] += decay;
       dUdT_sampled_max[theta_start+X] = Y > dUdT_sampled_max[theta_start+X] ? Y : dUdT_sampled_max[theta_start+X];
       dUdT_sampled_min[theta_start+X] = Y < dUdT_sampled_min[theta_start+X] ? Y : dUdT_sampled_min[theta_start+X];
     } 
 
-    // Add sample to 1D Local Elevation
-    theta_start = 0; // Different number of bins
-    X = safe_histogram_index(T, LE_bins[i], site_period[i], 0);
-    for(int j = 0; j < i; j++){
-      theta_start += LE_bins[j];
+    // Add sample to ABF for abf_umbrella or abf_unweighted options
+    real weight = 1.0;
+    if(abf_umbrella){
+      real bias = (meta_bias[i] + oss_bias[i])/kT;
+      if(bias > offsets[theta_start+X]){ // offsets make largest weight = 1
+        real correction = exp(offsets[theta_start+X] - bias);
+        weights[theta_start+X] *= correction;
+        weighted_dUdT[theta_start+X] *= correction;
+        weighted_dUdT2[theta_start+X] *= correction;
+        offsets[theta_start+X] = bias;
+      }
+      weight = exp(bias-offsets[theta_start+X]);
     }
+    if(abf_unweighted || abf_umbrella){
+      weights[theta_start+X] += weight;
+      weighted_dUdT[theta_start+X] += dUdT*weight;
+      weighted_dUdT2[theta_start+X] += dUdT*dUdT*weight;
+      ensemble_dUdT[theta_start+X] = 
+        theta_counts[theta_start+X] > warmup_samples ? weighted_dUdT[theta_start+X] / weights[theta_start+X] : 0.0;
+      real ensemble_dUdT2 = weighted_dUdT2[theta_start+X] / weights[theta_start+X];
+      variance_dUdT[theta_start+X] = ensemble_dUdT2 - ensemble_dUdT[theta_start+X];
+    }
+
+    // Add sample to 1D Local Elevation
+    X = safe_histogram_index(T, LE_bins[i], site_period[i], 0);
     // First and last bin are identical centers, don't include last, account for that in visited check
     if(X >= 0 && X <= LE_bins[i]-2){ 
       // Order of these checks matters
       if (visited_bins[i] >= 2*LE_bins[i]-2) { // Double sweep complete, increment and clear mem
         R[i] += 1;
-        for(int j = theta_start; j < theta_start + LE_bins[i]; j++){
+        for(int j = LE_theta_start; j < LE_theta_start + LE_bins[i]; j++){
           theta_sweep[j] = 0;
         }
         visited_bins[i] = 0;
       }
-      if (theta_sweep[theta_start + X] == 1 && visited_bins[i] >= LE_bins[i]-1){ // New bin sample on second sweep 
-        theta_sweep[theta_start + X] = 2;
+      if (theta_sweep[LE_theta_start + X] == 1 && visited_bins[i] >= LE_bins[i]-1){ // New bin sample on second sweep 
+        theta_sweep[LE_theta_start + X] = 2;
         visited_bins[i] += 1;
       }
-      if (theta_sweep[theta_start + X] == 0){ // New bin sample on first sweep
-        theta_sweep[theta_start + X] = 1;
+      if (theta_sweep[LE_theta_start + X] == 0){ // New bin sample on first sweep
+        theta_sweep[LE_theta_start + X] = 1;
         visited_bins[i] += 1;
       }
-      M[theta_start + X] += k_LE*pow(f_red, R[i]);
+      M[LE_theta_start + X] += k_LE*pow(f_red, R[i]);
     }
   }
 }
@@ -1237,20 +1273,27 @@ void Msld::add_sample(System* system, int step) {
 
   if(step % sample_freq == 0){
     real kT = system->state->leapParms1->kT; 
+    samples++;
     add_sample_hist_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
       kT, siteCount, blocksPerSite_d,
       T_bins_d, LE_bins_d, site_period_d, 
       dUdT_bins, dUdT_max, dUdT_min,
       transition_w, plateau_w,
       // Input
-      temper, weight_meta_abf,
+      temper, 
+      abf_umbrella, abf_unweighted,
       s->theta_fd, dUdT_msld_d, 
       temper_amount, temper_offset, oss_bias_d, max_pot_d,
+      abf_warmup_samples,
       LE_k, f_red, 
       // Output - OSS
       theta_histogram_d,
       histogram_2D_d, histogram_1D_d,
       max_dUdT_index_d, min_dUdT_index_d, 
+      // Output - ABF
+      abf_weights_d, abf_offsets_d,
+      abf_weighted_dUdT_d, abf_weighted_dUdT2_d, 
+      abf_ensemble_dUdT_d, abf_variance_dUdT_d,
       // Output - LE
       LE_R_d, LE_visited_bins_d,
       LE_theta_sweep_d, LE_M_d);
@@ -1540,18 +1583,17 @@ void Msld::getforce_bias(System *system, bool calcEnergy) {
       T_bins_d, site_period_d, 
       // Inputs
       oss_k,
-      s->theta_fd, ensemble_dUdT_d, dUdT_msld_d, 
+      s->theta_fd, abf_ensemble_dUdT_d, dUdT_msld_d, 
       // Outputs
       s->thetaForce_d, dUdT_abf_d, pEnergy);
   }
-  if (oss && oss_k > 1e-5) {
+  // meta and oss bias mag need to get set
+  if(oss || meta){
+    if(oss){}
     getforce_oss_linear<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(blockCount, oss_k, dUdT_msld_d, dGdF_d, pEnergy);
-  }
-  if(oss || meta){ 
     int vert_slices = 1;
     int horz_slices = 1;
-    real force_search = meta && !oss ? 0 : dUdT_search;
-    dim3 blockDim(2*T_search+1, 2*force_search+1, 1); 
+    dim3 blockDim(2*T_search+1, 2*dUdT_search+1, 1); 
     dim3 gridDim(siteCount-1, 1, 1);
     getforce_hist_kernel<<<gridDim, blockDim, shMem, stream>>>(
       siteCount, blocksPerSite_d,
@@ -1575,13 +1617,12 @@ __global__ void hist_ensemble_dUdT_kernel(
     int* T_bins, real* site_periods,
     int dUdT_bins, real dUdT_max, real dUdT_min,
     int* dUdT_sampled_max, int* dUdT_sampled_min,
-    int slice_count, real warmup_samples, real bias_mag,
+    int slice_count, real warmup_samples, 
     // Inputs
+    bool abf_oss,
     real* potential_grid, real* histogram, real* theta_counts,
     // Output
-    real* oss_ensemble_dUdT, 
-    real* oss_dUdT_var, real* oss_eff_n,
-    real* oss_max_potential
+    real* ensemble_dUdT, real* variance_dUdT, real* max_potential
 ) {
   int site = threadIdx.x+1;
   int tid = blockIdx.x;
@@ -1591,7 +1632,6 @@ __global__ void hist_ensemble_dUdT_kernel(
     real weighted_dUdT = 0;
     real weighted_dUdT2 = 0;
     real Z = 0;
-    real Z2 = 0;
     real max_bias = 0;
     int start_1D = 0;
     for(int j = 0; j < site; j++){
@@ -1610,37 +1650,22 @@ __global__ void hist_ensemble_dUdT_kernel(
         int grid_index = (start_1D+X)*dUdT_bins + y;
         real current_bias = potential_grid[grid_index]/kT;
         max_bias = current_bias > max_bias ? current_bias : max_bias;
-        if(histogram[grid_index] < 1e-5){ continue; } // Don't include non-sampled regions
-        if(bias_mag > 1e-5){ // Boltzman weighting
-          if (current_bias > offset) {
-            real correction = exp(offset - current_bias); 
-            weighted_dUdT *= correction;
-            weighted_dUdT2 *= correction;
-            Z *= correction;
-            Z2 *= correction*correction;
-            offset = current_bias;
-          }
-          weighted_dUdT += dUdT * exp(current_bias - offset);
-          weighted_dUdT2 += dUdT*dUdT*exp(current_bias - offset);
-          Z += exp(current_bias - offset);
-          Z2 += exp(2*(current_bias - offset)); // Z^2
-        } else { // Uniform weighting
-          weighted_dUdT += dUdT * histogram[grid_index];
-          weighted_dUdT2 += dUdT*dUdT * histogram[grid_index];
-          Z += histogram[grid_index];
-          Z2 += histogram[grid_index]*histogram[grid_index];
+        if(histogram[grid_index] < 1e-5 || !abf_oss){ continue; } // Don't include non-sampled regions
+        if (current_bias > offset) {
+          real correction = exp(offset - current_bias); 
+          weighted_dUdT *= correction;
+          weighted_dUdT2 *= correction;
+          Z *= correction;
+          offset = current_bias;
         }
+        weighted_dUdT += dUdT * exp(current_bias - offset);
+        weighted_dUdT2 += dUdT*dUdT*exp(current_bias - offset);
+        Z += exp(current_bias - offset);
       }
-      oss_ensemble_dUdT[start_1D + X] = Z > 1e-5 ? weighted_dUdT / Z : 0.0;
-      oss_dUdT_var[start_1D + X] = Z > 1e-5 ? weighted_dUdT2 / Z : 0.0;
-      oss_eff_n[start_1D + X] = Z2 > 1e-5 ? Z*Z / Z2 : 0.0;
-      if(theta_counts[start_1D + X] < warmup_samples){ // tempering only changes this slightly
-        oss_ensemble_dUdT[start_1D+X] *= theta_counts[start_1D + X]/warmup_samples;
-      }
-      oss_max_potential[start_1D+X] = max_bias*kT; // kT will get multiplied back later
-      if(abs(X - center_X) < 5 && false){
-        printf("site: %d, X: %d, T: %f, <dU/dT>: %f, low: %d, high: %d, max_bias: %f\n", 
-          site, X, thetas[siteBound[site]], oss_ensemble_dUdT[start_1D+X], low, high, max_bias);
+      max_potential[start_1D+X] = max_bias*kT; // kT will get multiplied back later
+      if(abf_oss){
+        ensemble_dUdT[start_1D + X] = Z > 1e-5 ? weighted_dUdT / Z : 0.0;
+        variance_dUdT[start_1D + X] = Z > 1e-5 ? weighted_dUdT2 / Z - ensemble_dUdT[start_1D+X] : 0.0;
       }
     } 
   }
@@ -1683,11 +1708,12 @@ void Msld::update_ABF_from_hist(System *system, int vert_slices, int horz_slices
     dUdT_bins, dUdT_max, dUdT_min, 
     max_dUdT_index_d, min_dUdT_index_d, 
     vert_slices,
-    warmup_samples, oss_bias_mag,
+    abf_warmup_samples, 
     // Inputs
+    abf_oss,
     potential_2D_d, histogram_2D_d, theta_histogram_d,
     // Outputs
-    ensemble_dUdT_d, variance_dUdT_d, effective_sample_n_d,
+    abf_ensemble_dUdT_d, abf_variance_dUdT_d, 
     max_pot_d);
 }
 
