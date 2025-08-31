@@ -148,8 +148,8 @@ public:
   // ABF
   bool abf_oss = false; // compute weighted ABF from 2D histogram potential
   bool abf_umbrella = false; // compute weighted ABF from Torrie-Valleau reweighting - via offset exp sum
-  bool abf_unweighted = true; // compute unweighted ABF
-  real abf_warmup_samples = 100; // step-function after which ABF is added to theta force
+  bool abf_unweighted = true; // compute unweighted ABF - setting either of the other two overwrites this
+  real abf_warmup_samples = 100; // first half of samples scales <dU/dT> by zero, second ramps up to 1 linearly
   real* abf_weighted_dUdT_d; // [total_T_bins] sum(dU/dT*exp(bias/kT))
   real* abf_weighted_dUdT2_d; // total_T_bins] sum(dU/dT^2*exp(bias/kT))
   real* abf_weights_d; // [total_T_bins] sum(exp(bias/kT))
@@ -161,11 +161,11 @@ public:
   real* dUdT_abf_d; // [siteCount] force added from abf = -<dU/dT>
   real* dUdT_abf;
   
-  // Local Elevation -> M[T] += LE_k * pow(f_red, R)
+  // Local Elevation -> M[T] += LE_k * pow(LE_f_red, R)
   real* LE_bias;
   real* LE_bias_d; // [site] bias from each LE bias
-  real f_red = .6;
-  real LE_k = .0293; // 1e-2 kJ/mol = .239e-2 kcal/mol
+  real LE_f_red = .6;
+  real LE_k = .00293; // 1e-3 kJ/mol = .239e-3 kcal/mol
   real LE_T_res = .1; // Resolution of LE memory grid
   real LE_total_bins; // sum(site_period[i])/LE_T_res - total bins from all sites
   int* LE_bins_d; // [site] site_period[i]/LE_T_res - total bins in each site

@@ -510,7 +510,7 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
     return;
   }
   Msld* m = system->msld;
-  if (m->oss && m->L_LEUS) {
+  if (m->oss || m->LE || m->abf || m->meta) {
     // Print average dUdL
     int nS = m->siteCount;
     file << "# Num_Sites: " << nS-1 << "\n"; // will be read in as num histograms
