@@ -460,6 +460,8 @@ void parse_msld(char *line,System *system)
     system->msld->meta=io_nextb(line);
   } else if (strcmp(token, "LE_k") == 0){
     system->msld->LE_k=io_nextf(line);
+  } else if (strcmp(token, "LE_f_red") == 0){
+    system->msld->LE_f_red=io_nextf(line);
   } else if (strcmp(token, "abf_oss") == 0){
     system->msld->abf_oss=io_nextb(line);
   } else if (strcmp(token, "abf_umbrella") == 0){
@@ -476,6 +478,8 @@ void parse_msld(char *line,System *system)
     system->msld->bias_mult=io_nextf(line);
   } else if (strcmp(token, "temper") == 0){
     system->msld->temper=io_nextb(line);
+  } else if (strcmp(token, "transition_tempering") == 0){
+    system->msld->transition_tempering=io_nextb(line);
   } else if (strcmp(token, "temper_amount") == 0){
     system->msld->temper_amount=io_nextf(line);
   } else if (strcmp(token, "temper_offset") == 0){
@@ -1055,6 +1059,7 @@ void Msld::log_sampling(System* system, int step){
   cudaMemcpy(theta_sweep, LE_theta_sweep_d, LE_total_bins*sizeof(int), cudaMemcpyDefault);
   cudaMemcpy(visited_bins, LE_visited_bins_d, siteCount*sizeof(int), cudaMemcpyDefault);
   cudaMemcpy(R, LE_R_d, siteCount*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(theta_temp, theta_temp_d, siteCount*sizeof(real), cudaMemcpyDefault);
   system->state->recv_state();
   system->state->recv_lambda();
 
@@ -1064,25 +1069,24 @@ void Msld::log_sampling(System* system, int step){
   int start = 0;
   for (int site = 1; site < siteCount; site++) { // Skip environment site
     printf("Step: %ld\n", r->step);
-    printf("Site: %d, Theta: %f, Lambdas: [", site, system->state->theta[prev_subs]);
-    for(int i = prev_subs; i < prev_subs+blocksPerSite[site]; i++){
-      printf(" %f,", system->state->lambda[i]);
-    }
-    printf("] \n");
-    real U = max(oss_bias[site] - temper_offset, 0.0) / system->state->leapParms1->kT;
-    real decay_local = exp(-U/temper_amount);
-    printf("OSS Bias: %f, OSS Tempering: %f dGdF: [", oss_bias[site], decay_local);
-    for(int i = prev_subs; i < prev_subs+blocksPerSite[site]; i++){
-      printf(" %f,", dGdF[i]);
-    }
+    printf("Site: %d, Theta: %f, Theta Temp: %f, Lambdas: [", site, system->state->theta[prev_subs], theta_temp[site] / samples);
+    for(int i = prev_subs; i < prev_subs+blocksPerSite[site]; i++){ printf(" %f,", system->state->lambda[i]); }
     printf("] \n");
     real period = transition_w + plateau_w;
-    printf("dUdT_abf: %f, Sub Period: %f, Period: %f, T_bins: %d\n", dUdT_abf[site], period, site_period[site], T_bins[site]);
+    printf("Sub Period: %f, Period: %f, T_bins: %d\n", period, site_period[site], T_bins[site]);
+    real U = max(oss_bias[site] - temper_offset, 0.0) / system->state->leapParms1->kT;
+    real decay_local = exp(-U/temper_amount);
+    printf("OSS Bias: %f, OSS Tempering: %f, dGdF: [", oss_bias[site], decay_local);
+    for(int i = prev_subs; i < prev_subs+blocksPerSite[site]; i++){ printf(" %f,", dGdF[i]); }
+    printf("] \n");
+    U = max(meta_bias[site] - temper_offset, 0.0) / system->state->leapParms1->kT;
+    printf("Meta Bias: %f, Meta Tempering: %f, dMdL: TODO\n", meta_bias[site], exp(-U/temper_amount));
+    printf("dUdT_abf: %f\n", dUdT_abf[site]);
     real rel[blocksPerSite[site]], var[blocksPerSite[site]];
     real dG = 0;
     real dG_var = 0;
     int count = 1;
-    printf("dG i->i+1: [");
+    printf("TI dG i->i+1: [");
     for(int i = prev_bins; i < prev_bins+T_bins[site]-1; i++){
       dG += T_res*(ensemble_dUdT[i]+ensemble_dUdT[i+1])/2.0; 
       dG_var += T_res*T_res*dUdT_var[i];
@@ -1099,7 +1103,7 @@ void Msld::log_sampling(System* system, int step){
     rel[blocksPerSite[site]-1] = dG;
     var[blocksPerSite[site]-1] = dG_var;
     printf(" %5.2f +- %5.2f (T=%4.2f) ]\n", dG, sqrt(dG_var), (T_bins[site]-1.0)*T_res);
-    printf("dG 0->i: [");
+    printf("TI dG 0->i: [");
     dG = 0;
     dG_var = 0;
     for(int i = 0; i < blocksPerSite[site]; i++){
@@ -1121,12 +1125,6 @@ void Msld::log_sampling(System* system, int step){
       }
     } 
     printf(" %f ]\n", samples);
-    U = max(meta_bias[site] - temper_offset, 0.0) / system->state->leapParms1->kT;
-    printf("Meta Bias: %f, Meta Tempering: %f, Meta: [", meta_bias[site], exp(-U/temper_amount));
-    for(int i = prev_bins; i < prev_bins+T_bins[site]; i++){
-      printf(" %f,", hist_1D[i]);
-    }
-    printf("]\n");
     printf("Site R: %f, k_LE*LE_f_red^R: %f\n", R[site], LE_k*pow(LE_f_red, R[site]));
     printf("M: [");
     for(int i = LE_prev_bins; i < LE_prev_bins + LE_bins[site]; i++){
@@ -1170,16 +1168,36 @@ void Msld::oss_lambda_to_theta_force(System* system){
       dUdT_msld_d);
 }
 
+__global__ void theta_temp_kernel(
+  int nSite, int* blocksPerSite,
+  // input
+  real* theta_inv_sqrt_mass, real_v* theta_velocities, 
+  // output
+  real* theta_temps
+){
+  int i = blockIdx.x*blockDim.x+threadIdx.x + 1;
+  if(i < nSite){
+    int theta_id = 0;
+    for(int j = 0; j < i; j++){
+      theta_id += blocksPerSite[j];
+    }
+    real v_sqrtm = theta_velocities[theta_id] / theta_inv_sqrt_mass[theta_id];
+    theta_temps[i] += v_sqrtm*v_sqrtm/kB;
+  }
+}
+
 __global__ void add_sample_hist_kernel(
   real kT, int siteCount, int* blocksPerSite,
   int* T_bins, int* LE_bins, real* site_period,
   int dUdT_bins, real dUdT_max, real dUdT_min,
   real transition_w, real plateau_w, 
   // Input
-  bool temper, bool abf_umbrella, bool abf_unweighted,
+  bool temper, bool transition_temper,
+  bool abf_umbrella, bool abf_unweighted,
   real* thetas, real* dUdT_msld, 
   real tempering, real temper_offset, 
-  real* oss_bias, real* meta_bias,
+  real* oss_bias, real* meta_bias, 
+  real* oss_max_potential, real* meta_potential,
   real warmup_samples,
   real k_LE, real LE_f_red, 
   // Output - Meta
@@ -1217,13 +1235,26 @@ __global__ void add_sample_hist_kernel(
     //printf("i: %d, T: %f, dU/dT: %f, X: %d, Y: %d -> (%f, %f), T_bins[i]: %d\n", i, T, dUdT, theta_start+X, Y, X*T_res, Y*dUdT_res, T_bins[i]);
     if(X >= 0 && X < T_bins[i] && Y >= 0 && Y <= dUdT_bins-1){
       theta_counts[theta_start + X] += 1.0;
+      // Transition tempering
+      real min_oss = 1e9;
+      real min_meta = 1e9;
+      if(transition_temper){
+        for(int j = theta_start; j < theta_start + T_bins[i]; j++){
+          if (oss_max_potential[j] < min_oss){
+            min_oss = oss_max_potential[j];
+          } 
+          if (meta_potential[j] < min_meta){
+            min_meta = meta_potential[j];
+          }
+        }
+      }
       // Meta
-      real bias = max(meta_bias[i]-temper_offset, 0.0);
+      real bias = transition_temper ? max(min_meta-temper_offset, 0.0) : max(meta_bias[i]-temper_offset, 0.0);
       real decay = temper ? exp(-bias/(tempering*kT)) : 1.0;
       //printf("T: %f, start+X: %d, bias: %f, decay: %f, hist: %f\n", T, theta_start+X, meta_bias[i], decay, histogram_1D[theta_start+X]);
       histogram_1D[theta_start + X] += decay;
       // OSS
-      bias = max(oss_bias[i]-temper_offset, 0.0);
+      bias = transition_temper ? max(min_oss-temper_offset, 0.0) : max(oss_bias[i]-temper_offset, 0.0);
       decay = temper ? exp(-bias/(tempering*kT)) : 1.0;
       int hist_index = (theta_start+X)*dUdT_bins + Y;
       histogram_2D[hist_index] += decay;
@@ -1231,7 +1262,7 @@ __global__ void add_sample_hist_kernel(
       dUdT_sampled_min[theta_start+X] = Y < dUdT_sampled_min[theta_start+X] ? Y : dUdT_sampled_min[theta_start+X];
     } 
 
-    // Add sample to ABF for abf_umbrella or abf_unweighted options
+    // Add sample to ABF for abf_umbrella or abf_unweighted options (abf_oss overwrites both if on)
     real weight = 1.0;
     if(abf_umbrella){
       real bias = (meta_bias[i] + oss_bias[i])/kT;
@@ -1314,11 +1345,12 @@ void Msld::add_sample(System* system, int step) {
       dUdT_bins, dUdT_max, dUdT_min,
       transition_w, plateau_w,
       // Input
-      temper, 
+      temper, transition_tempering,
       abf_umbrella, abf_unweighted,
       s->theta_fd, dUdT_msld_d, 
       temper_amount, temper_offset, 
       oss_bias_d, meta_bias_d,
+      max_pot_d, potential_1D_d,
       abf_warmup_samples,
       LE_k, LE_f_red, 
       // Output - OSS
@@ -1333,7 +1365,12 @@ void Msld::add_sample(System* system, int step) {
       LE_R_d, LE_visited_bins_d,
       LE_theta_sweep_d, LE_M_d);
 
-    // updates potential with new sample (only where affected) & recalculates <dU/dT>
+    theta_temp_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
+      siteCount, blocksPerSite_d,
+      s->thetaInvsqrtMass_d, s->thetaVelocity_d,
+      theta_temp_d);
+
+    // updates potential with new sample (only where affected) & calculates <dU/dT> if abf_oss is on
     update_ABF_from_hist(system, 2*T_search+1, 2*dUdT_search+1, true);
   }
 
@@ -1409,7 +1446,7 @@ __global__ void getforce_hist_kernel(
   int dUdT_bins, real dUdT_max, real dUdT_min,
   real T_std, real dUdT_std,
   int T_search, int dUdT_search,
-  real oss_weight, real meta_weight,
+  real oss_weight, real meta_weight, real bias_mult,
   bool relative_indexing, // center on current (T, dUdT) or (0, 0)
   int vert_slices, int horz_slices,
   // Inputs
@@ -1428,7 +1465,7 @@ __global__ void getforce_hist_kernel(
   int iSearch_T = threadIdx.x;    // T search offset
   int iSearch_dUdT = threadIdx.y; // dUdT search offset
   if (iSite >= siteCount) return;
-  if (energy && (iT >= vert_slices || idUdT >= horz_slices)) return;
+  if (energy && (iT >= vert_slices || idUdT >= horz_slices)) return; // kill overallocated CUDA grids
   
   int start_site = 0;
   int theta_start = 0;
@@ -1436,7 +1473,7 @@ __global__ void getforce_hist_kernel(
     start_site += blocksPerSite[j];
     theta_start += T_bins[j];
   }
-  // Determine central evaluation point (T, dUdT)
+  // Current (T, dUdT)
   real T = thetas[start_site];
   real dUdT = 0;
   for(int j = 0; j < blocksPerSite[iSite]; j++){
@@ -1496,10 +1533,10 @@ __global__ void getforce_hist_kernel(
     real dUdT_gaussian = expf(-0.5*dUdT_distance*dUdT_distance);
     
     int hist_index = T_index*dUdT_bins + dUdL_index;
-    real oss = oss_weight * T_gaussian * dUdT_gaussian * histogram_2D[hist_index];
-    real meta = meta_weight * T_gaussian * histogram_1D[T_index];
+    real oss = bias_mult * oss_weight * T_gaussian * dUdT_gaussian * histogram_2D[hist_index];
+    real meta = bias_mult * meta_weight * T_gaussian * histogram_1D[T_index];
     if (energy) {
-      int output_index = (theta_start + X)*dUdT_bins + Y;
+      int output_index = (theta_start + X)*dUdT_bins + Y; // output to CUDA grid point
       atomicAdd(&potential_2D[output_index], oss);
       // Energy: Many thread blocks per site hist, only 1 slice of 1 block does meta calc
       if(iSearch_dUdT == dUdT_search && idUdT == dUdT_search){
@@ -1521,6 +1558,7 @@ __global__ void getforce_hist_kernel(
       }
     }
   }
+  // TODO: Add reductions to avoid crowded atomic adds
 }
 
 __global__ void getforce_oss_linear(
@@ -1646,7 +1684,7 @@ void Msld::getforce_bias(System *system, bool calcEnergy) {
       T_bins_d, site_period_d, 
       dUdT_bins, dUdT_max, dUdT_min, 
       T_std, dUdT_std, T_search, dUdT_search, 
-      oss_bias_mag, meta_bias_mag,
+      oss_bias_mag, meta_bias_mag, bias_mult,
       true,
       vert_slices, horz_slices,
       // Inputs
@@ -1723,7 +1761,7 @@ __global__ void hist_ensemble_dUdT_kernel(
   }
 }
 
-// Compute potential and <dU/dT> from histogram for ABF for each site
+// Compute potential and optional <dU/dT> from histogram for ABF for each site
 void Msld::update_ABF_from_hist(System *system, int vert_slices, int horz_slices, bool relative_indexing){
   cudaStream_t stream = 0;
   Run *r = system->run;
@@ -1741,7 +1779,7 @@ void Msld::update_ABF_from_hist(System *system, int vert_slices, int horz_slices
     T_bins_d, site_period_d, 
     dUdT_bins, dUdT_max, dUdT_min, 
     T_std, dUdT_std, T_search, dUdT_search, 
-    oss_bias_mag, meta_bias_mag, 
+    oss_bias_mag, meta_bias_mag, bias_mult,
     relative_indexing, vert_slices, horz_slices,
     // Inputs
     true,
@@ -1750,7 +1788,7 @@ void Msld::update_ABF_from_hist(System *system, int vert_slices, int horz_slices
     s->thetaForce_d, dGdF_d, oss_bias_d, meta_bias_d,
     potential_2D_d, potential_1D_d);
 
-  if(!abf_oss){ return; } // don't need to do <dU/dT> if this flag is not set
+  if(!abf_oss && !(oss && transition_tempering)){ return; } // don't need to do 2D grid <dU/dT> or min_potential
 
   // Compute <dU/dT> in region where potential got updated
   dim3 blockDim1(siteCount-1, 1, 1); 

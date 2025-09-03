@@ -85,7 +85,7 @@ public:
   real* dUdL_msld; // [blockCount]
   real* dUdT_msld_d; // [blockCount] theta forces from force field
   real* dUdT_msld; // [blockCount]
-  real* theta_temp_d; // [blockCount] temperature of theta particles
+  real* theta_temp_d; // [blockCount] sum(m*v^2/kB) - used to calculate temperature (divide by samples)
   real* theta_temp;
   real samples=0;
   // Restarts & Logging
@@ -110,12 +110,12 @@ public:
   real* histogram_2D_d; // [dUdT_bins*total_T_bins] 2D meta tempered sample count in (T, dU/dT) bin
   real* potential_2D_d; // [dUdT_bins*total_T_bins] 2D potential from OSS metadynamics
   // Grid adjustable parameters - used for 1D meta as well
-  real T_std = .02; 
-  real dUdT_max = 700;
+  real T_std = .01; 
   real dUdT_std = 2.0;  
+  real dUdT_max = 700;
   int bins_per_std = 2; 
   int n_std_search = 5; 
-  // Grid derived Parameters
+  // Grid derived parameters
   real dUdT_min = -dUdT_max;
   real T_res; // T_std / bins_per_std
   real dUdT_res; // dUdT_std / bins_per_std
@@ -140,10 +140,11 @@ public:
   // Adds U_bias = oss_k*dU_msld/dT
   real oss_k = 0.0; 
   // Metadynamics adjustable parameters - 1D & 2D
-  bool temper = true;
-  real bias_mult = 1.0; // multiplier onto ost bias that bias_potential[i] does not pick up
-  real temper_amount = 2.0; // exp(-bias_pot/(amount*kT))
-  real temper_offset = 0; // exp(-max(0, bias_pot-offset)/(amount*kT))
+  bool temper = true;  
+  bool transition_tempering = false; // transition tempered meta -> FES = -V(s) -> should set temper_offset
+  real bias_mult = 1.0; // multiplier onto meta bias that bias_potential[i] does not pick up
+  real temper_amount = 3.0; // exp(-bias_pot/(amount*T*kB)) -> (dT = amount*T) FES = -(T+dT)/dT * V(s) = -(1+amount)/(amount) * V(s)
+  real temper_offset = 0.0; // exp(-max(0, bias_pot-offset)/(amount*kT)) -> larger = more transitions
 
   // ABF
   bool abf_oss = false; // compute weighted ABF from 2D histogram potential
@@ -164,7 +165,7 @@ public:
   // Local Elevation -> M[T] += LE_k * pow(LE_f_red, R)
   real* LE_bias;
   real* LE_bias_d; // [site] bias from each LE bias
-  real LE_f_red = .6;
+  real LE_f_red = .95;
   real LE_k = .00293; // 1e-3 kJ/mol = .239e-3 kcal/mol
   real LE_T_res = .1; // Resolution of LE memory grid
   real LE_total_bins; // sum(site_period[i])/LE_T_res - total bins from all sites

@@ -446,7 +446,8 @@ void print_dynamics_output(int step,System *system)
       system->state->recv_energy();
       print_nrg(step,system);
     }
-    if (step % system->run->freqMTD == 0){
+    if (step % system->run->freqMTD == 0 
+      && (system->msld->oss || system->msld->LE || system->msld->abf || system->msld->meta)){
       system->state->recv_lambda();
       system->msld->recv_meta();
       print_meta(step, system);
@@ -498,6 +499,18 @@ void write_checkpoint_file(const char *fnm,System *system)
   }
 }
 
+void write_1D(Msld* msld, std::ofstream& file, real* T_1D, int* lengths){
+  Msld* m = msld;
+  int accum=0;
+  for (int i = 1; i < m->siteCount; i++) {
+    file << "# Site " << i << " Bins " << lengths[i] << "\n";
+    for (int j = accum; j < accum+lengths[i]; j++) {
+        file << i << ", " << j << ", " << T_1D[j] << "\n";
+    }
+    accum+=lengths[i];
+  }
+}
+
 void write_histogram_file(System* system, std::string file_name, bool potential) {
   // Write to temporary file
   std::string temp_file_name = file_name + ".tmp";
@@ -515,43 +528,80 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
     int nS = m->siteCount;
     file << "# Num_Sites: " << nS-1 << "\n"; // will be read in as num histograms
   
+    // Write 1D info
     int total_bins = m->total_T_bins;
-    real* dUdT = (real*)malloc(total_bins * sizeof(real));
-    real* dUdT_d = system->msld->abf_ensemble_dUdT_d;
-    cudaMemcpy(dUdT, dUdT_d, total_bins*sizeof(real), cudaMemcpyDefault);
-  
+    real* T_1D = (real*)malloc(total_bins * sizeof(real));
+
+    file << "# Theta Counts\n";
+    cudaMemcpy(T_1D, m->theta_histogram_d, total_bins*sizeof(real), cudaMemcpyDefault);
+    write_1D(m, file, T_1D, m->T_bins);
+
+    // Meta
+    file << "# Meta\n";
+    real* hist_d = potential ? m->potential_1D_d : m->histogram_1D_d;
+    cudaMemcpy(T_1D, hist_d, total_bins*sizeof(real), cudaMemcpyDefault);
+    write_1D(m, file, T_1D, m->T_bins);
+
+    // ABF
     file << "# ABF <dU/dT>\n";
-    int accum=0;
-    for (int i = 1; i < nS; i++) {
-      file << "# Site " << i << " Bins " << m->T_bins[i] << "\n";
-      for (int j = accum; j < accum+m->T_bins[i]; j++) {
-          file << i << ", " << j << ", " << dUdT[j] << "\n";
-      }
-      accum+=m->T_bins[i];
-    }
-    free(dUdT);
+    cudaMemcpy(T_1D, m->abf_ensemble_dUdT_d, total_bins*sizeof(real), cudaMemcpyDefault);
+    write_1D(m, file, T_1D, m->T_bins);
 
-    real* hist_potential = (real*)malloc(total_bins*m->dUdT_bins*sizeof(real));
-    if(potential){
-      cudaMemcpy(hist_potential, system->msld->potential_2D_d, total_bins*m->dUdT_bins*sizeof(real), cudaMemcpyDeviceToHost);
-    } else { // for restart file
-      cudaMemcpy(hist_potential, system->msld->histogram_2D_d, total_bins*m->dUdT_bins*sizeof(real), cudaMemcpyDeviceToHost);
-    }
+    file << "# ABF Weights\n";
+    cudaMemcpy(T_1D, m->abf_weights_d, total_bins*sizeof(real), cudaMemcpyDefault);
+    write_1D(m, file, T_1D, m->T_bins);
 
+    file << "# ABF Offsets\n";
+    cudaMemcpy(T_1D, m->abf_offsets_d, total_bins*sizeof(real), cudaMemcpyDefault);
+    write_1D(m, file, T_1D, m->T_bins);
+
+    file << "# ABF Weighted dU/dT\n";
+    cudaMemcpy(T_1D, m->abf_weighted_dUdT_d, total_bins*sizeof(real), cudaMemcpyDefault);
+    write_1D(m, file, T_1D, m->T_bins);
+
+    file << "# ABF Weighted dU/dT^2\n";
+    cudaMemcpy(T_1D, m->abf_weighted_dUdT2_d, total_bins*sizeof(real), cudaMemcpyDefault);
+    write_1D(m, file, T_1D, m->T_bins);
+
+    file << "# ABF Weighted dU/dT^2\n";
+    cudaMemcpy(T_1D, m->abf_weighted_dUdT2_d, total_bins*sizeof(real), cudaMemcpyDefault);
+    write_1D(m, file, T_1D, m->T_bins);
+    free(T_1D);
+
+    // LE
+    file << "# R counter\n";
+    real* R = (real*) malloc(m->siteCount*sizeof(real));
+    cudaMemcpy(R, m->LE_R_d, m->siteCount*sizeof(real), cudaMemcpyDefault);
+    for(int i = 0; i < m->siteCount; i++){
+      file << i << ", " << R[i] << "\n";
+    }
+    free(R);
+
+    file << "# LE Memory\n";
+    int LE_bins = m->LE_total_bins;
+    real* LE_T = (real*) malloc(LE_bins*sizeof(real));
+    cudaMemcpy(LE_T, m->LE_M_d, LE_bins*sizeof(real), cudaMemcpyDefault);
+    write_1D(m, file, LE_T, m->LE_bins);
+    free(LE_T);
+
+    // Write 2D info
+    real* hist_2D = (real*)malloc(total_bins*m->dUdT_bins*sizeof(real));
+    real* hist_2D_d = potential ? m->potential_2D_d : m->histogram_2D_d;
+    cudaMemcpy(hist_2D, hist_2D_d, total_bins*m->dUdT_bins*sizeof(real), cudaMemcpyDefault);
     file << "# Histogram Potential\n";
-    accum=0;
+    real accum=0;
     for (int i = 1; i < nS; i++) {
       file << "# Theta " << i << " T_bins: " << m->T_bins[i] << " T_range: [" << 0 << ", " << m->site_period[i] << "]"
          << " dUdT_bins: " << m->dUdT_bins << " dUdT_range: [" << m->dUdT_min << ", " << m->dUdT_max << "] " << "\n";
       for (int j = 0; j < m->T_bins[i]; j++) {
         for (int k = 0; k < m->dUdT_bins; k++) {
           int idx = (accum+j)*m->dUdT_bins + k;
-          file << i << ", " << j << ", " << k << ", " << hist_potential[idx] << "\n";
+          file << i << ", " << j << ", " << k << ", " << hist_2D[idx] << "\n";
         }
       }
       accum+= m->T_bins[i];
     }
-    free(hist_potential);
+    free(hist_2D);
   }
 
   file.close();
@@ -562,63 +612,135 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
   }
 }
 
-// Assumes we haven't changed any OST parameters in .inp file
+// Helper: read one 1D block into host array
+void read_1D(Msld* m, std::ifstream& file, real* host_array, int* lengths) {
+    int accum = 0;
+    std::string line;
+
+    for (int i = 1; i < m->siteCount; i++) {
+        // Read site header line
+        if (!std::getline(file, line)) return;
+        int site, bins;
+        sscanf(line.c_str(), "# Site %d Bins %d", &site, &bins);
+
+        // Now read bins lines
+        for (int j = 0; j < bins; j++) {
+            if (!std::getline(file, line)) return;
+            int isite, idx;
+            real val;
+            char comma;
+            std::stringstream ss(line);
+            ss >> isite >> comma >> idx >> comma >> val;
+            host_array[accum + j] = val;
+        }
+        accum += bins;
+    }
+}
+
+
 bool read_histogram_file(System* system, std::string file_name) {
-    Msld* m = system->msld;
     std::ifstream file(file_name);
     if (!file) {
-        std::cerr << "Unable to open file " << file_name << " for restart." << std::endl;
-        return false;
+        std::cerr << "Error: Unable to open file " << file_name << " for reading." << std::endl;
+        return true; // file doesn't exist, nothing is wrong
     }
 
-    printf("Reading OSS sampling from file!\n");
-    real* hist_potential = (real*)malloc(m->total_T_bins * m->dUdT_bins * sizeof(real));
-    int* max_dUdT_id = (int*)malloc(m->total_T_bins*sizeof(int));
-    cudaMemcpy(max_dUdT_id, m->max_dUdT_index_d, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
-    int* min_dUdT_id = (int*)malloc(m->total_T_bins*sizeof(int));
-    cudaMemcpy(min_dUdT_id, m->min_dUdT_index_d, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
-
-    // Skip to histogram section
+    Msld* m = system->msld;
     std::string line;
+    int nSites = 0;
+
+    int total_bins = m->total_T_bins;
+    real* T_1D = (real*)malloc(total_bins * sizeof(real));
+    int counter = -1;
     while (std::getline(file, line)) {
-        if (line.find("# Histogram Potential") != std::string::npos) {
-            break;
+      counter++;
+        if (line.rfind("# Num_Sites:", 0) == 0) {
+            sscanf(line.c_str(), "# Num_Sites: %d", &nSites);
+        } else if (line.find("# Theta Counts") != std::string::npos) {
+            read_1D(m, file, T_1D, m->T_bins);
+            cudaMemcpy(m->theta_histogram_d, T_1D, total_bins*sizeof(real), cudaMemcpyDefault);
         }
-    }
-    // Read histogram data
-    int site, bin_idx, k_idx;
-    real hist_value;
-    char comma;
-    while (std::getline(file, line)) {
-        if (line[0] == '#') {
-            continue; // Skip comment lines
+        else if (line.find("# Meta") != std::string::npos) {
+            read_1D(m, file, T_1D, m->T_bins);
+            cudaMemcpy(m->histogram_1D_d, T_1D, total_bins*sizeof(real), cudaMemcpyDefault);
         }
-        std::istringstream iss(line);
-        if (iss >> site >> comma >> bin_idx >> comma >> k_idx >> comma >> hist_value) {
+        else if (line.find("# ABF <dU/dT>") != std::string::npos){
+          read_1D(m, file, T_1D, m->T_bins);
+          cudaMemcpy(m->abf_ensemble_dUdT_d, T_1D, total_bins*sizeof(real), cudaMemcpyDefault);
+        }
+        else if (line.find("# ABF Weights") != std::string::npos) {
+            read_1D(m, file, T_1D, m->T_bins);
+            cudaMemcpy(m->abf_weights_d, T_1D, total_bins*sizeof(real), cudaMemcpyDefault);
+        }
+        else if (line.find("# ABF Offsets") != std::string::npos) {
+            read_1D(m, file, T_1D, m->T_bins);
+            cudaMemcpy(m->abf_offsets_d, T_1D, total_bins*sizeof(real), cudaMemcpyDefault);
+        }
+        else if (line.find("# ABF Weighted dU/dT") != std::string::npos) {
+            read_1D(m, file, T_1D, m->T_bins);
+            cudaMemcpy(m->abf_weighted_dUdT_d, T_1D, total_bins*sizeof(real), cudaMemcpyDefault);
+        }
+        else if (line.find("# ABF Weighted dU/dT^2") != std::string::npos) {
+            read_1D(m, file, T_1D, m->T_bins);
+            cudaMemcpy(m->abf_weighted_dUdT2_d, T_1D, total_bins*sizeof(real), cudaMemcpyDefault);
+        }
+        else if (line.find("# R counter") != std::string::npos) {
+            // Parse LE_R_d (no bins, just siteCount lines)
+            real* R = (real*)malloc(m->siteCount*sizeof(real));
+            for (int i = 0; i < m->siteCount; i++) {
+                if (!std::getline(file, line)) break;
+                int idx;
+                real val;
+                char comma;
+                std::stringstream ss(line);
+                ss >> idx >> comma >> val;
+                R[idx] = val;
+            }
+            cudaMemcpy(m->LE_R_d, R, m->siteCount*sizeof(real), cudaMemcpyDefault);
+            free(R);
+        }
+        else if (line.find("# LE Memory") != std::string::npos) {
+            int LE_bins = m->LE_total_bins;
+            real* LE_T = (real*)malloc(LE_bins*sizeof(real));
+            read_1D(m, file, LE_T, m->LE_bins);
+            cudaMemcpy(m->LE_M_d, LE_T, LE_bins*sizeof(real), cudaMemcpyDefault);
+            free(LE_T);
+        }
+        else if (line.find("# Histogram Potential") != std::string::npos) {
+            // Read restartable 2D histogram data
+            real* hist_2D = (real*)malloc(total_bins*m->dUdT_bins*sizeof(real));
             int accum = 0;
-            for (int i = 1; i < site; i++) { // unchecked site indexing
+            // We don't check if they are the same
+
+            for (int i = 1; i < m->siteCount; i++) {
+                // Read site descriptor line
+                std::getline(file, line);
+                for (int j = 0; j < m->T_bins[i]; j++) {
+                    for (int k = 0; k < m->dUdT_bins; k++) {
+                        if (!std::getline(file, line)) break;
+                        int isite, jj, kk;
+                        real val;
+                        char comma;
+                        std::stringstream ss(line);
+                        ss >> isite >> comma >> jj >> comma >> kk >> comma >> val;
+
+                        int idx = (accum + jj) * m->dUdT_bins + kk;
+                        hist_2D[idx] = val;
+                    }
+                }
                 accum += m->T_bins[i];
             }
-            int X = accum+bin_idx;
-            if(X >= m->total_T_bins || X < 0 || k_idx < 0 || k_idx >= m->dUdT_bins){
-              printf("Something changed in OST settings, reading an out of bounds index!! X: %d, Y: %d\n", X, k_idx);
-              printf("Exiting...");
-              exit(1);
-            }
-            int idx = X*m->dUdT_bins + k_idx;
-            if (k_idx > max_dUdT_id[X]){ max_dUdT_id[X] = k_idx; }
-            if (k_idx < min_dUdT_id[X]){ min_dUdT_id[X] = k_idx; }
-            hist_potential[idx] = hist_value;
+
+            cudaMemcpy(m->histogram_2D_d, hist_2D, total_bins*m->dUdT_bins*sizeof(real), cudaMemcpyDefault);
+            free(hist_2D);
+        } else if (!file.eof()){
+          // incorrect settings - kill restart attempt
+          std::cerr << "Error reading line #" << counter << ": " << line << std::endl;
+          return false;
         }
     }
-    cudaMemcpy(system->msld->histogram_2D_d, hist_potential, m->total_T_bins * m->dUdT_bins * sizeof(real), cudaMemcpyHostToDevice);
-    cudaMemcpy(m->max_dUdT_index_d, max_dUdT_id, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
-    cudaMemcpy(m->min_dUdT_index_d, min_dUdT_id, m->total_T_bins*sizeof(int), cudaMemcpyDefault);
-    free(hist_potential);
-    free(max_dUdT_id);
-    free(min_dUdT_id);
+    free(T_1D);
     file.close();
-    printf("Finished reading OSS sampling from file!\n");
     return true;
 }
 
