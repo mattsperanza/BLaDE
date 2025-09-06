@@ -130,6 +130,7 @@ public:
   real meta_bias_mag = .0; // Needs to be set if meta should do anything
   real* meta_bias_d; // [siteCount] bias due to 1D meta
   real* meta_bias;
+  real* meta_min_V_d; // [blockCount] Transition Temper Bias
   // 2D Meta 
   real oss_bias_mag = .0; // Needs to be set if oss should do anything
   bool oss_theta = true; // Compute dGdF*d2U/dXdT or dGdF*d2U/dXdL, L is not supported yet
@@ -137,16 +138,18 @@ public:
   real* oss_bias_d; // [siteCount] added bias potential at current step due to site histogram
   real* oss_bias; // [siteCount] added bias potential current step due to site histogram
   real* dGdF_d; // [blockCount] OSS chain rule multiplier due to gaussians, dGdF[i] * d2U/dTidX
+  real* oss_min_V_d; // [blockCount] Transition Temper Bias
   // Adds U_bias = oss_k*dU_msld/dT
   real oss_k = 0.0; 
   // Metadynamics adjustable parameters - 1D & 2D
   bool temper = true;  
-  bool transition_tempering = false; // transition tempered meta -> FES = -V(s) -> should set temper_offset
-  real bias_mult = 1.0; // multiplier onto meta bias that bias_potential[i] does not pick up
-  real temper_amount = 3.0; // exp(-bias_pot/(amount*T*kB)) -> (dT = amount*T) FES = -(T+dT)/dT * V(s) = -(1+amount)/(amount) * V(s)
+  bool transition_tempering = false; // transition tempered meta -> FES = -V(s)
+  real bias_mult = 1.0; // multiplier onto metadynamics forces, allows sampling from FES = -(1+a)/a * V_bias
+  real temper_amount = 3.0; // FES = -(T+dT)/dT * V(s) = -(1+amount)/(amount) * V(s)
   real temper_offset = 0.0; // exp(-max(0, bias_pot-offset)/(amount*kT)) -> larger = more transitions
 
   // ABF
+  // N.B.: <dU/dT> gets (1+a)/a multiplied onto bias when transition_temper is off
   bool abf_oss = false; // compute weighted ABF from 2D histogram potential
   bool abf_umbrella = false; // compute weighted ABF from Torrie-Valleau reweighting - via offset exp sum
   bool abf_unweighted = true; // compute unweighted ABF - setting either of the other two overwrites this
@@ -163,8 +166,8 @@ public:
   real* dUdT_abf;
   
   // Local Elevation -> M[T] += LE_k * pow(LE_f_red, R)
-  real* LE_bias;
   real* LE_bias_d; // [site] bias from each LE bias
+  real* LE_bias;
   real LE_f_red = .95;
   real LE_k = .00293; // 1e-3 kJ/mol = .239e-3 kcal/mol
   real LE_T_res = .1; // Resolution of LE memory grid
@@ -204,9 +207,18 @@ public:
   real softBondExponent;
   real softNotBondExponent;
 
+  // Lambda fixing -> taken from initial theta values
   bool fix; // ffix
-  bool slow_fix; // Slowly tranform from WT to desired state, gets turned off automatically prior to end of this round of dynamics
-  real_x *lambda_delta_d; // [blockCount] desired - WT / nsteps
+
+  // Theta transforms only for 1 site with L-LEUS
+  bool theta_fix=false; // fix the value of theta
+  real_x theta_fix_value;
+  bool theta_slow_fix=false; // start->end over the next dynamics call, then turned off
+  real_x theta_start=-1;
+  real_x theta_current=0;
+  real_x theta_end=-1;
+  real* W_d;
+  real_x theta_delta;
 
   Msld();
   ~Msld();
@@ -241,6 +253,7 @@ public:
 
   // Enhanced Sampling Functions
   void init_enhanced_sampling(System* system);
+  void destroy_enhanced_sampling(System* system);
   void copy_reset_memory(System* system);
   void getforce_bias(System* system, bool calcEnergy);
   void add_sample(System *system, int step);
