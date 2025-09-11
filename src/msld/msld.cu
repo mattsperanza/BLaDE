@@ -508,6 +508,11 @@ void parse_msld(char *line,System *system)
     system->msld->sample_freq=io_nexti(line);
   } else if (strcmp(token, "LE") == 0){
     system->msld->LE=io_nextb(line);
+  } else if (strcmp(token, "LE_oss") == 0){
+    system->msld->LE_oss=io_nextb(line);
+    if(system->msld->LE_oss){
+      system->msld->oss = true;
+    }
   } else if (strcmp(token, "oss") == 0) {
     system->msld->oss=io_nextb(line);
   } else if (strcmp(token, "abf") == 0){
@@ -518,12 +523,18 @@ void parse_msld(char *line,System *system)
     system->msld->LE_k=io_nextf(line);
   } else if (strcmp(token, "LE_f_red") == 0){
     system->msld->LE_f_red=io_nextf(line);
+  } else if (strcmp(token, "LE_T_res") == 0){
+    system->msld->LE_T_res=io_nextf(line);
+  } else if (strcmp(token, "LE_dUdT_res")==0){
+    system->msld->LE_dUdT_res=io_nextf(line);
   } else if (strcmp(token, "abf_oss") == 0){
     system->msld->abf_oss=io_nextb(line);
   } else if (strcmp(token, "abf_umbrella") == 0){
     system->msld->abf_umbrella=io_nextb(line);
   } else if (strcmp(token, "abf_unweighted") == 0){
     system->msld->abf_unweighted=io_nextb(line);
+  } else if (strcmp(token, "oss_remove_bonded") == 0){
+    system->msld->oss_remove_bonded=io_nextb(line);
   } else if (strcmp(token, "oss_k") == 0){
     system->msld->oss_k=io_nextf(line);
   } else if (strcmp(token, "oss_bias_mag") == 0){
@@ -536,6 +547,8 @@ void parse_msld(char *line,System *system)
     system->msld->temper=io_nextb(line);
   } else if (strcmp(token, "transition_tempering") == 0){
     system->msld->transition_tempering=io_nextb(line);
+  } else if (strcmp(token, "sweep_tempering") == 0){
+    system->msld->sweep_tempering=io_nextb(line);
   } else if (strcmp(token, "temper_amount") == 0){
     system->msld->temper_amount=io_nextf(line);
   } else if (strcmp(token, "temper_offset") == 0){
@@ -944,6 +957,10 @@ void Msld::init_enhanced_sampling(System* system){
   dUdL_msld = (real*)malloc(blockCount*sizeof(real));
   cudaMalloc(&dUdL_msld_d, blockCount*sizeof(real));
   cudaMemset(dUdL_msld_d, 0, blockCount*sizeof(real));
+  cudaMalloc(&dUdL_bonded_d, blockCount*sizeof(real));
+  cudaMemset(dUdL_bonded_d, 0, blockCount*sizeof(real));
+  cudaMalloc(&dUdT_bonded_d, blockCount*sizeof(real));
+  cudaMemset(dUdT_bonded_d, 0, blockCount*sizeof(real));
   dUdT_abf = (real*)malloc(sizeof(real));
   cudaMalloc(&dUdT_abf_d, siteCount*sizeof(real)); 
   cudaMemset(dUdT_abf_d, 0, siteCount*sizeof(real));
@@ -962,6 +979,7 @@ void Msld::init_enhanced_sampling(System* system){
 
   dUdT_min = -dUdT_max;
   dUdT_bins = (int) ((abs(dUdT_max) + abs(dUdT_min)) / dUdT_res) + 1; // histogram has bins exactly on edges
+  LE_dUdT_bins = (int) ((abs(dUdT_max) + abs(dUdT_min)) / LE_dUdT_res) + 1;
   total_T_bins = 0;
   T_bins = (int*) calloc(siteCount, sizeof(int));
   LE_total_bins = 0;
@@ -1040,8 +1058,18 @@ void Msld::init_enhanced_sampling(System* system){
   cudaMemset(meta_min_V_d, 0, sizeof(real));
 
   // Local Elevation
+  LE_2D_bins = LE_total_bins*LE_dUdT_bins;
+  cudaMalloc(&LE_counts_d, LE_total_bins*sizeof(real));
+  cudaMemset(LE_counts_d, 0, LE_total_bins*sizeof(real));
+
   cudaMalloc(&LE_M_d, LE_total_bins*sizeof(real));
   cudaMemset(LE_M_d, 0, LE_total_bins*sizeof(real));
+
+  cudaMalloc(&LE_M_2D_d, LE_total_bins*LE_dUdT_bins*sizeof(real));
+  cudaMemset(LE_M_2D_d, 0, LE_total_bins*LE_dUdT_bins*sizeof(real));
+
+  cudaMalloc(&LE_T_max_d, LE_total_bins*sizeof(real));
+  cudaMemset(LE_T_max_d, 0, LE_total_bins*sizeof(real));
 
   cudaMalloc(&LE_theta_sweep_d, LE_total_bins*sizeof(int));
   cudaMemset(LE_theta_sweep_d, 0, LE_total_bins*sizeof(int));
@@ -1073,6 +1101,7 @@ void Msld::copy_reset_memory(System* system){
   // Copy MSLD theta and lambda forces, clear memory from last step
   cudaMemcpyAsync(m->dUdL_msld_d, system->state->lambdaForce_d, m->blockCount*sizeof(real), cudaMemcpyDefault, r->ossBias);
   cudaMemsetAsync(m->dUdT_msld_d, 0, m->blockCount*sizeof(real), r->ossBias);
+  cudaMemsetAsync(m->dUdT_bonded_d, 0, blockCount*sizeof(real), r->ossBias); // dUdL_bonded reset in potential.cxx
   oss_lambda_to_theta_force(system); // fill dUdT_msld_d
   cudaMemsetAsync(m->oss_bias_d, 0, m->siteCount*sizeof(real), r->ossBias);
   cudaMemsetAsync(m->meta_bias_d, 0, m->siteCount*sizeof(real), r->ossBias);
@@ -1232,16 +1261,21 @@ static __device__ int histogram_index(real val, int num_bins, real max, real min
 __global__ void calc_thetaForce_contributions(
   int blockCount,
   // Input
-  real* dUdL_msld, real* dLdT,
+  real* dUdL_msld, real* dUdL_bonded, real* dLdT,
   // Output
-  real *dUdT_msld)
+  real *dUdT_msld, real* dUdT_bonded)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i<blockCount) {
+    // dU/dT = sum(dUdT_msld[i]) -> this is calculated in real dU/dL->dU/dT kernel & anywhere dU/dT is needed
+    // Convert overall lambda forces to theta forces
     real fi=dUdL_msld[i];
     fi *= dLdT[i];
     atomicAdd(&dUdT_msld[i],fi); // Each lambdas contribution to theta force
-    // dU/dT = sum(dUdT_msld[i]) -> this is calculated in real dU/dL->dU/dT kernel & anywhere dU/dT is needed
+    // Convert bonded lambda forces to theta forces
+    fi = dUdL_bonded[i];
+    fi *= dLdT[i];
+    atomicAdd(&dUdT_bonded[i],fi); // Each bonded lambdas contribution to theta force
   }
 }
 
@@ -1249,9 +1283,9 @@ void Msld::oss_lambda_to_theta_force(System* system){
   calc_thetaForce_contributions<<<(blockCount+BLMS-1)/BLMS,BLMS,0,system->run->ossBias>>>(
       blockCount, 
       // Input
-      dUdL_msld_d, dLdT_d,
+      dUdL_msld_d, dUdL_bonded_d, dLdT_d,
       // Output
-      dUdT_msld_d);
+      dUdT_msld_d, dUdT_bonded_d);
 }
 
 __global__ void theta_temp_kernel(
@@ -1278,14 +1312,15 @@ __global__ void add_sample_hist_kernel(
   int dUdT_bins, real dUdT_max, real dUdT_min,
   real transition_w, real plateau_w, 
   // Input
-  bool temper, bool transition_temper,
+  bool temper, bool transition_temper, bool sweep_temper,
   bool abf_umbrella, bool abf_unweighted,
-  real* thetas, real* dUdT_msld, 
+  bool oss_remove_bonded,
+  real* thetas, real* dUdT_msld, real* dUdT_bonded,
   real tempering, real temper_offset, 
-  real* oss_bias, real* meta_bias, 
+  real* oss_bias, real* meta_bias, real* LE_bias,
   real* oss_max_potential, real* meta_potential_1D,
   real warmup_samples,
-  real k_LE, real LE_f_red, 
+  real LE_k, real LE_f_red, int LE_dUdT_bins, 
   // Output - Meta
   real* theta_counts, real* histogram_2D, real* histogram_1D, 
   int* dUdT_sampled_max, int* dUdT_sampled_min,
@@ -1295,8 +1330,8 @@ __global__ void add_sample_hist_kernel(
   real* weighted_dUdT, real* weighted_dUdT2, 
   real* ensemble_dUdT, real* variance_dUdT,
   // Output - LE
-  real* R, int* visited_bins, 
-  int* theta_sweep, real* M 
+  real* R, real* LE_counts, int* visited_bins, 
+  int* theta_sweep, real* M, real* M_2D, real* LE_T_max
 ){
   int i = blockIdx.x*blockDim.x+threadIdx.x;
   if(i < siteCount && i != 0){ // none for environment
@@ -1312,11 +1347,14 @@ __global__ void add_sample_hist_kernel(
     // Add sample to 1D and 2D Meta on (T, dU/dT)
     real T = thetas[start_site];
     real dUdT = 0;
+    real bonded = 0;
     for(int j = 0; j < blocksPerSite[i]; j++){
       dUdT += dUdT_msld[start_site+j];
+      bonded += dUdT_bonded[start_site+j];
     }
+    //printf("dUdT_msld: %f, dUdT_bonded: %f\n", dUdT, bonded);
     int X = periodic_histogram_index(T, T_bins[i], site_period[i], 0);
-    int Y = histogram_index(dUdT, dUdT_bins, dUdT_max, dUdT_min);
+    int Y = histogram_index(oss_remove_bonded ? dUdT-bonded : dUdT, dUdT_bins, dUdT_max, dUdT_min);
     real T_res = site_period[i] / T_bins[i];
     real dUdT_res = (dUdT_max - dUdT_min) / (dUdT_bins-1.0);
     //printf("i: %d, T: %f, dU/dT: %f, X: %d, Y: %d -> (%f, %f), T_bins[i]: %d\n", i, T, dUdT, theta_start+X, Y, X*T_res, Y*dUdT_res, T_bins[i]);
@@ -1340,6 +1378,7 @@ __global__ void add_sample_hist_kernel(
       histogram_1D[theta_start + X] += decay;
       // OSS
       bias = transition_temper ? max(oss_min_V[0]-temper_offset, 0.0) : max(oss_bias[i]-temper_offset, 0.0);
+      bias = sweep_temper ? max(R[i]-temper_offset, 0.0) : bias; // more transitioned focused
       decay = temper ? exp(-bias/(tempering*kT)) : 1.0;
       int hist_index = (theta_start+X)*dUdT_bins + Y;
       histogram_2D[hist_index] += decay;
@@ -1351,7 +1390,7 @@ __global__ void add_sample_hist_kernel(
     real weight = 1.0;
     if(abf_umbrella){
       real temper_correction = transition_temper ? 1.0 : (1+tempering)/tempering;
-      real bias = temper_correction*(meta_bias[i] + oss_bias[i])/kT;
+      real bias = temper_correction*(meta_bias[i] + oss_bias[i] + LE_bias[i])/kT;
       if(bias > offsets[theta_start+X]){ // offsets make largest weight = 1
         real correction = exp(offsets[theta_start+X] - bias);
         weights[theta_start+X] *= correction;
@@ -1381,9 +1420,11 @@ __global__ void add_sample_hist_kernel(
 
     // Add sample to 1D Local Elevation
     X = periodic_histogram_index(T, LE_bins[i], site_period[i], 0);
+    Y = histogram_index(oss_remove_bonded ? dUdT-bonded : dUdT, LE_dUdT_bins, dUdT_max, dUdT_min);
     //printf("T: %f, X: %d -> T: %f, LE_bins[i]: %d, \n", T, theta_start+X, X*(site_period[i]/LE_bins[i]), LE_bins[i]);
     // First and last bin are identical centers, don't include last, account for that in visited check
     if(X >= 0 && X < LE_bins[i]){ 
+      LE_counts[LE_theta_start + X]++;
       // Order of these checks matters
       if (visited_bins[i] >= 2*LE_bins[i]) { // Double sweep complete, increment and clear mem
         R[i] += 1;
@@ -1400,7 +1441,16 @@ __global__ void add_sample_hist_kernel(
         theta_sweep[LE_theta_start + X] = 1;
         visited_bins[i] += 1;
       }
-      M[LE_theta_start + X] += k_LE*pow(LE_f_red, R[i]);
+      real update = LE_k*pow(LE_f_red, R[i]);
+      if(R[i] <= 5){
+        M[LE_theta_start + X] += update;
+      } else if(Y >= 0 && Y < LE_dUdT_bins){
+        int hist_index = (LE_theta_start + X)*LE_dUdT_bins + Y;
+        M_2D[hist_index] += update;
+        if(M_2D[hist_index] > LE_T_max[LE_theta_start+X]){
+          LE_T_max[LE_theta_start+X] = M_2D[hist_index];
+        }
+      }
     }
   }
 }
@@ -1431,14 +1481,15 @@ void Msld::add_sample(System* system, int step) {
       dUdT_bins, dUdT_max, dUdT_min,
       transition_w, plateau_w,
       // Input
-      temper, transition_tempering,
+      temper, transition_tempering, sweep_tempering,
       abf_umbrella, abf_unweighted,
-      s->theta_fd, dUdT_msld_d, 
+      oss_remove_bonded,
+      s->theta_fd, dUdT_msld_d, dUdT_bonded_d,
       temper_amount, temper_offset, 
-      oss_bias_d, meta_bias_d,
+      oss_bias_d, meta_bias_d, LE_bias_d,
       max_pot_d, potential_1D_d,
       abf_warmup_samples,
-      LE_k, LE_f_red, 
+      LE_k, LE_f_red, LE_dUdT_bins,
       // Output - OSS
       theta_histogram_d,
       histogram_2D_d, histogram_1D_d,
@@ -1449,8 +1500,8 @@ void Msld::add_sample(System* system, int step) {
       abf_weighted_dUdT_d, abf_weighted_dUdT2_d, 
       abf_ensemble_dUdT_d, abf_variance_dUdT_d,
       // Output - LE
-      LE_R_d, LE_visited_bins_d,
-      LE_theta_sweep_d, LE_M_d);
+      LE_R_d, LE_counts_d, LE_visited_bins_d,
+      LE_theta_sweep_d, LE_M_d, LE_M_2D_d, LE_T_max_d);
 
     theta_temp_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
       siteCount, blocksPerSite_d,
@@ -1537,8 +1588,8 @@ __global__ void getforce_hist_kernel(
   bool relative_indexing, // center on current (T, dUdT) or (0, 0)
   int vert_slices, int horz_slices,
   // Inputs
-  bool energy, 
-  real* thetas, real* dUdT_msld, real* histogram_2D, real* histogram_1D,
+  bool energy, bool remove_bonded,
+  real* thetas, real* dUdT_msld, real* dUdT_bond, real* histogram_2D, real* histogram_1D,
   // Outputs
   real* thetaForce, real* dGdF, 
   real* oss_bias, real* meta_bias,
@@ -1565,6 +1616,7 @@ __global__ void getforce_hist_kernel(
   real dUdT = 0;
   for(int j = 0; j < blocksPerSite[iSite]; j++){
     dUdT += dUdT_msld[start_site+j];
+    dUdT -= remove_bonded ? dUdT_bond[start_site+j] : 0.0;
   }
   if(!relative_indexing){ // Used when evaluating entire histogram
     T = 0;
@@ -1651,21 +1703,40 @@ __global__ void getforce_hist_kernel(
 __global__ void getforce_oss_linear(
   int blockCount,
   // Inputs
-  real oss_k, real* dUdT_msld,
+  bool remove_bonded, 
+  real oss_k, real* dUdT_msld, real* dUdT_bond,
   // Outputs
   real* dGdF, real_e* energy
 ){
   int i=blockIdx.x*blockDim.x+threadIdx.x; // block
   if(i < blockCount && i != 0){
     dGdF[i] += oss_k;
-    if(energy) atomicAdd(energy, oss_k*dUdT_msld[i]);
+    real dUdT = remove_bonded ? dUdT_msld[i]-dUdT_bond[i] : dUdT_msld[i];
+    if(energy) atomicAdd(energy, oss_k*dUdT);
   }
 }
 
-// Out is a len=2 array for bias and derivative w.r.t. theta
-__device__ void LE_bias(real theta, real* M, int bins, real period, real* out){
+__device__ void bicubic_spline(real x, real* b, real* dbdx){
+  // Compute cubic b-spline
+  real t = abs(x);
+  real dtdx = x > 0 ? 1 : -1; // derivative at zero is zero anyway
+  if (t < 1.0){
+    *b = (4.0+3.0*t*t*t-6.0*t*t)/4.0;
+    *dbdx = (9.0*t*t-12.0*t)/4.0*dtdx;
+  } else if(t >= 1.0 && t <= 2.0){
+    real tmp = 2.0-t;
+    *b = tmp*tmp*tmp/4.0; 
+    *dbdx = (-3.0*tmp*tmp/4.0)*dtdx;
+  } else {
+    *b = 0;
+    *dbdx = 0;
+  }
+}
+
+// out[0]=bias, out[1]=dbdt
+__device__ void LE_bias_1D(real theta, real* M, int bins, real period, real* out){
   out[0] = 0;
-  out[1] = 1;
+  out[1] = 0;
   real res = period / bins;
   int center_bin = periodic_histogram_index(theta, bins, period, 0); 
   for(int j = center_bin - 2; j <= center_bin + 2; j++){ 
@@ -1676,19 +1747,9 @@ __device__ void LE_bias(real theta, real* M, int bins, real period, real* out){
         dist += dist > 0 ? -period : period;
       }
       dist /= res; // normalize so delta res are 1
-      // Compute cubic b-spline
-      real t = abs(dist);
-      real dtdx = dist > 0 ? 1/res : -1/res; // derivative at zero is zero anyway, so this doesn't matter
-      real b_spline = 0;
-      real db_spline = 0;
-      if(t >= 1.0 && t <= 2.0){
-        real tmp = 2.0-t;
-        b_spline = tmp*tmp*tmp/4.0; 
-        db_spline = (-3.0*tmp*tmp/4.0)*dtdx;
-      } else if (t < 1.0){
-        b_spline = (4.0+3.0*t*t*t-6.0*t*t)/4.0;
-        db_spline = (9.0*t*t-12.0*t)/4.0*dtdx;
-      }
+      real b_spline, db_spline;
+      bicubic_spline(dist, &b_spline, &db_spline);
+      db_spline /= res; // chain
       // Wrap with period
       int bin = j;
       if(j < 0){ bin += bins; }
@@ -1698,42 +1759,123 @@ __device__ void LE_bias(real theta, real* M, int bins, real period, real* out){
     }
 }
 
+// out[0]=bias, out[1]=dbdt, out[2]=dFdt
+__device__ void LE_bias_2D(
+  real theta, real dUdT,
+  bool normalize, real* T_max, real* M_2D, // &M_1D[site_start], &M_2D[site_start*dUdT_bins]
+  int LE_oss_warmup, real* LE_counts,
+  int T_bins, int dUdT_bins,
+  real period, real dUdT_max, real dUdT_min,
+  real* out) {
+  out[0]=0;
+  out[1]=0;
+  out[2]=0;
+  real T_res = period/T_bins;
+  real dUdT_res = (dUdT_max - dUdT_min)/(dUdT_bins-1.0);
+  int X = periodic_histogram_index(theta, T_bins, period, 0); 
+  int Y = histogram_index(dUdT, dUdT_bins, dUdT_max, dUdT_min);
+  for(int i = X-2; i <= X+2; i++){
+    real x_center = i*T_res;
+    real x_dist = theta - x_center; 
+    if(abs(x_dist) > period/2.0){ 
+      x_dist += x_dist > 0 ? -period : period;
+    }
+    x_dist /= T_res; 
+    real x_b, x_db;
+    bicubic_spline(x_dist, &x_b, &x_db);
+    x_db /= T_res; // chain
+    int x_bin = i;
+    if(i < 0){ x_bin += T_bins; }
+    if(i >= T_bins){ x_bin -= T_bins; }
+    real Mx_norm = normalize ? T_max[x_bin] : 1.0;
+    if (abs(Mx_norm) < 1e-5) { continue; } // no weight added to this column
+    real ramp = LE_counts[x_bin] < LE_oss_warmup ? LE_counts[x_bin]/LE_oss_warmup : 1.0;
+    for(int j = Y-2; j <= Y+2; j++){
+      if(j < 0 || j >= dUdT_bins) { continue; }
+      real y_center = dUdT_min + j*dUdT_res;
+      real y_dist = (dUdT - y_center)/dUdT_res;
+      real y_b, y_db;
+      bicubic_spline(y_dist, &y_b, &y_db);
+      y_db /= dUdT_res;
+      // G(T, dU/dT) = sum_X sum_Y [ M[xi, yi]*bx(T)*by(dU/dT) ]
+      real Mxy = ramp * M_2D[x_bin*dUdT_bins + j] / Mx_norm;
+      //printf("i: %d, j: %d, T: %f, dUdT: %f, y_dist: %f, y_center: %f, dUdT_res: %f\n", i, j, theta, dUdT, y_dist, y_center, dUdT_res);
+      out[0] += Mxy * x_b * y_b;
+      out[1] += Mxy * x_db * y_b;
+      out[2] += Mxy * x_b * y_db;
+    }
+  }
+}
+
 __global__ void getforce_LE_kernel(
   int siteCount, int* blocksPerSite, 
   int* LE_bins, real* site_period,
   real transition_w, real plateau_w,
+  int dUdT_bins, real dUdT_max, real dUdT_min,
+  int LE_oss_warmup,
   // Inputs
-  real* thetas, real* M,
+  bool LE, bool LE_oss, 
+  bool LE_normalize_2D, bool LE_lerp_plateau,
+  bool remove_bonded, 
+  real* thetas, real* M, 
+  real* dUdT_msld, real* dUdT_bonded, real* M_2D, real LE_k_oss,
+  real* LE_counts, real* LE_T_max,
   // Outputs,
-  real* thetaForce, real_e* energy){
+  real* thetaForce, real* dGdF, real* LE_bias, real_e* energy){
   int i=blockIdx.x*blockDim.x+threadIdx.x; // site
   if(i < siteCount && i != 0){
     // Count to first sub index
-    int start = 0;
+    int start_site = 0;
     int prev_bins = 0;
     for(int j = 0; j < i; j++){ 
-      start += blocksPerSite[j];
+      start_site += blocksPerSite[j];
       prev_bins += LE_bins[j];
     }
-    real theta = thetas[start];
+    real theta = thetas[start_site];
     // Local dot product of cubic b splines centered at M grid points evaluated at T
-    real output[2]; // bias, dbdt
-    int dv = theta / (transition_w + plateau_w); // transition number
-    real md = fmod(theta, transition_w+plateau_w); // amount past beginning
-    if(md >= 0 && md <= plateau_w){
-      real start = dv*(transition_w + plateau_w);
-      real end = start + plateau_w;
-      real outA[2], outB[2];
-      LE_bias(start, &M[prev_bins], LE_bins[i], site_period[i], outA);
-      LE_bias(end, &M[prev_bins], LE_bins[i], site_period[i], outB);
-      real m = (outB[0] - outA[0]) / (plateau_w); // slope
-      output[0] = md*m + outA[0];
-      output[1] = m;
-    } else {
-      LE_bias(theta, &M[prev_bins], LE_bins[i], site_period[i], output);
+    LE_bias[i] = 0;
+    if(LE){
+      // Linear interpolation for plateau regions
+      real output[2]; // bias, dbdt
+      int dv = theta / (transition_w + plateau_w); // transition number
+      real md = fmod(theta, transition_w+plateau_w); // amount past beginning
+      if(md >= 0 && md <= plateau_w && LE_lerp_plateau){
+        real start = dv*(transition_w + plateau_w);
+        real end = start + plateau_w;
+        real outA[2], outB[2];
+        LE_bias_1D(start, &M[prev_bins], LE_bins[i], site_period[i], outA);
+        LE_bias_1D(end, &M[prev_bins], LE_bins[i], site_period[i], outB);
+        real m = (outB[0] - outA[0]) / (plateau_w); // slope
+        output[0] = md*m + outA[0];
+        output[1] = m;
+      } else {
+        LE_bias_1D(theta, &M[prev_bins], LE_bins[i], site_period[i], output);
+      }
+      if(energy) atomicAdd(energy, output[0]);
+      //LE_bias[i] += output[0]; Adding this changes umbrella_abf, put this in separate thing
+      atomicAdd(&thetaForce[start_site], output[1]);
     }
-    if(energy) atomicAdd(energy, output[0]);
-    atomicAdd(&thetaForce[start], output[1]);
+
+    // 2D LE-style OSS potential
+    if(LE_oss){
+      real dUdT = 0;
+      for(int j = 0; j < blocksPerSite[i]; j++){
+        dUdT += dUdT_msld[start_site+j];
+        dUdT -= remove_bonded ? dUdT_bonded[start_site+j] : 0.0;
+      }
+      real out_oss[3];
+      LE_bias_2D(theta, dUdT, LE_normalize_2D, &LE_T_max[prev_bins], &M_2D[prev_bins*dUdT_bins], 
+        LE_oss_warmup, &LE_counts[prev_bins], LE_bins[i], dUdT_bins, 
+        site_period[i], dUdT_max, dUdT_min, out_oss);
+      //printf("T: %f, dUdT: %f, out[0]: %f, out[1]: %f, out[2]: %f\n", theta, dUdT, out_oss[0], out_oss[1], out_oss[2]);
+      if(!LE) { LE_k_oss = 1.0; } // don't apply multiplier if not doing 1D flattening
+      if(energy) atomicAdd(energy, LE_k_oss*out_oss[0]);
+      LE_bias[i] += out_oss[0];
+      atomicAdd(&thetaForce[start_site], LE_k_oss*out_oss[1]);
+      for(int j = 0; j < blocksPerSite[i]; j++){
+        atomicAdd(&dGdF[start_site+j], LE_k_oss*out_oss[2]);
+      }
+    }
   }
 }
 
@@ -1757,15 +1899,20 @@ void Msld::getforce_bias(System *system, bool calcEnergy) {
     update_ABF_from_hist(system, total_T_bins, dUdT_bins, false);
   }
 
-  if(LE){
+  if(LE || LE_oss){
     getforce_LE_kernel<<<(siteCount+BLMS-1)/BLMS, BLMS,shMem,stream>>>(
       siteCount, blocksPerSite_d,
       LE_bins_d, site_period_d,
       transition_w, plateau_w,
+      LE_dUdT_bins, dUdT_max, dUdT_min,
+      LE_oss_warmup,
       // Inputs
+      LE, LE_oss, LE_normalize_2D, LE_lerp_plateau, oss_remove_bonded,
       s->theta_fd, LE_M_d, 
+      dUdT_msld_d, dUdT_bonded_d, LE_M_2D_d, LE_k_oss,
+      LE_counts_d, LE_T_max_d,
       // Outputs
-      s->thetaForce_d, pEnergy);
+      s->thetaForce_d, dGdF_d, LE_bias_d, pEnergy);
   }
   if (abf) {
     getforce_abf_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
@@ -1779,7 +1926,11 @@ void Msld::getforce_bias(System *system, bool calcEnergy) {
   }
   // meta and oss bias mag need to get set
   if(oss || meta){
-    getforce_oss_linear<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(blockCount, oss_k, dUdT_msld_d, dGdF_d, pEnergy);
+    getforce_oss_linear<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
+      blockCount, 
+      oss_remove_bonded, oss_k, 
+      dUdT_msld_d, dUdT_bonded_d, 
+      dGdF_d, pEnergy);
     int vert_slices = 1;
     int horz_slices = 1;
     dim3 blockDim(2*T_search+1, 2*dUdT_search+1, 1); 
@@ -1793,8 +1944,8 @@ void Msld::getforce_bias(System *system, bool calcEnergy) {
       true,
       vert_slices, horz_slices,
       // Inputs
-      false,
-      s->theta_fd, dUdT_msld_d, histogram_2D_d, histogram_1D_d,
+      false, oss_remove_bonded,
+      s->theta_fd, dUdT_msld_d, dUdT_bonded_d, histogram_2D_d, histogram_1D_d,
       // Outputs
       s->thetaForce_d, dGdF_d, oss_bias_d, meta_bias_d,
       potential_2D_d, potential_1D_d);
@@ -1888,8 +2039,8 @@ void Msld::update_ABF_from_hist(System *system, int vert_slices, int horz_slices
     oss_bias_mag, meta_bias_mag, bias_mult,
     relative_indexing, vert_slices, horz_slices,
     // Inputs
-    true,
-    s->theta_fd, dUdT_msld_d, histogram_2D_d, histogram_1D_d,
+    true, oss_remove_bonded,
+    s->theta_fd, dUdT_msld_d, dUdT_bonded_d, histogram_2D_d, histogram_1D_d,
     // Outputs
     s->thetaForce_d, dGdF_d, oss_bias_d, meta_bias_d,
     potential_2D_d, potential_1D_d);
@@ -2059,6 +2210,7 @@ void Msld::calc_lambda_from_theta(cudaStream_t stream,System *system)
     real W;
     cudaMemcpyAsync(&W, W_d, sizeof(real), cudaMemcpyDefault, stream);
     theta_current += theta_delta;
+    printf("theta_current: %f, Work: %f\n", theta_current-theta_delta, W*theta_delta);
     set_theta_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,0,stream>>>(blockCount-1, s->theta_d, theta_current, s->thetaForce_d, W_d);
     calc_lambda_from_theta_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
       s->lambda_d,s->theta_d,siteCount,siteBound_d,fnex,
@@ -2067,6 +2219,7 @@ void Msld::calc_lambda_from_theta(cudaStream_t stream,System *system)
       dLdT_d, d2LdT2_d);
     if (system->run->step == system->run->nsteps-1){ 
       theta_slow_fix = false;
+      printf("theta_current: %f, Work: %f\n", theta_current-theta_delta, W*theta_delta);
     }
   } else if (theta_fix){
     set_theta_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,0,stream>>>(blockCount-1, s->theta_d, theta_fix_value, s->thetaForce_d, W_d); 

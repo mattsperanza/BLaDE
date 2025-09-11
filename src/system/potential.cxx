@@ -1568,6 +1568,7 @@ void Potential::reset_force(System *system,bool calcEnergy)
   // Fixed. See also localForce_d in src/domdec/domdec.cu
   cudaMemset(system->domdec->localForce_d,0,32*system->domdec->maxBlocks*sizeof(real3_f));
   cudaMemset(system->domdec->localAlchemForce_d,0,32*system->domdec->maxBlocks*sizeof(real3_f));
+  cudaMemset(system->msld->dUdL_bonded_d, 0, system->msld->blockCount*sizeof(real));
   if (calcEnergy) {
     cudaMemset(system->state->energy_d,0,eeend*sizeof(real_e));
   }
@@ -1669,7 +1670,7 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
 
     if(m->oss){
       // Wait for bias kernels to end & force update stream to wait
-      if (system->id == helper) {
+      if (system->id == helper && !system->msld->oss_remove_bonded) {
         cudaStreamWaitEvent(r->ossBonded, r->ossBiasComplete, 0);
         getforce_bond_oss(system);
         getforce_dihe_oss(system);

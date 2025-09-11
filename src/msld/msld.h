@@ -85,6 +85,8 @@ public:
   real* dUdL_msld; // [blockCount]
   real* dUdT_msld_d; // [blockCount] theta forces from force field
   real* dUdT_msld; // [blockCount]
+  real* dUdL_bonded_d; // [blockCount]
+  real* dUdT_bonded_d; // [blockCount]
   real* theta_temp_d; // [blockCount] sum(m*v^2/kB) - used to calculate temperature (divide by samples)
   real* theta_temp;
   real samples=0;
@@ -97,6 +99,7 @@ public:
   bool meta = false; // Feel samples from 1D histogram -> tempered on own potential
   bool oss = false; // Feel samples from 2D histogram -> tempered on own potential
   bool LE = false; // Feel samples from LE memory -> transition tempered
+  bool LE_oss = false; // Feel samples from 2D LE memory -> transition tempered
   bool abf = false; // Feel opposite of average force
 
   // 1D, along T
@@ -135,6 +138,7 @@ public:
   real oss_bias_mag = .0; // Needs to be set if oss should do anything
   bool oss_theta = true; // Compute dGdF*d2U/dXdT or dGdF*d2U/dXdL, L is not supported yet
   bool oss_force_test = false; // set to true to skip calculation steps during force testing
+  bool oss_remove_bonded = false; // remove bonded theta force terms, can only be done properly with abf_umbrella, abf_unweighted, or LE 1D flattening
   real* oss_bias_d; // [siteCount] added bias potential at current step due to site histogram
   real* oss_bias; // [siteCount] added bias potential current step due to site histogram
   real* dGdF_d; // [blockCount] OSS chain rule multiplier due to gaussians, dGdF[i] * d2U/dTidX
@@ -144,6 +148,7 @@ public:
   // Metadynamics adjustable parameters - 1D & 2D
   bool temper = true;  
   bool transition_tempering = false; // transition tempered meta -> FES = -V(s)
+  bool sweep_tempering = false; // temper based on LE_R double sweeps
   real bias_mult = 1.0; // multiplier onto metadynamics forces, allows sampling from FES = -(1+a)/a * V_bias
   real temper_amount = 3.0; // FES = -(T+dT)/dT * V(s) = -(1+amount)/(amount) * V(s)
   real temper_offset = 0.0; // exp(-max(0, bias_pot-offset)/(amount*kT)) -> larger = more transitions
@@ -151,8 +156,8 @@ public:
   // ABF
   // N.B.: <dU/dT> gets (1+a)/a multiplied onto bias when transition_temper is off
   bool abf_oss = false; // compute weighted ABF from 2D histogram potential
-  bool abf_umbrella = false; // compute weighted ABF from Torrie-Valleau reweighting - via offset exp sum
-  bool abf_unweighted = true; // compute unweighted ABF - setting either of the other two overwrites this
+  bool abf_umbrella = true; // compute weighted ABF from Torrie-Valleau reweighting - via offset exp sum
+  bool abf_unweighted = false; // compute unweighted ABF - setting either of the other two overwrites this
   real abf_warmup_samples = 100; // first half of samples scales <dU/dT> by zero, second ramps up to 1 linearly
   real* abf_weighted_dUdT_d; // [total_T_bins] sum(dU/dT*exp(bias/kT))
   real* abf_weighted_dUdT2_d; // total_T_bins] sum(dU/dT^2*exp(bias/kT))
@@ -165,19 +170,31 @@ public:
   real* dUdT_abf_d; // [siteCount] force added from abf = -<dU/dT>
   real* dUdT_abf;
   
-  // Local Elevation -> M[T] += LE_k * pow(LE_f_red, R)
+  // Local Elevation -> M[T] += LE_k * pow(LE_f_red, R), M[T, dU/dT] += LE_k * pow(LE_f_red, R)
   real* LE_bias_d; // [site] bias from each LE bias
   real* LE_bias;
-  real LE_f_red = .95;
-  real LE_k = .00293; // 1e-3 kJ/mol = .239e-3 kcal/mol
+  real LE_f_red = .6;
+  real LE_k = .01; 
   real LE_T_res = .1; // Resolution of LE memory grid
+  real LE_dUdT_res = 10.0; // Resolution of LE dU/dT memory grid
+  real LE_k_oss = 1.0; // Scale on M_2D
+  int LE_oss_warmup = 0; // samples before starting oss in a bin (ramp activated)
+  bool LE_normalize_2D = false; // normalize 2D bias by max(M_2D[Xi, :]) 
+  bool LE_lerp_plateau = false;
+
   real LE_total_bins; // sum(site_period[i])/LE_T_res - total bins from all sites
+  real LE_dUdT_bins;
+  real LE_2D_bins;
   int* LE_bins_d; // [site] site_period[i]/LE_T_res - total bins in each site
   int* LE_bins;
+
+  real* LE_counts_d; // [LE_total_bins] counts in each bin
   real* LE_R_d; // [site] starts at 1, add 1 for every double sweep across theta period
   int* LE_visited_bins_d; // [site] keeps track of sum of double sweep
   int* LE_theta_sweep_d; // [LE_total_bins] keeps track of double sweeps
   real* LE_M_d; // [LE_total_bins] Memory, theta bias is memory dotted with cubic bsplines
+  real* LE_M_2D_d; // [LE_2D_bins] 2D Memory, (T, dU/dT) is memory dotted with cubic bsplines
+  real* LE_T_max_d; // [LE_2D_bins] max value in each column of LE_M_2D_d, used for normalization
 
   int thetaCollBiasCount;
   real *kThetaCollBias;

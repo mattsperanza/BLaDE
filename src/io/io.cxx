@@ -511,6 +511,22 @@ void write_1D(Msld* msld, std::ofstream& file, real* T_1D, int* lengths){
   }
 }
 
+void write_2D(Msld* msld, std::ofstream& file, real* T_2D, int* lengths, int vert_bins){
+  Msld* m = msld;
+  real accum=0;
+  for (int i = 1; i < m->siteCount; i++) {
+    file << "# Theta " << i << " T_bins: " << lengths[i] << " T_range: [" << 0 << ", " << m->site_period[i] << "]"
+       << " dUdT_bins: " << vert_bins << " dUdT_range: [" << m->dUdT_min << ", " << m->dUdT_max << "] " << "\n";
+    for (int j = 0; j < lengths[i]; j++) {
+      for (int k = 0; k < vert_bins; k++) {
+        int idx = (accum+j)*vert_bins + k;
+        file << i << ", " << j << ", " << k << ", " << T_2D[idx] << "\n";
+      }
+    }
+    accum+= lengths[i];
+  }
+}
+
 void write_histogram_file(System* system, std::string file_name, bool potential) {
   // Write to temporary file
   std::string temp_file_name = file_name + ".tmp";
@@ -585,22 +601,17 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
     free(LE_T);
 
     // Write 2D info
+    real* LE_hist_2D = (real*) malloc(m->LE_2D_bins*sizeof(real));
+    cudaMemcpy(LE_hist_2D, m->LE_M_2D_d, m->LE_2D_bins*sizeof(real), cudaMemcpyDefault);
+    file << "# LE 2D\n";
+    write_2D(m, file, LE_hist_2D, m->LE_bins, m->LE_dUdT_bins);
+    free(LE_hist_2D);
+
     real* hist_2D = (real*)malloc(total_bins*m->dUdT_bins*sizeof(real));
     real* hist_2D_d = potential ? m->potential_2D_d : m->histogram_2D_d;
     cudaMemcpy(hist_2D, hist_2D_d, total_bins*m->dUdT_bins*sizeof(real), cudaMemcpyDefault);
     file << "# Histogram Potential\n";
-    real accum=0;
-    for (int i = 1; i < nS; i++) {
-      file << "# Theta " << i << " T_bins: " << m->T_bins[i] << " T_range: [" << 0 << ", " << m->site_period[i] << "]"
-         << " dUdT_bins: " << m->dUdT_bins << " dUdT_range: [" << m->dUdT_min << ", " << m->dUdT_max << "] " << "\n";
-      for (int j = 0; j < m->T_bins[i]; j++) {
-        for (int k = 0; k < m->dUdT_bins; k++) {
-          int idx = (accum+j)*m->dUdT_bins + k;
-          file << i << ", " << j << ", " << k << ", " << hist_2D[idx] << "\n";
-        }
-      }
-      accum+= m->T_bins[i];
-    }
+    write_2D(m, file, hist_2D, m->T_bins, m->dUdT_bins);
     free(hist_2D);
   }
 
@@ -614,27 +625,47 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
 
 // Helper: read one 1D block into host array
 void read_1D(Msld* m, std::ifstream& file, real* host_array, int* lengths) {
-    int accum = 0;
-    std::string line;
-
-    for (int i = 1; i < m->siteCount; i++) {
-        // Read site header line
-        if (!std::getline(file, line)) return;
-        int site, bins;
-        sscanf(line.c_str(), "# Site %d Bins %d", &site, &bins);
-
-        // Now read bins lines
-        for (int j = 0; j < bins; j++) {
-            if (!std::getline(file, line)) return;
-            int isite, idx;
-            real val;
-            char comma;
-            std::stringstream ss(line);
-            ss >> isite >> comma >> idx >> comma >> val;
-            host_array[accum + j] = val;
-        }
-        accum += bins;
+  int accum = 0;
+  std::string line;
+  for (int i = 1; i < m->siteCount; i++) {
+    // Read site header line
+    if (!std::getline(file, line)) return;
+    int site, bins;
+    sscanf(line.c_str(), "# Site %d Bins %d", &site, &bins);
+    // Now read bins lines
+    for (int j = 0; j < bins; j++) {
+      if (!std::getline(file, line)) return;
+      int isite, idx;
+      real val;
+      char comma;
+      std::stringstream ss(line);
+      ss >> isite >> comma >> idx >> comma >> val;
+      host_array[accum + j] = val;
     }
+    accum += bins;
+  }
+}
+
+void read_2D(Msld* m, std::ifstream& file, real* host_array_2D, int* lengths, int vert_bins){
+  int accum = 0;
+  std::string line;
+  for (int i = 1; i < m->siteCount; i++) {
+    // Read site descriptor line
+    std::getline(file, line);
+    for (int j = 0; j < lengths[i]; j++) {
+      for (int k = 0; k < vert_bins; k++) {
+        if (!std::getline(file, line)) break;
+        int isite, jj, kk;
+        real val;
+        char comma;
+        std::stringstream ss(line);
+        ss >> isite >> comma >> jj >> comma >> kk >> comma >> val;
+        int idx = (accum + jj) * vert_bins + kk;
+        host_array_2D[idx] = val;
+      }
+    }
+    accum += lengths[i];
+  }
 }
 
 
@@ -653,7 +684,7 @@ bool read_histogram_file(System* system, std::string file_name) {
     real* T_1D = (real*)malloc(total_bins * sizeof(real));
     int counter = -1;
     while (std::getline(file, line)) {
-      counter++;
+        counter++;
         if (line.rfind("# Num_Sites:", 0) == 0) {
             sscanf(line.c_str(), "# Num_Sites: %d", &nSites);
         } else if (line.find("# Theta Counts") != std::string::npos) {
@@ -706,36 +737,21 @@ bool read_histogram_file(System* system, std::string file_name) {
             cudaMemcpy(m->LE_M_d, LE_T, LE_bins*sizeof(real), cudaMemcpyDefault);
             free(LE_T);
         }
+        else if (line.find("# LE 2D") != std::string::npos){
+          real* LE_hist_2D = (real*)malloc(m->LE_2D_bins*sizeof(real));
+          read_2D(m, file, LE_hist_2D, m->LE_bins, m->LE_dUdT_bins);
+          cudaMemcpy(m->LE_M_2D_d, LE_hist_2D, m->LE_2D_bins*sizeof(real), cudaMemcpyDefault);
+          free(LE_hist_2D);
+        }
         else if (line.find("# Histogram Potential") != std::string::npos) {
             // Read restartable 2D histogram data
             real* hist_2D = (real*)malloc(total_bins*m->dUdT_bins*sizeof(real));
-            int accum = 0;
-            // We don't check if they are the same
-
-            for (int i = 1; i < m->siteCount; i++) {
-                // Read site descriptor line
-                std::getline(file, line);
-                for (int j = 0; j < m->T_bins[i]; j++) {
-                    for (int k = 0; k < m->dUdT_bins; k++) {
-                        if (!std::getline(file, line)) break;
-                        int isite, jj, kk;
-                        real val;
-                        char comma;
-                        std::stringstream ss(line);
-                        ss >> isite >> comma >> jj >> comma >> kk >> comma >> val;
-
-                        int idx = (accum + jj) * m->dUdT_bins + kk;
-                        hist_2D[idx] = val;
-                    }
-                }
-                accum += m->T_bins[i];
-            }
-
+            read_2D(m, file, hist_2D, m->T_bins, m->dUdT_bins);
             cudaMemcpy(m->histogram_2D_d, hist_2D, total_bins*m->dUdT_bins*sizeof(real), cudaMemcpyDefault);
             free(hist_2D);
         } else if (!file.eof()){
-          // incorrect settings - kill restart attempt
-          std::cerr << "Error reading line #" << counter << ": " << line << std::endl;
+          // incorrect settings if reading things in wrong order - kill restart attempt
+          std::cerr << "Error reading item #" << counter << ": " << line << std::endl;
           return false;
         }
     }
