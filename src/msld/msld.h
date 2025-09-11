@@ -156,8 +156,8 @@ public:
   // ABF
   // N.B.: <dU/dT> gets (1+a)/a multiplied onto bias when transition_temper is off
   bool abf_oss = false; // compute weighted ABF from 2D histogram potential
-  bool abf_umbrella = true; // compute weighted ABF from Torrie-Valleau reweighting - via offset exp sum
-  bool abf_unweighted = false; // compute unweighted ABF - setting either of the other two overwrites this
+  bool abf_umbrella = false; // compute weighted ABF from Torrie-Valleau reweighting - via offset exp sum
+  bool abf_unweighted = true; // compute unweighted ABF - setting either of the other two overwrites this
   real abf_warmup_samples = 100; // first half of samples scales <dU/dT> by zero, second ramps up to 1 linearly
   real* abf_weighted_dUdT_d; // [total_T_bins] sum(dU/dT*exp(bias/kT))
   real* abf_weighted_dUdT2_d; // total_T_bins] sum(dU/dT^2*exp(bias/kT))
