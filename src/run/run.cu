@@ -41,10 +41,10 @@ Run::Run(System *system)
   fnmXTC="default.xtc";
   fnmLMD="default.lmd";
   fnmNRG="default.nrg";
-  fnmMTD_LMD = "data/oss_lmd.dat"; 
-  fnmMTD_THETA = "data/oss_theta.dat"; 
-  fnmMTD_dUdL = "data/oss_dUdL.dat";
-  fnmMTD_dUdT = "data/oss_dUdT.dat";
+  fnmMTD_LMD = "data/lambda.dat"; 
+  fnmMTD_THETA = "data/theta.dat"; 
+  fnmMTD_dUdL = "data/dUdL_msld.dat";
+  fnmMTD_dUdT = "data/dUdT_msld.dat";
   fnmMTD_dUdT_abf = "data/dUdT_abf.dat";
   fnmMTD_HIST = "data/oss_hist.dat";
   fnmMTD_BIAS = "data/oss_bias.dat";

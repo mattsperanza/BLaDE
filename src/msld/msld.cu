@@ -530,10 +530,22 @@ void parse_msld(char *line,System *system)
     system->msld->LE_dUdT_res=io_nextf(line);
   } else if (strcmp(token, "abf_oss") == 0){
     system->msld->abf_oss=io_nextb(line);
+    if(system->msld->abf_oss){
+      system->msld->abf_umbrella=false;
+      system->msld->abf_unweighted=false;
+    }
   } else if (strcmp(token, "abf_umbrella") == 0){
     system->msld->abf_umbrella=io_nextb(line);
+    if(system->msld->abf_umbrella){
+      system->msld->abf_oss=false;
+      system->msld->abf_unweighted=false;
+    }
   } else if (strcmp(token, "abf_unweighted") == 0){
     system->msld->abf_unweighted=io_nextb(line);
+    if(system->msld->abf_unweighted){
+      system->msld->abf_oss=false;
+      system->msld->abf_umbrella=false;
+    }
   } else if (strcmp(token, "oss_remove_bonded") == 0){
     system->msld->oss_remove_bonded=io_nextb(line);
   } else if (strcmp(token, "oss_k") == 0){
@@ -558,8 +570,10 @@ void parse_msld(char *line,System *system)
     system->msld->T_std=io_nextf(line);
   } else if (strcmp(token, "dUdT_std") == 0){
     system->msld->dUdT_std=io_nextf(line);
-  } else if (strcmp(token, "bins_per_std") == 0){
-    system->msld->bins_per_std=io_nexti(line);
+  } else if (strcmp(token, "T_res")==0){
+    system->msld->T_res=io_nextf(line);
+  } else if (strcmp(token, "dUdT_res")==0){
+    system->msld->dUdT_res=io_nextf(line);
   } else if (strcmp(token, "n_std_search") == 0){
     system->msld->n_std_search=io_nexti(line);
   } else if (strcmp(token, "dUdT_max") == 0){
@@ -966,14 +980,8 @@ void Msld::init_enhanced_sampling(System* system){
   cudaMemset(dGdF_d, 0, blockCount*sizeof(real));
 
   // OSS
-  T_res = T_std / bins_per_std;
-  dUdT_res = dUdT_std / bins_per_std;
-  T_search = (int)(n_std_search*T_std/T_res); // 10 by default
-  dUdT_search = (int)(n_std_search*dUdT_std/dUdT_res); // 10 by default
-  if((2*T_search+1)*(2*dUdT_search+1) > 1024){
-    printf("Please decrease n_std_search or bins_per_std to decrease threads required per histogram evaluation!");
-    exit(1);
-  }
+  T_search = (int)(n_std_search*T_std/T_res); 
+  dUdT_search = (int)(n_std_search*dUdT_std/dUdT_res); 
 
   dUdT_min = -dUdT_max;
   dUdT_bins = (int) ((abs(dUdT_max) + abs(dUdT_min)) / dUdT_res) + 1; // histogram has bins exactly on edges
@@ -1248,6 +1256,13 @@ static __device__ int periodic_histogram_index(real val, int num_bins, real max,
   return index;
 }
 
+static __device__ real pbc(real val, real low, real high){
+  real p = high - low;
+  if(val < low){ val += p; } // if instead of while to never block
+  if(val >= high){ val -= p; }
+  return val;
+}
+
 // This histogram index is used for non-periodic directions, where there exist bins on both edges of the period
 static __device__ int histogram_index(real val, int num_bins, real max, real min){
   real tmp = val - min;
@@ -1383,9 +1398,8 @@ __global__ void add_sample_hist_kernel(
         histogram_1D[theta_start+X_prime] += decay;
       }
       // OSS
-      bias = transition_temper ? max(oss_min_V[0]-temper_offset, 0.0) : max(oss_bias[i]-temper_offset, 0.0);
-      bias = sweep_temper ? max(R[i]-temper_offset, 0.0) : bias; // more transitioned focused
-      decay = temper ? exp(-bias/(tempering*kT)) : 1.0;
+      bias = sweep_temper ? max(R[i]-temper_offset, 0.0) : max(oss_bias[i]-temper_offset, 0.0)/(kT);
+      decay = temper ? exp(-bias/tempering) : 1.0;
       int hist_index = (theta_start+X)*dUdT_bins + Y;
       histogram_2D[hist_index] += decay;
       dUdT_sampled_max[theta_start+X] = Y > dUdT_sampled_max[theta_start+X] ? Y : dUdT_sampled_max[theta_start+X];
@@ -1493,13 +1507,11 @@ __global__ void add_sample_hist_kernel(
       }
       real update = LE_k*pow(LE_f_red, R[i]);
       real switch_to_2D = 5;
-      if(R[i] <= switch_to_2D || !LE_oss){
-        M[LE_theta_start + X] += update;
-        if(blocksPerSite[i] == 2){
-          M[LE_theta_start + X_prime] += update;
-        }
-      } 
-      if(R[i] > switch_to_2D && Y >= 0 && Y < LE_dUdT_bins){
+      M[LE_theta_start + X] += update;
+      if(blocksPerSite[i] == 2){
+        M[LE_theta_start + X_prime] += update;
+      }
+      if(Y >= 0 && Y < LE_dUdT_bins){
         int hist_index = (LE_theta_start + X)*LE_dUdT_bins + Y;
         M_2D[hist_index] += update;
         if(M_2D[hist_index] > LE_T_max[LE_theta_start+X]){
@@ -1534,9 +1546,23 @@ void Msld::add_sample(System* system, int step) {
 
   update_fe_surface = step < update_steps; // last sample if false
 
-  if(step % sample_freq == 0){
+  if(step % update_hist_freq == 0){
+    update_ABF_from_hist(system, total_T_bins, dUdT_bins, false); // Compute potential (& <dU/dT> if requested)
+  }
+  if(step % write_freq == 0){ // write files every 1k samples (1k-10k steps or 1-20ps)
+    //printf("Writing hist_potential.txt!\n");
+    write_histogram_file(system, "hist_potential.txt", true);
+    //printf("Writing hist_restart.txt!\n");
+    write_histogram_file(system, "hist_restart.txt", false);
+  }
+  if(step % sample_freq == 0){ 
     real kT = system->state->leapParms1->kT; 
     samples++;
+    theta_temp_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
+      siteCount, blocksPerSite_d,
+      s->thetaInvsqrtMass_d, s->thetaVelocity_d,
+      theta_temp_d);
+
     add_sample_hist_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
       kT, siteCount, blocksPerSite_d,
       T_bins_d, LE_bins_d, site_period_d, 
@@ -1565,21 +1591,6 @@ void Msld::add_sample(System* system, int step) {
       // Output - LE
       LE_R_d, LE_counts_d, LE_visited_bins_d,
       LE_theta_sweep_d, LE_M_d, LE_M_2D_d, LE_T_max_d);
-
-    theta_temp_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
-      siteCount, blocksPerSite_d,
-      s->thetaInvsqrtMass_d, s->thetaVelocity_d,
-      theta_temp_d);
-
-    // updates potential with new sample (only where affected) & calculates <dU/dT> if abf_oss is on
-    update_ABF_from_hist(system, 2*T_search+1, 2*dUdT_search+1, true);
-  }
-
-  if(step % write_freq == 0){ // write files every 1k samples (1k-10k steps or 1-20ps)
-    //printf("Writing hist_potential.txt!\n");
-    write_histogram_file(system, "hist_potential.txt", true);
-    //printf("Writing hist_restart.txt!\n");
-    write_histogram_file(system, "hist_restart.txt", false);
   }
 }
 
@@ -1662,9 +1673,8 @@ __global__ void getforce_hist_kernel(
   int iSite = blockIdx.x + 1;  // Skip site 0
   int iT = blockIdx.y;         
   int idUdT = blockIdx.z;      
-  // Thread: Eval points in square around grid point
-  int iSearch_T = threadIdx.x;    // T search offset
-  int iSearch_dUdT = threadIdx.y; // dUdT search offset
+  // Threads: Y values each thread should evaluate at, X values looped over
+  int iSearch_dUdT = threadIdx.y; // Y-axis search offset
   if (iSite >= siteCount) return;
   if (energy && (iT >= vert_slices || idUdT >= horz_slices)) return; // kill overallocated CUDA grids
   
@@ -1674,93 +1684,85 @@ __global__ void getforce_hist_kernel(
     start_site += blocksPerSite[j];
     theta_start += T_bins[j];
   }
+
   // Current (T, dUdT)
   real T = thetas[start_site];
-  real dUdT = 0;
+  real dUdT = (real)0.0;
   for(int j = 0; j < blocksPerSite[iSite]; j++){
     dUdT += dUdT_msld[start_site+j];
-    dUdT -= remove_bonded ? dUdT_bond[start_site+j] : 0.0;
+    dUdT -= remove_bonded ? dUdT_bond[start_site+j] : (real)0.0;
   }
   if(!relative_indexing){ // Used when evaluating entire histogram
-    T = 0;
-    dUdT = 0;
+    T = (real)0.0;
+    dUdT = (real)0.0;
   }
-  real T_resolution = site_period[iSite]/T_bins[iSite];
-  real dUdT_resolution = (dUdT_max-dUdT_min)/(dUdT_bins-1.0);
+  real T_resolution = site_period[iSite] / (real)T_bins[iSite];
+  real dUdT_resolution = (dUdT_max - dUdT_min) / (real)(dUdT_bins - 1);
+
   if (energy) { // Re-center 
-    // Offset Index -> new (T, dU/dT) center
     int T_index = periodic_histogram_index(T, T_bins[iSite], site_period[iSite], 0);
     T_index += -floor(vert_slices/2.0) + iT;
-    T = T_index * T_resolution; 
-    if (T < 0) { T += site_period[iSite]; } 
-    if (T >= site_period[iSite]) { T -= site_period[iSite]; } 
+    T = (real)T_index * T_resolution; 
+    T = pbc(T, (real)0.0, site_period[iSite]);
+
     int dUdT_index = histogram_index(dUdT, dUdT_bins, dUdT_max, dUdT_min);
     dUdT_index += -floor(horz_slices/2.0) + idUdT;
-    dUdT = dUdT_min + dUdT_index*dUdT_resolution;
+    dUdT = dUdT_min + (real)dUdT_index*dUdT_resolution;
   }
   
   // CUDA Grid: Center point on grid close to (T, dUdT) where we evalutate potential
   int X = periodic_histogram_index(T, T_bins[iSite], site_period[iSite], 0);
   int Y = histogram_index(dUdT, dUdT_bins, dUdT_max, dUdT_min);
-  // A single thread from each CUDA grid sets potential to zero 
-  if(energy && iSearch_T == 0 && iSearch_dUdT == 0){ 
-    int output_index = (theta_start + X)*dUdT_bins + Y;
-    potential_2D[output_index] = 0;
-    // Only 1 CUDA grid per vertical slice needs to do this
-    if(idUdT == 0){ 
-      potential_1D[theta_start+X] = 0;
-    }
+
+  // CUDA Threads: Each has Y index, loop over X values
+  if (energy && iSearch_dUdT == 0) { // A single thread from each CUDA grid resets potential
+    int output_index = (theta_start + X) * dUdT_bins + Y;
+    potential_2D[output_index] = (real)0.0;
   }
   __syncthreads();
-  // CUDA Threads: search square region around center point
-  int j = X - T_search + iSearch_T; 
-  int true_j = j; 
-  if (j < 0) { j += T_bins[iSite]; }  
-  if (j >= T_bins[iSite]) { j -= T_bins[iSite]; } 
+
   int k = Y - dUdT_search + iSearch_dUdT;
   if (k >= 0 && k < dUdT_bins) {
-    int T_index = j + theta_start; // shift into correct histogram for site
-    int dUdL_index = k;
-    
-    real T_center = true_j * T_resolution; 
-    real T_distance = (T - T_center);
-    // PBC on T
-    if(abs(T_distance) > site_period[iSite]/2.0){
-      T_distance += T_distance > 0 ? -site_period[iSite] : site_period[iSite];
-    }
-    T_distance /= T_std;
-    real T_gaussian = expf(-0.5*T_distance*T_distance);
-    real dUdT_center = dUdT_min + k*dUdT_resolution;
+    real dUdT_center = dUdT_min + (real)k * dUdT_resolution;
     real dUdT_distance = (dUdT - dUdT_center) / dUdT_std;
-    real dUdT_gaussian = expf(-0.5*dUdT_distance*dUdT_distance);
-    
-    int hist_index = T_index*dUdT_bins + dUdL_index;
-    real oss = oss_weight * T_gaussian * dUdT_gaussian * histogram_2D[hist_index];
-    real meta = meta_weight * T_gaussian * histogram_1D[T_index];
+    real dUdT_gaussian = exp((real)(-0.5)*dUdT_distance*dUdT_distance);
+    real row_bias = (real)0.0;
+    real row_X_force = (real)0.0;
+    real row_Y_force = (real)0.0;
+    for(int j = X - T_search; j <= X + T_search; j++){
+      int j_wrapped = j;
+      if (j_wrapped < 0) { j_wrapped += T_bins[iSite]; }  
+      if (j_wrapped >= T_bins[iSite]) { j_wrapped -= T_bins[iSite]; } 
+      real T_center = (real)j*T_resolution; 
+      real T_distance = (T - T_center);
+      // PBC on T
+      if (abs(T_distance) > site_period[iSite]/(real)2.0){
+        T_distance += T_distance > (real)0.0 ? -site_period[iSite] : site_period[iSite];
+      }
+      T_distance /= T_std;
+      real T_gaussian = exp((real)(-0.5) * T_distance * T_distance);
+      
+      int hist_index = (theta_start+j_wrapped)*dUdT_bins + k;
+      real local_bias = oss_weight * T_gaussian * dUdT_gaussian * histogram_2D[hist_index];
+      row_bias += local_bias;
+      row_X_force += bias_mult * (-(T_distance / T_std)) * local_bias;
+      row_Y_force += bias_mult * (-(dUdT_distance / dUdT_std)) * local_bias;
+      if(!energy && false){
+        printf("Eval: (X: %d, Y: %d, T: %f, dUdT: %f) From: (j: %d, k: %d, T: %f, dUdT: %f), dx: %f, gx: %f, dy: %f, gy: %f, hist_2D: %f, bias: %f\n", 
+         X, Y, T, dUdT, j, k, T_center, dUdT_center, T_distance*T_std, T_gaussian, dUdT_distance*dUdT_std, dUdT_gaussian, histogram_2D[hist_index], local_bias);
+      }
+    }
     if (energy) {
-      int output_index = (theta_start + X)*dUdT_bins + Y; // output to CUDA grid point
-      atomicAdd(&potential_2D[output_index], oss);
-      // Energy: Many thread blocks per site hist, only 1 slice of 1 block does meta calc
-      if(iSearch_dUdT == dUdT_search && idUdT == dUdT_search){
-        atomicAdd(&potential_1D[theta_start+X], meta);
-      }
+      int output_index = (theta_start + X)*dUdT_bins + Y; 
+      atomicAdd(&potential_2D[output_index], row_bias);
     } else {
-      real local_dUdT_force = -bias_mult*dUdT_distance/dUdT_std * oss;
-      real local_T_force = -bias_mult*T_distance/T_std * oss;
+      atomicAdd(&oss_bias[iSite], row_bias);
+      atomicAdd(&thetaForce[start_site], row_X_force);
       for(int l = 0; l < blocksPerSite[iSite]; l++){
-        atomicAdd(&dGdF[start_site + l], local_dUdT_force);
-      }
-      atomicAdd(&thetaForce[start_site], local_T_force);
-      atomicAdd(&oss_bias[iSite], oss);
-      // Force: One thread block per site hist, only 1 slice does meta
-      if(iSearch_dUdT == dUdT_search && idUdT == 0){
-        local_T_force = -bias_mult*T_distance/T_std * meta;
-        atomicAdd(&thetaForce[start_site], local_T_force);
-        atomicAdd(&meta_bias[iSite], meta);
+        atomicAdd(&dGdF[start_site + l], row_Y_force);
       }
     }
   }
-  // TODO: Add reductions to avoid crowded atomic adds
 }
 
 __global__ void getforce_oss_linear(
@@ -1915,7 +1917,7 @@ __global__ void getforce_LE_kernel(
         LE_bias_1D(theta, &M[prev_bins], LE_bins[i], site_period[i], output);
       }
       if(energy) atomicAdd(energy, output[0]);
-      //LE_bias[i] += output[0]; Adding this changes umbrella_abf, put this in separate thing
+      //LE_bias[i] += output[0]; //Adding this changes umbrella_abf, put this in separate thing
       atomicAdd(&thetaForce[start_site], output[1]);
     }
 
@@ -1996,7 +1998,7 @@ void Msld::getforce_bias(System *system, bool calcEnergy) {
       dGdF_d, pEnergy);
     int vert_slices = 1;
     int horz_slices = 1;
-    dim3 blockDim(2*T_search+1, 2*dUdT_search+1, 1); 
+    dim3 blockDim(1, 2*dUdT_search+1, 1); 
     dim3 gridDim(siteCount-1, 1, 1);
     getforce_hist_kernel<<<gridDim, blockDim, shMem, stream>>>(
       siteCount, blocksPerSite_d,
@@ -2042,7 +2044,6 @@ __global__ void hist_ensemble_dUdT_kernel(
       start_1D += T_bins[j];
     }
     int X = periodic_histogram_index(thetas[siteBound[site]], T_bins[site], site_periods[site], 0);
-    int center_X = X;
     X += -floor(slice_count/2.0) + tid;
     if(X > T_bins[site]) { X -= T_bins[site]; }
     if(X < 0) { X += T_bins[site]; }
@@ -2075,7 +2076,7 @@ __global__ void hist_ensemble_dUdT_kernel(
           scale = 2.0*theta_counts[start_1D+X]/warmup_samples - 1.0;
         }
         ensemble_dUdT[start_1D+X] = Z > 1e-5 ? scale*weighted_dUdT/Z : 0.0;
-        variance_dUdT[start_1D+X] = Z > 1e-5 ? scale*weighted_dUdT2/Z - ensemble_dUdT[start_1D+X] : 0.0;
+        variance_dUdT[start_1D+X] = Z > 1e-5 ? scale*weighted_dUdT2/Z - ensemble_dUdT[start_1D+X]*ensemble_dUdT[start_1D+X] : 0.0;
       }
     } 
   }
@@ -2092,7 +2093,7 @@ void Msld::update_ABF_from_hist(System *system, int vert_slices, int horz_slices
     stream=system->run->ossBias;
   }
   // Update potential grid with new sample
-  dim3 blockDim(2*T_search+1, 2*dUdT_search+1, 1); // both search params should be 10
+  dim3 blockDim(1, 2*dUdT_search+1, 1); 
   dim3 gridDim(siteCount-1, vert_slices, horz_slices); // (iSite, iT, idUdT)
   getforce_hist_kernel<<<gridDim, blockDim, shMem, stream>>>(
     siteCount, blocksPerSite_d,
@@ -2108,7 +2109,7 @@ void Msld::update_ABF_from_hist(System *system, int vert_slices, int horz_slices
     s->thetaForce_d, dGdF_d, oss_bias_d, meta_bias_d,
     potential_2D_d, potential_1D_d);
 
-  if(!abf_oss && !(oss && transition_tempering)){ return; } // don't need to do 2D grid <dU/dT> or min_potential
+  if(!abf_oss){ return; } // don't need to do 2D grid <dU/dT> 
   real temper_correction = transition_tempering ? 1.0 : (1.0 + temper_amount)/temper_amount;
 
   // Compute <dU/dT> in region where potential got updated

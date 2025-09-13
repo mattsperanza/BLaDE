@@ -95,6 +95,7 @@ public:
   bool restart_success = false;
   int log_freq = 1000; // log every # steps
   int write_freq = 1000; // write restart files every # steps 
+  int update_hist_freq = 500; // Evaluate entire histogram potential (& <dU/dT> if abf_oss) every # steps
   // Supported enhanced sampling options - these only work with L_LEUS interpolation function
   bool meta = false; // Feel samples from 1D histogram -> tempered on own potential
   bool oss = false; // Feel samples from 2D histogram -> tempered on own potential
@@ -116,12 +117,11 @@ public:
   real T_std = .01; 
   real dUdT_std = 2.0;  
   real dUdT_max = 700;
-  int bins_per_std = 2; 
+  real T_res= 0.01; 
+  real dUdT_res= 1.0;
   int n_std_search = 5; 
   // Grid derived parameters
   real dUdT_min = -dUdT_max;
-  real T_res; // T_std / bins_per_std
-  real dUdT_res; // dUdT_std / bins_per_std
   int dUdT_bins; // abs(dUdT_max) + abs(dUdT_min) / T_res + 1
   int* T_bins_d; // [siteCount] site_period / grid resolution + 1, should always be integer multiple
   int* T_bins;
@@ -174,7 +174,7 @@ public:
   real* LE_bias_d; // [site] bias from each LE bias
   real* LE_bias;
   real LE_f_red = .6;
-  real LE_k = .01; 
+  real LE_k = .005; 
   real LE_T_res = .1; // Resolution of LE memory grid
   real LE_dUdT_res = 10.0; // Resolution of LE dU/dT memory grid
   real LE_k_oss = 1.0; // Scale on M_2D

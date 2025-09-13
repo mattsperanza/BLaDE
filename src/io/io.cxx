@@ -364,7 +364,7 @@ void display_nrg(System *system)
   fprintf(stdout,"\n");
 }
 
-void print_meta(int step, System* system){
+void print_meta(int step, System* system, bool enhanced_variables){
   FILE *fp=system->run->fpMTD_LMD;
   // Header for lmd file lines: Sites: #, [subs_per_site]
   // Format: Step num, data for site 1, data for site 2, ...,
@@ -380,33 +380,9 @@ void print_meta(int step, System* system){
   }
   fprintf(fp, "\n\n");
 
-  fp=system->run->fpMTD_dUdL;
-  for(int i = 0; i < system->msld->blockCount; i++){
-    fprintf(fp, "%f ", system->msld->dUdL_msld[i]);
-  }
-  fprintf(fp, "\n\n");
-
   fp=system->run->fpMTD_THETA;
   for(int i = 0; i < system->msld->blockCount; i++){
     fprintf(fp, "%f ", system->state->theta[i]);
-  }
-  fprintf(fp, "\n\n");
-
-  fp=system->run->fpMTD_dUdT;
-  for(int i = 0; i < system->msld->blockCount; i++){
-    fprintf(fp, "%f ", system->msld->dUdT_msld[i]);
-  }
-  fprintf(fp, "\n\n");
-
-  fp=system->run->fpMTD_dUdT_abf;
-  for(int i = 0; i < system->msld->siteCount; i++){
-    fprintf(fp, "%f ", system->msld->dUdT_abf[i]);
-  }
-  fprintf(fp, "\n\n");
-
-  fp=system->run->fpMTD_HIST;
-  for(int i = 0; i < system->msld->siteCount; i++){
-    fprintf(fp, "%f ", system->msld->oss_bias[i]);
   }
   fprintf(fp, "\n\n");
 
@@ -422,10 +398,35 @@ void print_meta(int step, System* system){
   }
   fprintf(fp, "\n\n");
 
-  fp=system->run->fpMTD_BIAS;
-  fprintf(fp, "%f ", 0); // TODO: Calculate this
-  fprintf(fp, "\n\n");
+  if(enhanced_variables){
+    fp=system->run->fpMTD_dUdL;
+    for(int i = 0; i < system->msld->blockCount; i++){
+      fprintf(fp, "%f ", system->msld->dUdL_msld[i]);
+    }
+    fprintf(fp, "\n\n");
 
+    fp=system->run->fpMTD_dUdT;
+    for(int i = 0; i < system->msld->blockCount; i++){
+      fprintf(fp, "%f ", system->msld->dUdT_msld[i]);
+    }
+    fprintf(fp, "\n\n");
+  
+    fp=system->run->fpMTD_dUdT_abf;
+    for(int i = 0; i < system->msld->siteCount; i++){
+      fprintf(fp, "%f ", system->msld->dUdT_abf[i]);
+    }
+    fprintf(fp, "\n\n");
+  
+    fp=system->run->fpMTD_HIST;
+    for(int i = 0; i < system->msld->siteCount; i++){
+      fprintf(fp, "%f ", system->msld->oss_bias[i]);
+    }
+    fprintf(fp, "\n\n");
+
+    fp=system->run->fpMTD_BIAS;
+    fprintf(fp, "%f ", 0); // TODO: Calculate this
+    fprintf(fp, "\n\n");
+  }
 
   fflush(NULL);
 }
@@ -446,11 +447,12 @@ void print_dynamics_output(int step,System *system)
       system->state->recv_energy();
       print_nrg(step,system);
     }
-    if (step % system->run->freqMTD == 0 
-      && (system->msld->oss || system->msld->LE || system->msld->abf || system->msld->meta)){
+    if (step % system->run->freqMTD == 0) {
       system->state->recv_lambda();
-      system->msld->recv_meta();
-      print_meta(step, system);
+      // Only write things like dUdL_msld/dUdT_msld/bias_pot if they are calculated
+      bool enhanced_variables = (system->msld->oss || system->msld->LE || system->msld->abf || system->msld->meta);
+      if(enhanced_variables) { system->msld->recv_meta(); }
+      print_meta(step, system, enhanced_variables);
     }
   }
 }
