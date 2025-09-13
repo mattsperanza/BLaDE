@@ -97,27 +97,25 @@ public:
   int write_freq = 1000; // write restart files every # steps 
   int update_hist_freq = 500; // Evaluate entire histogram potential (& <dU/dT> if abf_oss) every # steps
   // Supported enhanced sampling options - these only work with L_LEUS interpolation function
-  bool meta = false; // Feel samples from 1D histogram -> tempered on own potential
+  bool meta = false; // Feel samples from 2D hist set up like 1D
   bool oss = false; // Feel samples from 2D histogram -> tempered on own potential
   bool LE = false; // Feel samples from LE memory -> transition tempered
-  bool LE_oss = false; // Feel samples from 2D LE memory -> transition tempered
   bool abf = false; // Feel opposite of average force
 
   // 1D, along T
   real* theta_histogram_d; // [total_T_bins] sample count in each theta bin
-  real* histogram_1D_d; // [total_T_bins] 1D meta tempered sample count in each theta bin
-  real* potential_1D_d; // [total_T_bins] 1D meta potential
-  real* max_pot_d; // [total_T_bins] max potential at given X in histogram
   int* min_dUdT_index_d; //[total_T_bins] index of minimum value dU/dT sample 
   int* max_dUdT_index_d; //[total_T_bins] index of maximum value dU/dT sample
   // 2D, along (T, dU/dT)
+  real* histogram_counts_2D_d; // counts of number of samples in each 2D bin
+  real* histogram_bonded_2D_d; // average value of bonded forces in each bin
   real* histogram_2D_d; // [dUdT_bins*total_T_bins] 2D meta tempered sample count in (T, dU/dT) bin
   real* potential_2D_d; // [dUdT_bins*total_T_bins] 2D potential from OSS metadynamics
   // Grid adjustable parameters - used for 1D meta as well
-  real T_std = .01; 
-  real dUdT_std = 2.0;  
-  real dUdT_max = 700;
-  real T_res= 0.01; 
+  real T_std = .02; 
+  real dUdT_std = 4.0;  
+  real dUdT_max = 1000;
+  real T_res = 0.01; 
   real dUdT_res= 1.0;
   int n_std_search = 5; 
   // Grid derived parameters
@@ -129,12 +127,7 @@ public:
   int T_search; // n_std_search*T_std/res 
   int dUdT_search; // n_std_search*dUdT_std/res
 
-  // 1D Meta
-  real meta_bias_mag = .0; // Needs to be set if meta should do anything
-  real* meta_bias_d; // [siteCount] bias due to 1D meta
-  real* meta_bias;
-  real* meta_min_V_d; // [blockCount] Transition Temper Bias
-  // 2D Meta 
+  // 2D Meta (should do 1D as well with right settings)
   real oss_bias_mag = .0; // Needs to be set if oss should do anything
   bool oss_theta = true; // Compute dGdF*d2U/dXdT or dGdF*d2U/dXdL, L is not supported yet
   bool oss_force_test = false; // set to true to skip calculation steps during force testing
@@ -142,12 +135,10 @@ public:
   real* oss_bias_d; // [siteCount] added bias potential at current step due to site histogram
   real* oss_bias; // [siteCount] added bias potential current step due to site histogram
   real* dGdF_d; // [blockCount] OSS chain rule multiplier due to gaussians, dGdF[i] * d2U/dTidX
-  real* oss_min_V_d; // [blockCount] Transition Temper Bias
   // Adds U_bias = oss_k*dU_msld/dT
   real oss_k = 0.0; 
   // Metadynamics adjustable parameters - 1D & 2D
   bool temper = true;  
-  bool transition_tempering = false; // transition tempered meta -> FES = -V(s)
   bool sweep_tempering = false; // temper based on LE_R double sweeps
   real bias_mult = 1.0; // multiplier onto metadynamics forces, allows sampling from FES = -(1+a)/a * V_bias
   real temper_amount = 3.0; // FES = -(T+dT)/dT * V(s) = -(1+amount)/(amount) * V(s)
@@ -170,21 +161,15 @@ public:
   real* dUdT_abf_d; // [siteCount] force added from abf = -<dU/dT>
   real* dUdT_abf;
   
-  // Local Elevation -> M[T] += LE_k * pow(LE_f_red, R), M[T, dU/dT] += LE_k * pow(LE_f_red, R)
+  // Local Elevation -> M[T] += LE_k * pow(LE_f_red, R)
   real* LE_bias_d; // [site] bias from each LE bias
   real* LE_bias;
   real LE_f_red = .6;
   real LE_k = .005; 
   real LE_T_res = .1; // Resolution of LE memory grid
-  real LE_dUdT_res = 10.0; // Resolution of LE dU/dT memory grid
-  real LE_k_oss = 1.0; // Scale on M_2D
-  int LE_oss_warmup = 0; // samples before starting oss in a bin (ramp activated)
-  bool LE_normalize_2D = false; // normalize 2D bias by max(M_2D[Xi, :]) 
   bool LE_lerp_plateau = false;
 
   real LE_total_bins; // sum(site_period[i])/LE_T_res - total bins from all sites
-  real LE_dUdT_bins;
-  real LE_2D_bins;
   int* LE_bins_d; // [site] site_period[i]/LE_T_res - total bins in each site
   int* LE_bins;
 
@@ -193,8 +178,6 @@ public:
   int* LE_visited_bins_d; // [site] keeps track of sum of double sweep
   int* LE_theta_sweep_d; // [LE_total_bins] keeps track of double sweeps
   real* LE_M_d; // [LE_total_bins] Memory, theta bias is memory dotted with cubic bsplines
-  real* LE_M_2D_d; // [LE_2D_bins] 2D Memory, (T, dU/dT) is memory dotted with cubic bsplines
-  real* LE_T_max_d; // [LE_2D_bins] max value in each column of LE_M_2D_d, used for normalization
 
   int thetaCollBiasCount;
   real *kThetaCollBias;

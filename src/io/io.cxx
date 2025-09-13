@@ -554,12 +554,6 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
     cudaMemcpy(T_1D, m->theta_histogram_d, total_bins*sizeof(real), cudaMemcpyDefault);
     write_1D(m, file, T_1D, m->T_bins);
 
-    // Meta
-    file << "# Meta\n";
-    real* hist_d = potential ? m->potential_1D_d : m->histogram_1D_d;
-    cudaMemcpy(T_1D, hist_d, total_bins*sizeof(real), cudaMemcpyDefault);
-    write_1D(m, file, T_1D, m->T_bins);
-
     // ABF
     file << "# ABF <dU/dT>\n";
     cudaMemcpy(T_1D, m->abf_ensemble_dUdT_d, total_bins*sizeof(real), cudaMemcpyDefault);
@@ -601,13 +595,6 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
     cudaMemcpy(LE_T, m->LE_M_d, LE_bins*sizeof(real), cudaMemcpyDefault);
     write_1D(m, file, LE_T, m->LE_bins);
     free(LE_T);
-
-    // Write 2D info
-    real* LE_hist_2D = (real*) malloc(m->LE_2D_bins*sizeof(real));
-    cudaMemcpy(LE_hist_2D, m->LE_M_2D_d, m->LE_2D_bins*sizeof(real), cudaMemcpyDefault);
-    file << "# LE 2D\n";
-    write_2D(m, file, LE_hist_2D, m->LE_bins, m->LE_dUdT_bins);
-    free(LE_hist_2D);
 
     real* hist_2D = (real*)malloc(total_bins*m->dUdT_bins*sizeof(real));
     real* hist_2D_d = potential ? m->potential_2D_d : m->histogram_2D_d;
@@ -693,10 +680,6 @@ bool read_histogram_file(System* system, std::string file_name) {
             read_1D(m, file, T_1D, m->T_bins);
             cudaMemcpy(m->theta_histogram_d, T_1D, total_bins*sizeof(real), cudaMemcpyDefault);
         }
-        else if (line.find("# Meta") != std::string::npos) {
-            read_1D(m, file, T_1D, m->T_bins);
-            cudaMemcpy(m->histogram_1D_d, T_1D, total_bins*sizeof(real), cudaMemcpyDefault);
-        }
         else if (line.find("# ABF <dU/dT>") != std::string::npos){
           read_1D(m, file, T_1D, m->T_bins);
           cudaMemcpy(m->abf_ensemble_dUdT_d, T_1D, total_bins*sizeof(real), cudaMemcpyDefault);
@@ -738,12 +721,6 @@ bool read_histogram_file(System* system, std::string file_name) {
             read_1D(m, file, LE_T, m->LE_bins);
             cudaMemcpy(m->LE_M_d, LE_T, LE_bins*sizeof(real), cudaMemcpyDefault);
             free(LE_T);
-        }
-        else if (line.find("# LE 2D") != std::string::npos){
-          real* LE_hist_2D = (real*)malloc(m->LE_2D_bins*sizeof(real));
-          read_2D(m, file, LE_hist_2D, m->LE_bins, m->LE_dUdT_bins);
-          cudaMemcpy(m->LE_M_2D_d, LE_hist_2D, m->LE_2D_bins*sizeof(real), cudaMemcpyDefault);
-          free(LE_hist_2D);
         }
         else if (line.find("# Histogram Potential") != std::string::npos) {
             // Read restartable 2D histogram data
