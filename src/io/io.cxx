@@ -597,7 +597,7 @@ void write_histogram_file(System* system, std::string file_name, bool potential)
     free(LE_T);
 
     real* hist_2D = (real*)malloc(total_bins*m->dUdT_bins*sizeof(real));
-    real* hist_2D_d = potential ? m->potential_2D_d : m->histogram_2D_d;
+    real* hist_2D_d = potential ? m->potential_2D_d : m->hist_weights_2D_d;
     cudaMemcpy(hist_2D, hist_2D_d, total_bins*m->dUdT_bins*sizeof(real), cudaMemcpyDefault);
     file << "# Histogram Potential\n";
     write_2D(m, file, hist_2D, m->T_bins, m->dUdT_bins);
@@ -726,7 +726,7 @@ bool read_histogram_file(System* system, std::string file_name) {
             // Read restartable 2D histogram data
             real* hist_2D = (real*)malloc(total_bins*m->dUdT_bins*sizeof(real));
             read_2D(m, file, hist_2D, m->T_bins, m->dUdT_bins);
-            cudaMemcpy(m->histogram_2D_d, hist_2D, total_bins*m->dUdT_bins*sizeof(real), cudaMemcpyDefault);
+            cudaMemcpy(m->hist_weights_2D_d, hist_2D, total_bins*m->dUdT_bins*sizeof(real), cudaMemcpyDefault);
             free(hist_2D);
         } else if (!file.eof()){
           // incorrect settings if reading things in wrong order - kill restart attempt
