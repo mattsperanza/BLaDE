@@ -1475,19 +1475,19 @@ void Msld::add_sample(System* system, int step) {
 
   update_fe_surface = step < update_steps; // last sample if false
   if(step != 0 && step % adaptive_cycle_steps == 0 && adaptive_cycles > 0){
-    cudaMemcpy(adaptive_variance_d, abf_variance_dUdT_d, total_T_bins, cudaMemcpyDefault);
+    cudaMemcpy(adaptive_variance_d, abf_variance_dUdT_d, total_T_bins*sizeof(real), cudaMemcpyDefault);
     real var[total_T_bins];
-    cudaMemcpy(var, abf_variance_dUdT_d, total_T_bins, cudaMemcpyDefault);
+    cudaMemcpy(var, abf_variance_dUdT_d, total_T_bins*sizeof(real), cudaMemcpyDefault);
     // Put thetas back to 0 (happens after getforce_oss)
     cudaMemset(system->state->theta_d, 0, blockCount*sizeof(real_x));
     cudaMemset(system->state->theta_fd, 0, blockCount*sizeof(real));
     printf("Cycle %d Variance: [", adaptive_cycles);
     real integral01 = 0;
-    real min = 0;
+    real min = 20;
     for(int i = 0; i < total_T_bins/2; i++){
       printf(" %f,", var[i]);
-      real fi = 1.0/(sqrt(var[i])+min);
-      real ff = 1.0/(sqrt(var[i])+min);
+      real fi = 1.0/(sqrt(var[i]+min));
+      real ff = 1.0/(sqrt(var[i]+min));
       integral01 += (fi+ff)/total_T_bins;
     }
     printf("]\n");
@@ -1495,8 +1495,8 @@ void Msld::add_sample(System* system, int step) {
     real integral0T = 0;
     for(int i = 0; i < total_T_bins/2; i++){
       printf(" %f,", integral0T/integral01);
-      real fi = 1.0/(sqrt(var[i])+min);
-      real ff = 1.0/(sqrt(var[i])+min);
+      real fi = 1.0/(sqrt(var[i]+min));
+      real ff = 1.0/(sqrt(var[i]+min));
       integral0T += (fi+ff)/total_T_bins;
     }
     printf(" %f,", integral0T/integral01);
@@ -2081,9 +2081,9 @@ __device__ void leus_f(
         real Ti = i*T_res;
         real Tf = (i+1)*T_res;
         real fi, ff;
-        real min = 0;
-        fi = 1.0/(sqrt(adaptive_var[i])+min); 
-        ff = 1.0/(sqrt(adaptive_var[i+1])+min);
+        real min = 20;
+        fi = 1.0/(sqrt(adaptive_var[i]+min)); 
+        ff = 1.0/(sqrt(adaptive_var[i+1]+min));
         real IdT = T_res*(fi + ff)/2.0;
         if(T >= Ti && T < Tf){ // simpler then ABF calculation since we always do integral
           real dx = (T - Ti)/T_res;
