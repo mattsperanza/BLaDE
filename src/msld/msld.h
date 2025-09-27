@@ -24,6 +24,7 @@ typedef enum leus_func {
   leus_quintic,
   leus_sin2,
   leus_xsin,
+  leus_adaptive
 } Leus_func;
 
 class Msld {
@@ -69,6 +70,9 @@ public:
   // Periodic function starts with sub 0 plateau, then transitions to sub 1, then sub 1 plateau
   bool L_LEUS = true; // overrides new_implicit
   leus_func L_LEUS_function = leus_xsin;
+  real* adaptive_variance_d; // [total_T_bins] variance used to calculate pace, initialized to ones, tied to T_res
+  int adaptive_cycles = 3;
+  int adaptive_cycle_steps = 1e5; 
   real xsin_n = 1; // number of sub-plateaus in transition + 1 (only for xsin function)
   real* dLdT_d; // [blockCount] first derivative of lambda w.r.t. theta
   real* d2LdT2_d; // [blockCount] second derivative of lambda w.r.t. theta
@@ -251,8 +255,9 @@ public:
 
   // Enhanced Sampling Functions
   void init_enhanced_sampling(System* system);
+  void clear_enhanced_sampling(System* system);
   void destroy_enhanced_sampling(System* system);
-  void copy_reset_memory(System* system);
+  void copy_reset_force(System* system);
   void getforce_bias(System* system, bool calcEnergy);
   void add_sample(System *system, int step);
   void log_sampling(System *system, int step);

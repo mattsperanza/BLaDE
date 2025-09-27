@@ -1660,7 +1660,7 @@ void Potential::enhanced_sampling(System* system, bool calcEnergy, int step){
       cudaStreamWaitEvent(r->ossBias, r->bondedComplete, 0);
       cudaStreamWaitEvent(r->ossBias, r->biaspotComplete, 0);
       // Get force & sampling
-      m->copy_reset_memory(system); // copy dU/dL, calculate dU/dT, clear dGdF, dGdL and potentials
+      m->copy_reset_force(system); // copy dU/dL, calculate dU/dT, clear dGdF, dGdL and potentials
       m->getforce_bias(system, calcEnergy);
       m->add_sample(system, step); // Sample felt in next step
       m->log_sampling(system, step); 

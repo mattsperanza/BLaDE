@@ -72,6 +72,7 @@ Msld::Msld() {
   d2LdT2_d=NULL;
   site_period_d=NULL;
   site_period=NULL;
+  adaptive_variance_d=NULL;
 
   dUdL_msld_d=NULL;
   dUdL_msld=NULL;
@@ -483,6 +484,10 @@ void parse_msld(char *line,System *system)
     } else if (name=="x-sin"){
       system->msld->L_LEUS_function=leus_xsin;
       system->msld->xsin_n = (real)io_nexti(line);
+    } else if (name=="adaptive"){
+      system->msld->L_LEUS_function=leus_adaptive;
+      system->msld->adaptive_cycles=io_nexti(line);
+      system->msld->adaptive_cycle_steps=io_nexti(line);
     } else {
       printf("Function %s not supported for L-LEUS!", name);
       exit(1);
@@ -1042,7 +1047,39 @@ void Msld::init_enhanced_sampling(System* system){
 
   cudaMalloc(&LE_R_d, siteCount*sizeof(real));
   cudaMemset(LE_R_d, 0, siteCount*sizeof(real));
+
+  // Adaptive Pace
+  real init[total_T_bins];
+  for(int i = 0; i < total_T_bins; i++){ init[i] = 1; }
+  cudaMalloc(&adaptive_variance_d, total_T_bins*sizeof(real));
+  cudaMemcpy(adaptive_variance_d, init, total_T_bins*sizeof(real), cudaMemcpyDefault);
 }
+
+void Msld::clear_enhanced_sampling(System* system){
+  // 2D
+  cudaMemset(theta_histogram_d, 0, total_T_bins*sizeof(real)); 
+  cudaMemset(hist_weights_2D_d, 0, total_T_bins*dUdT_bins*sizeof(real));
+  cudaMemset(theta_counts_2D_d, 0, total_T_bins*dUdT_bins*sizeof(real));
+  cudaMemset(bonded_2D_d, 0, total_T_bins*dUdT_bins*sizeof(real));
+  cudaMemset(potential_2D_d, 0, total_T_bins*dUdT_bins*sizeof(real));
+  // 1D
+  cudaMemset(max_dUdT_index_d, 0, total_T_bins*sizeof(int));
+  int min[total_T_bins];
+  for(int i = 0; i < total_T_bins; i++){ min[i] = dUdT_bins-1; }
+  cudaMemcpy(min_dUdT_index_d, min, total_T_bins*sizeof(int), cudaMemcpyDefault);
+  // ABF
+  cudaMemset(abf_ensemble_dUdT_d, 0, total_T_bins*sizeof(real));
+  cudaMemset(abf_variance_dUdT_d, 0, total_T_bins*sizeof(real));
+  cudaMemset(abf_offsets_d, 0, total_T_bins*sizeof(real));
+  cudaMemset(abf_weighted_dUdT_d, 0, total_T_bins*sizeof(real));
+  cudaMemset(abf_weighted_dUdT2_d, 0, total_T_bins*sizeof(real));
+  cudaMemset(abf_ensemble_dUdT_d, 0, total_T_bins*sizeof(real));
+  // LE
+  cudaMemset(LE_M_d, 0, LE_total_bins*sizeof(real));
+  cudaMemset(LE_theta_sweep_d, 0, LE_total_bins*sizeof(int));
+  cudaMemset(LE_R_d, 0, siteCount*sizeof(real));
+}
+
 
 void Msld::destroy_enhanced_sampling(System* system){
   // TODO
@@ -1055,7 +1092,7 @@ void Msld::recv_meta(){
   cudaMemcpy(dUdT_abf, dUdT_abf_d, siteCount*sizeof(real), cudaMemcpyDefault);
 }
 
-void Msld::copy_reset_memory(System* system){
+void Msld::copy_reset_force(System* system){
   Run* r = system->run;
   Msld* m = system->msld;
   // Copy MSLD theta and lambda forces, clear memory from last step
@@ -1114,26 +1151,24 @@ void Msld::log_sampling(System* system, int step){
     real dG = 0;
     real std_int = 0;
     int count = 1;
-    real off = 2.0;
     real smallest = 1e9;
+    real largest = 0;
     for(int i = prev_bins; i < prev_bins+T_bins[site]; i++){
-      if (abs(dUdT_var[i]) < smallest && abs(dUdT_var[i]) > 1e-5){
-        smallest = max(abs(dUdT_var[i]), off);
+      if (abs(dUdT_var[i]) > 1e-5){
+        smallest = min(dUdT_var[i], smallest);
+        largest = max(dUdT_var[i], largest);
       }
     }
-    printf("Smallest Var: %f\n", smallest);
+    printf("Smallest Bin Variance: %f, Largest Bin Variance: %f\n", smallest, largest);
     printf("TI dG i->i+1: [");
     for(int i = prev_bins; i < prev_bins+T_bins[site]-1; i++){
       real T = T_res*(i-prev_bins+1); // dG at this point
       if(T  < .5*plateau_w){ continue; }
       dG += T_res*(ensemble_dUdT[i]+ensemble_dUdT[i+1])/2.0; 
-      std_int += T_res*(1.0/sqrt(max(abs(dUdT_var[i]), smallest))+1.0/sqrt(max(dUdT_var[i+1], smallest)))/2.0;
-      std_cumsum[i] = std_int;
       if(T >= count*period){
         rel[count-1] = dG;
         printf(" %5.2f (T=%4.2f),", dG, T);
         dG = 0;
-        std_int = 0;
         count++;
       }
     }
@@ -1147,12 +1182,6 @@ void Msld::log_sampling(System* system, int step){
       printf(" %5.2f,", dG);
     }
     printf("], dG 0->0: %5.2f\n", dG+rel[blocksPerSite[site]-1]);
-    printf("Std Int: [");
-    count = 0;
-    for(int i = 0; i < T_bins[site]-1; i++){
-      //printf(" %f,", std_cumsum[i]/std_int);
-    }
-    printf("]\n");
     printf("Site R: %f, k_LE*LE_f_red^R: %f\n", R[site], LE_k*pow(LE_f_red, R[site]));
     printf("M: [");
     for(int i = LE_prev_bins; i < LE_prev_bins + LE_bins[site]; i++){
@@ -1327,7 +1356,7 @@ __global__ void add_sample_hist_kernel(
       bonded_2D[hist_index] += bonded;
       dUdT_sampled_max[theta_start+X] = Y > dUdT_sampled_max[theta_start+X] ? Y : dUdT_sampled_max[theta_start+X];
       dUdT_sampled_min[theta_start+X] = Y < dUdT_sampled_min[theta_start+X] ? Y : dUdT_sampled_min[theta_start+X];
-      if (blocksPerSite[i] == 2 && X != X_prime){ // enforce symmetry
+      if (blocksPerSite[i] == 2){ // enforce symmetry
         theta_counts[theta_start+X_prime] += 1.0;
         int hist_index = (theta_start+X_prime)*dUdT_bins + Y;
         theta_counts_2D[hist_index] += 1.0;
@@ -1349,7 +1378,7 @@ __global__ void add_sample_hist_kernel(
         weighted_dUdT[theta_start+X] *= correction;
         weighted_dUdT2[theta_start+X] *= correction;
         offsets[theta_start+X] = bias;
-        if(blocksPerSite[i] == 2 && X != X_prime){
+        if(blocksPerSite[i] == 2){
           weights[theta_start+X_prime] *= correction;
           weighted_dUdT[theta_start+X_prime] *= correction;
           weighted_dUdT2[theta_start+X_prime] *= correction;
@@ -1365,25 +1394,22 @@ __global__ void add_sample_hist_kernel(
       ensemble_dUdT[theta_start+X] = weighted_dUdT[theta_start+X] / weights[theta_start+X];
       real ensemble_dUdT2 = weighted_dUdT2[theta_start+X] / weights[theta_start+X];
       real ensemble_dUdT2_prime=0;
-      if(blocksPerSite[i] == 2 && X != X_prime){
+      if(blocksPerSite[i] == 2){
         weights[theta_start+X_prime] += weight;
         weighted_dUdT[theta_start+X_prime] += dUdT*weight;
         weighted_dUdT2[theta_start+X_prime] += dUdT*dUdT*weight; 
         ensemble_dUdT[theta_start+X_prime] = weighted_dUdT[theta_start+X_prime] / weights[theta_start+X_prime];
         ensemble_dUdT2_prime = weighted_dUdT2[theta_start+X_prime] / weights[theta_start+X_prime];
       }
+      real ramp = 1.0;
       if(theta_counts[theta_start+X] < warmup_samples){
-        real ramp = theta_counts[theta_start + X]/warmup_samples;
-        ensemble_dUdT[theta_start+X] *= ramp;
-        ensemble_dUdT2 *= ramp;
-        if(blocksPerSite[i] == 2 && X != X_prime){
-          ensemble_dUdT[theta_start+X_prime] *= ramp;
-          ensemble_dUdT2_prime *= ramp;
-        }
+        ramp = theta_counts[theta_start + X]/warmup_samples;
       }
       variance_dUdT[theta_start+X] = ensemble_dUdT2 - ensemble_dUdT[theta_start+X];
-      if(blocksPerSite[i] == 2 && X != X_prime){
+      ensemble_dUdT[theta_start+X] *= ramp;
+      if(blocksPerSite[i] == 2){
         variance_dUdT[theta_start+X_prime] = ensemble_dUdT2_prime - ensemble_dUdT[theta_start+X_prime];
+        ensemble_dUdT[theta_start+X_prime] *= ramp;
       }
     }
 
@@ -1412,20 +1438,20 @@ __global__ void add_sample_hist_kernel(
       }
       if (!any_zeros){ // New bin sample on second sweep 
         theta_sweep[LE_theta_start + X] = 2;
-        if(blocksPerSite[i] == 2 && X != X_prime){
+        if(blocksPerSite[i] == 2){
           theta_sweep[LE_theta_start + X_prime] = 2;
         }
         any_twos = true;
       } 
       if (!any_twos) { // New bin sample on first sweep
         theta_sweep[LE_theta_start + X] = 1;
-        if(blocksPerSite[i] == 2 && X != X_prime){
+        if(blocksPerSite[i] == 2){
           theta_sweep[LE_theta_start + X_prime] = 1;
         }
       }
       real update = LE_k*pow(LE_f_red, R[i]);
       M[LE_theta_start + X] += update;
-      if(blocksPerSite[i] == 2 && X != X_prime){
+      if(blocksPerSite[i] == 2){
         M[LE_theta_start + X_prime] += update;
       }
     }
@@ -1448,6 +1474,37 @@ void Msld::add_sample(System* system, int step) {
   }
 
   update_fe_surface = step < update_steps; // last sample if false
+  if(step != 0 && step % adaptive_cycle_steps == 0 && adaptive_cycles > 0){
+    cudaMemcpy(adaptive_variance_d, abf_variance_dUdT_d, total_T_bins, cudaMemcpyDefault);
+    real var[total_T_bins];
+    cudaMemcpy(var, abf_variance_dUdT_d, total_T_bins, cudaMemcpyDefault);
+    // Put thetas back to 0 (happens after getforce_oss)
+    cudaMemset(system->state->theta_d, 0, blockCount*sizeof(real_x));
+    cudaMemset(system->state->theta_fd, 0, blockCount*sizeof(real));
+    printf("Cycle %d Variance: [", adaptive_cycles);
+    real integral01 = 0;
+    real min = 0;
+    for(int i = 0; i < total_T_bins/2; i++){
+      printf(" %f,", var[i]);
+      real fi = 1.0/(sqrt(var[i])+min);
+      real ff = 1.0/(sqrt(var[i])+min);
+      integral01 += (fi+ff)/total_T_bins;
+    }
+    printf("]\n");
+    printf("Cycle %d Pace: [", adaptive_cycles-1);
+    real integral0T = 0;
+    for(int i = 0; i < total_T_bins/2; i++){
+      printf(" %f,", integral0T/integral01);
+      real fi = 1.0/(sqrt(var[i])+min);
+      real ff = 1.0/(sqrt(var[i])+min);
+      integral0T += (fi+ff)/total_T_bins;
+    }
+    printf(" %f,", integral0T/integral01);
+    printf("]\n");
+    clear_enhanced_sampling(system);
+    adaptive_cycles -= 1;
+    return; // don't add sample
+  }
 
   if(step % update_hist_freq == 0){
     update_ABF_from_hist(system, total_T_bins, dUdT_bins, false); // Compute potential (& <dU/dT> if requested)
@@ -1901,9 +1958,23 @@ __global__ void hist_ensemble_dUdT_kernel(
       }
       real scale = theta_counts[start_1D+X] / warmup_samples;
       scale = scale < 1.0 ? scale : 1.0;
-      ensemble_dUdT[start_1D+X] = Z > 1e-5 ? scale*(weighted_dUdT+weighted_dUdT_bond)/Z : 0.0;
-      variance_dUdT[start_1D+X] = Z > 1e-5 ? 
-        (weighted_dUdT2+weighted_dUdT2_bond)/Z - ensemble_dUdT[start_1D+X]*ensemble_dUdT[start_1D+X] : 0.0;
+      real ens_dUdT = 0;
+      real ens_dUdT2 = 0;
+      real ens_dUdT_bond = 0;
+      real ens_dUdT2_bond = 0;
+      // Average
+      if(Z > 1e-5){
+        ens_dUdT = weighted_dUdT/Z;
+        ens_dUdT_bond = weighted_dUdT_bond/Z;
+        ens_dUdT2 = weighted_dUdT2/Z;
+        ens_dUdT2_bond = weighted_dUdT2_bond/Z;
+      }
+      // Variance
+      real var_dUdT = ens_dUdT2 - (ens_dUdT*ens_dUdT);
+      real var_dUdT2_bond = ens_dUdT2_bond - (ens_dUdT_bond*ens_dUdT_bond);
+      // TODO: This var is wrong, missing 2*covariance between weighted bonded and non-bond forces, unless cov is zero
+      ensemble_dUdT[start_1D+X] = scale*(ens_dUdT + ens_dUdT_bond);
+      variance_dUdT[start_1D+X] = var_dUdT + var_dUdT2_bond;
     } 
   }
 }
@@ -1959,16 +2030,19 @@ void Msld::update_ABF_from_hist(System *system, int vert_slices, int horz_slices
 }
 
 // fills dF[0] = L(T), dF[1] = dLdT, dF[1] = d2LdT2
-__device__ void leus_f(real_x theta, real transition_w, real plateau_w, real_x* dF, leus_func func_type, real xsin_n){
+__device__ void leus_f(
+  real_x theta, real transition_w, real plateau_w, 
+  real_x* dF, leus_func func_type, real xsin_n, 
+  int total_T_bins, real* adaptive_var){
   // Transition regions have inclusive bounds, plateaus have exclusive bounds (if plateau = 0, never hit that region)
   bool forward = theta >= 0.0 && theta <= transition_w;
-  bool backward = theta >= transition_w + plateau_w && theta <= 2*transition_w + plateau_w; 
-  if (forward || backward){ // forward  i<->j
-    theta = backward ? 2*transition_w + plateau_w - theta : theta;
-    theta /= transition_w;
-    real_x dTdT = backward ? -1.0 : 1.0; // d(2*W + w - T)/dT : d(T)/dT -> aren't functions of t, don't effect second derivative
+  bool backward = theta>=(transition_w+plateau_w) && theta<=(2*transition_w+plateau_w); 
+  if (forward || backward){ // transition regions i<->j
+    theta = backward ? 2*transition_w+plateau_w-theta : theta; // 0 <= theta <= 1
+    theta /= transition_w; // 0 <= theta <= 1/transition_w
+    real_x dTdT = backward ? -1.0 : 1.0;
     dTdT *= 1 / transition_w;
-    if(func_type == leus_linear){
+    if(func_type == leus_linear || (func_type == leus_adaptive && !adaptive_var)){
       dF[0] = theta;
       dF[1] = dTdT;
       dF[2] = 0;
@@ -1993,6 +2067,37 @@ __device__ void leus_f(real_x theta, real transition_w, real plateau_w, real_x* 
       dF[0] = theta - (sinT/arg);
       dF[1] = dTdT - cosT*dTdT;
       dF[2] = sinT*arg*dTdT*dTdT;
+    } else if (func_type == leus_adaptive){
+      // Theta is 0 -> 1
+      // L(T) = \int_0^T (std[dU/dT']^-1) dT' / \int_0^1 (std[dU/dT']^-1) dT'
+      real T = theta*transition_w; // 0 <= T <= 1
+      real T_res = 1.0/(total_T_bins/2);
+      real dIntdT = 0;
+      real dInt2dT2 = 0;
+      real integral0T = 0;
+      real integral01 = 0;
+      // adaptive only valid for Nsub = 2
+      for(int i = 0; i < total_T_bins/2; i++){ // needs to be inclusive?
+        real Ti = i*T_res;
+        real Tf = (i+1)*T_res;
+        real fi, ff;
+        real min = 0;
+        fi = 1.0/(sqrt(adaptive_var[i])+min); 
+        ff = 1.0/(sqrt(adaptive_var[i+1])+min);
+        real IdT = T_res*(fi + ff)/2.0;
+        if(T >= Ti && T < Tf){ // simpler then ABF calculation since we always do integral
+          real dx = (T - Ti)/T_res;
+          integral0T = integral01 + IdT*dx;
+          dIntdT = fi*(1-dx) + ff*dx; // value of integrand
+          dInt2dT2 = fi - ff;
+        }
+        integral01 += IdT;
+      }
+      dF[0] = integral0T/integral01;
+      dF[1] = dIntdT/integral01*dTdT;
+      dF[2] = dInt2dT2/integral01*dTdT*dTdT;
+      //printf("theta: %f, T: %f, L: %f, dIntdT: %f, dI2dT: %f, int01: %f\n", 
+      //  theta, T, integral0T/integral01, dIntdT/integral01, dInt2dT2/integral01, integral01);
     }
   } else if (theta > transition_w && theta < transition_w + plateau_w){ // j physical state
     dF[0] = 1;
@@ -2011,6 +2116,7 @@ __global__ void calc_lambda_from_theta_kernel(
   real fnex, 
   bool L_LEUS, leus_func func_type, real xsin_n,
   real plateau_w, real transition_w, 
+  int total_T_bins, real* adaptive_var,
   real* dLdT, real* d2LdT2){
   int i=blockIdx.x*blockDim.x+threadIdx.x;
 
@@ -2040,7 +2146,7 @@ __global__ void calc_lambda_from_theta_kernel(
         real_x dF[3];
         // Shift function into place
         real_x shift = -(j-1)*(transition_w + plateau_w) - plateau_w;
-        leus_f(T + shift, transition_w, plateau_w, dF, func_type, xsin_n);
+        leus_f(T + shift, transition_w, plateau_w, dF, func_type, xsin_n, total_T_bins, adaptive_var);
         lambda[ji+j] = dF[0];
         dLdT[ji+j] = dF[1];
         d2LdT2[ji+j] = dF[2];
@@ -2094,7 +2200,8 @@ void Msld::calc_lambda_from_theta(cudaStream_t stream,System *system)
     calc_lambda_from_theta_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
       s->lambda_d,s->theta_d,siteCount,siteBound_d,fnex,
       L_LEUS, L_LEUS_function, xsin_n,
-      plateau_w, transition_w,
+      plateau_w, transition_w, 
+      total_T_bins, adaptive_variance_d,
       dLdT_d, d2LdT2_d);
   } else if (theta_slow_fix) { // only 2 sites exist
     theta_current += theta_delta;
@@ -2102,7 +2209,8 @@ void Msld::calc_lambda_from_theta(cudaStream_t stream,System *system)
     calc_lambda_from_theta_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
       s->lambda_d,s->theta_d,siteCount,siteBound_d,fnex,
       L_LEUS, L_LEUS_function, xsin_n,
-      plateau_w, transition_w,
+      plateau_w, transition_w, 
+      total_T_bins, adaptive_variance_d,
       dLdT_d, d2LdT2_d);
     if (system->run->step == system->run->step0+system->run->nsteps-1){ 
       theta_slow_fix = false;
@@ -2118,7 +2226,8 @@ void Msld::calc_lambda_from_theta(cudaStream_t stream,System *system)
     calc_lambda_from_theta_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
       s->lambda_d,s->theta_d,siteCount,siteBound_d,fnex,
       L_LEUS, L_LEUS_function, xsin_n,
-      plateau_w, transition_w,
+      plateau_w, transition_w, 
+      total_T_bins, adaptive_variance_d,
       dLdT_d, d2LdT2_d);
     if (system->run->step == system->run->step0+system->run->nsteps-1){ 
       theta_fix = false;
@@ -2139,7 +2248,8 @@ void Msld::init_lambda_from_theta(cudaStream_t stream,System *system)
     calc_lambda_from_theta_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
       s->lambda_d,s->theta_d,siteCount,siteBound_d,fnex,
       L_LEUS, L_LEUS_function, xsin_n, 
-      plateau_w, transition_w,
+      plateau_w, transition_w, 
+      total_T_bins, adaptive_variance_d,
       dLdT_d, d2LdT2_d);
   } else {
     cudaMemcpy(s->lambda_d,s->theta_d,s->lambdaCount*sizeof(real_x),cudaMemcpyDeviceToDevice);
