@@ -1608,6 +1608,8 @@ void Potential::reset_force(System *system,bool calcEnergy)
   if (calcEnergy) {
     cudaMemset(system->state->energy_d,0,eeend*sizeof(real_e));
   }
+  cudaMemset(system->state->U_torsion_d, 0, sizeof(real));
+  cudaMemset(system->state->torsionForceBuffer_d, 0, (2*system->state->lambdaCount+3*system->state->atomCount)*sizeof(real));
 }
 
 void Potential::calc_force(int step,System *system)
@@ -1617,6 +1619,7 @@ void Potential::calc_force(int step,System *system)
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
+  calcEnergy=true; // Need to compute energy every step for ITS
 #ifdef REPLICAEXCHANGE
   if (system->run->freqREx>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqREx==0));
@@ -1685,5 +1688,20 @@ void Potential::calc_force(int step,System *system)
   calc_virtual_force(system);
 
   // cudaEventRecord(r->forceComplete,r->updateStream);
+
+  // Enhanced Sampling, wait on forces
+  cudaStreamWaitEvent(r->enhancedStream, r->bondedComplete);
+  cudaStreamWaitEvent(r->enhancedStream, r->nbrecipComplete);
+  cudaStreamWaitEvent(r->enhancedStream, r->nbdirectComplete);
+  cudaStreamWaitEvent(r->enhancedStream, r->biaspotComplete);
+  system->state->recv_energy();
+  cudaMemcpy(system->state->U_torsion, system->state->U_torsion_d, sizeof(real), cudaMemcpyDefault);
+  printf("Step: %d\n", system->run->step);
+  printf("U_torsion: %f\n", *system->state->U_torsion);
+  printf("U_dihe: %f\n", system->state->energy[eedihe]);
+  printf("U_cmap: %f\n", system->state->energy[eecmap]);
+  printf("U_impr: %f\n", system->state->energy[eeimpr]);
+  cudaEventRecord(r->enhancedComplete, r->enhancedStream);
+  cudaStreamWaitEvent(r->updateStream,r->enhancedComplete,0);
 }
 

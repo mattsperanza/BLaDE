@@ -114,12 +114,14 @@ Run::Run(System *system)
   biaspotStream=0;
   nbdirectStream=0;
   nbrecipStream=0;
+  enhancedStream=0;
 #else
   cudaStreamCreate(&updateStream);
   cudaStreamCreate(&bondedStream);
   cudaStreamCreate(&biaspotStream);
   cudaStreamCreate(&nbdirectStream);
   cudaStreamCreate(&nbrecipStream);
+  cudaStreamCreate(&enhancedStream);
   // Set priorities if desired:
   // int low,high;
   // cudaDeviceGetStreamPriorityRange(&low,&high);
@@ -131,6 +133,7 @@ Run::Run(System *system)
   cudaEventCreate(&biaspotComplete);
   cudaEventCreate(&nbdirectComplete);
   cudaEventCreate(&nbrecipComplete);
+  cudaEventCreate(&enhancedComplete);
   // cudaEventCreate(&forceComplete);
   cudaEventCreate(&communicate);
 
