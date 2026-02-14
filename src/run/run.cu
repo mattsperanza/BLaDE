@@ -6,6 +6,7 @@
 #include "system/system.h"
 #include "io/io.h"
 #include "msld/msld.h"
+#include "enhanced/enhanced.h"
 #include "system/state.h"
 #include "system/potential.h"
 #include "system/selections.h"
@@ -567,6 +568,9 @@ void Run::dynamics_initialize(System *system)
   if (system->potential) delete system->potential;
   system->potential=new Potential();
   system->potential->initialize(system);
+
+  // Finish setting up enhanced sampling
+  system->enhanced->initialize(system);
 
   // Rectify bond constraints
   holonomic_rectify(system);
