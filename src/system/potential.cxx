@@ -8,6 +8,7 @@
 #include "system/parameters.h"
 #include "system/structure.h"
 #include "msld/msld.h"
+#include "enhanced/enhanced.h"
 #include "system/state.h"
 #include "run/run.h"
 #include "domdec/domdec.h"
@@ -1689,19 +1690,15 @@ void Potential::calc_force(int step,System *system)
 
   // cudaEventRecord(r->forceComplete,r->updateStream);
 
-  // Enhanced Sampling, wait on forces
-  cudaStreamWaitEvent(r->enhancedStream, r->bondedComplete);
-  cudaStreamWaitEvent(r->enhancedStream, r->nbrecipComplete);
-  cudaStreamWaitEvent(r->enhancedStream, r->nbdirectComplete);
-  cudaStreamWaitEvent(r->enhancedStream, r->biaspotComplete);
-  system->state->recv_energy();
-  cudaMemcpy(system->state->U_torsion, system->state->U_torsion_d, sizeof(real), cudaMemcpyDefault);
-  printf("Step: %d\n", system->run->step);
-  printf("U_torsion: %f\n", *system->state->U_torsion);
-  printf("U_dihe: %f\n", system->state->energy[eedihe]);
-  printf("U_cmap: %f\n", system->state->energy[eecmap]);
-  printf("U_impr: %f\n", system->state->energy[eeimpr]);
-  cudaEventRecord(r->enhancedComplete, r->enhancedStream);
-  cudaStreamWaitEvent(r->updateStream,r->enhancedComplete,0);
+  // Enhanced Sampling, wait on all other forces
+  if(system->enhanced->active){
+    cudaStreamWaitEvent(r->enhancedStream, r->bondedComplete);
+    cudaStreamWaitEvent(r->enhancedStream, r->nbrecipComplete);
+    cudaStreamWaitEvent(r->enhancedStream, r->nbdirectComplete);
+    cudaStreamWaitEvent(r->enhancedStream, r->biaspotComplete);
+    getforce_enhanced(system);
+    cudaEventRecord(r->enhancedComplete, r->enhancedStream);
+    cudaStreamWaitEvent(r->updateStream,r->enhancedComplete,0);
+  }
 }
 

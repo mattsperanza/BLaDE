@@ -71,8 +71,8 @@ class State {
   real_f *forceBuffer_omp;
 
   // Buffers used for ITS sampling
-  real* U_torsion;
-  real* U_torsion_d;
+  real_e* U_torsion;
+  real_e* U_torsion_d;
   real_f *torsionForceBuffer;
   real_f (*torsionForceBuffer3_d)[3];
   real_f *torsionForceBuffer_d;

@@ -13,10 +13,11 @@ class Enhanced {
 
     void initialize(System* system);
 
-  private:
-    Its* its;
+    bool active = false;
+    Its* its = NULL;
 };
 
 void parse_enhanced(char* line, System* system);
+void getforce_enhanced(System* system);
 
 #endif

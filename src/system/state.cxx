@@ -45,8 +45,8 @@ State::State(System *system) {
   cudaMalloc(&(forceBackup_d),(2*nL+3*n)*sizeof(real_f));
 
   // ITS buffer initialization
-  U_torsion=(real*)malloc(sizeof(real));
-  cudaMalloc(&U_torsion_d, sizeof(real));
+  U_torsion=(real_e*)malloc(sizeof(real_e));
+  cudaMalloc(&U_torsion_d, sizeof(real_e));
   torsionForceBuffer=(real*)calloc(rootFactor*(2*nL+3*n),sizeof(real_f));
   cudaMalloc(&torsionForceBuffer_d, rootFactor*(2*nL+3*n)*sizeof(real));
   torsionForceBuffer3_d=(real_f(*)[3])(torsionForceBuffer_d+nL);

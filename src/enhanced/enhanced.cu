@@ -9,6 +9,7 @@
 #include "system/state.h"
 #include "system/potential.h"
 #include "run/run.h"
+#include "enhanced/its.h"
 
 #include "enhanced/enhanced.h"
 
@@ -32,6 +33,57 @@ void parse_enhanced(char* line, System* system){
   if (system->enhanced==NULL) {
     system->enhanced=new Enhanced();
   }
+
+  io_nexta(line,token);
+
+  // ITS Reading
+  if (strcmp(token,"its")==0) {
+    std::string potential = io_nexts(line); 
+    if(potential == "rest"){
+      printf("REST scaling not supported yet! Availible: total, torsion\n");
+      exit(1);
+    }
+    if(potential != "total" && potential != "torsion"){
+      printf("Unsuppored ITS potential scaling: %s. Availible: total, torsion\n");
+      exit(1);
+    }
+    system->enhanced->its = new Its(potential);
+    system->enhanced->active = true;
+  } else if(strcmp(token,"its_temps")==0) {
+    if(!system->enhanced->its) {
+      printf("ITS not defined yet!"); 
+      exit(1);
+    }
+    int num_temps = io_nexti(line);
+    real temp_low = io_nextf(line);
+    real temp_high = io_nextf(line);
+    real* temps = system->enhanced->its->temperatures;
+    temps = (real*) malloc(num_temps*sizeof(real));
+    for(int i = 0; i < num_temps; i++){
+      temps[i] = temp_low*pow(temp_high/temp_low, ((real)i)/(num_temps-1));
+    }
+    printf("ITS Temps: [ ");
+    for(int i = 0; i < num_temps; i++){
+      printf("%f, ", temps[i]);
+    }
+    printf("] \n");
+  } else if (strcmp(token, "its_updates")==0) {
+    system->enhanced->its->update_iterations = io_nexti(line);
+    system->enhanced->its->steps_per_iter = io_nexti(line);
+  }
 };
 
-void Enhanced::initialize(System* system){}
+// Gets called each time a new run function is called
+void Enhanced::initialize(System* system){
+  its->initialize();
+
+  // TODO: Check settings and compatibility
+}
+
+void getforce_enhanced(System* system){
+  Enhanced* ES = system->enhanced;
+  if(ES->its){
+    getforce_its(system); 
+    update_its(system);
+  }
+}
