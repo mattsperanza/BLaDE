@@ -5,6 +5,7 @@
 #include "system/system.h"
 #include "system/state.h"
 #include "msld/msld.h"
+#include "enhanced/enhanced.h"
 #include "run/run.h"
 #include "system/potential.h"
 #include "rng/rng_gpu.h"
@@ -213,7 +214,10 @@ void State::update(int step,System *system)
   Run *r=system->run;
 
   if (system->run->freqNPT>0 && (system->run->step%system->run->freqNPT)==0) {
+    bool tmp = system->enhanced->updating;
+    system->enhanced->updating = false;
     pressure_coupling(system);
+    system->enhanced->updating = tmp;
   }
 
 #ifdef REPLICAEXCHANGE

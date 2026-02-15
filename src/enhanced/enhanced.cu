@@ -57,8 +57,7 @@ void parse_enhanced(char* line, System* system){
     int num_temps = io_nexti(line);
     real temp_low = io_nextf(line);
     real temp_high = io_nextf(line);
-    real* temps = system->enhanced->its->temperatures;
-    temps = (real*) malloc(num_temps*sizeof(real));
+    real* temps = (real*) malloc(num_temps*sizeof(real));
     for(int i = 0; i < num_temps; i++){
       temps[i] = temp_low*pow(temp_high/temp_low, ((real)i)/(num_temps-1));
     }
@@ -67,6 +66,8 @@ void parse_enhanced(char* line, System* system){
       printf("%f, ", temps[i]);
     }
     printf("] \n");
+    system->enhanced->its->temperatures = temps;
+    system->enhanced->its->N_temp = num_temps;
   } else if (strcmp(token, "its_updates")==0) {
     system->enhanced->its->update_iterations = io_nexti(line);
     system->enhanced->its->steps_per_iter = io_nexti(line);
@@ -81,9 +82,14 @@ void Enhanced::initialize(System* system){
 }
 
 void getforce_enhanced(System* system){
-  Enhanced* ES = system->enhanced;
-  if(ES->its){
+  Enhanced* es = system->enhanced;
+
+  // ITS should be last (capture to capture other bias in scaling)
+  if(es->its){
     getforce_its(system); 
-    update_its(system);
+    if(es->updating){
+      update_its(system);
+      log_its(system);
+    }
   }
 }
