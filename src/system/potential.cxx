@@ -1609,7 +1609,7 @@ void Potential::reset_force(System *system,bool calcEnergy)
   if (calcEnergy) {
     cudaMemset(system->state->energy_d,0,eeend*sizeof(real_e));
   }
-  cudaMemset(system->state->U_torsion_d, 0, sizeof(real));
+  cudaMemset(system->state->U_torsion_d, 0, sizeof(real_e));
   cudaMemset(system->state->torsionForceBuffer_d, 0, (2*system->state->lambdaCount+3*system->state->atomCount)*sizeof(real));
 }
 

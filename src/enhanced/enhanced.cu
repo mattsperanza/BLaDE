@@ -36,8 +36,16 @@ void parse_enhanced(char* line, System* system){
 
   io_nexta(line,token);
 
+  if(strcmp(token, "log_freq")==0){
+    system->enhanced->log_freq = io_nexti(line);
+  } else if (strcmp(token, "updating")==0){
+    system->enhanced->updating = io_nextb(line);
   // ITS Reading
-  if (strcmp(token,"its")==0) {
+  }else if (strcmp(token,"its")==0) {
+    if(system->enhanced->its){
+      printf("ITS already exists!\n");
+      exit(1);
+    }
     std::string potential = io_nexts(line); 
     if(potential == "rest"){
       printf("REST scaling not supported yet! Availible: total, torsion\n");
@@ -68,9 +76,30 @@ void parse_enhanced(char* line, System* system){
     printf("] \n");
     system->enhanced->its->temperatures = temps;
     system->enhanced->its->N_temp = num_temps;
-  } else if (strcmp(token, "its_updates")==0) {
-    system->enhanced->its->update_iterations = io_nexti(line);
-    system->enhanced->its->steps_per_iter = io_nexti(line);
+  } else if (strcmp(token, "its_steps_per") == 0){
+    if(!system->enhanced->its) {
+      printf("ITS not defined yet!"); 
+      exit(1);
+    }
+    system->enhanced->its->steps_per_temp = io_nexti(line);
+  } else if (strcmp(token, "its_flattening_strength") == 0){
+    if(!system->enhanced->its) {
+      printf("ITS not defined yet!"); 
+      exit(1);
+    }
+    system->enhanced->its->correction_strength = io_nextf(line);
+  } else if (strcmp(token, "its_sample_freq") == 0){
+    if(!system->enhanced->its) {
+      printf("ITS not defined yet!"); 
+      exit(1);
+    }
+    system->enhanced->its->sample_freq = io_nexti(line);
+  } else if (strcmp(token, "its_alpha")==0){
+    if(!system->enhanced->its) {
+      printf("ITS not defined yet!"); 
+      exit(1);
+    }
+    system->enhanced->its->alpha = io_nextf(line);
   }
 };
 
@@ -88,8 +117,10 @@ void getforce_enhanced(System* system){
   if(es->its){
     getforce_its(system); 
     if(es->updating){
-      update_its(system);
-      log_its(system);
+      update_its(system); // internal update logic
+      if (system->run->step % es->log_freq == 0) log_its(system);
+      //if (system->run->step % es->write_small_freq == 0) write_small_its(system); 
+      //if (system->run->step % es->write_bing_freq == 0) write_big_its(system); 
     }
   }
 }
