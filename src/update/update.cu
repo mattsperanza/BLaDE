@@ -214,10 +214,15 @@ void State::update(int step,System *system)
   Run *r=system->run;
 
   if (system->run->freqNPT>0 && (system->run->step%system->run->freqNPT)==0) {
-    bool tmp = system->enhanced->updating;
-    system->enhanced->updating = false;
+    bool tmp = false;
+    if(system->enhanced){
+      tmp = system->enhanced->updating;
+      system->enhanced->updating = false;
+    }
     pressure_coupling(system);
-    system->enhanced->updating = tmp;
+    if(system->enhanced){
+      system->enhanced->updating = tmp;
+    }
   }
 
 #ifdef REPLICAEXCHANGE

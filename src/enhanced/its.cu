@@ -38,7 +38,7 @@ Its::~Its(){
 
 void Its::initialize(){
     if(!temperatures){
-      printf("Didn't set temperature range! Use \"enhanced its_temps {N_temp} {T_low} {T_high}\"");
+      printf("Didn't set temperature range! Use \"enhanced its_temps {N_temp} {T_low} {T_high}\"\n");
       exit(1);
     }
 

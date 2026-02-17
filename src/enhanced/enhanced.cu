@@ -60,7 +60,7 @@ void parse_enhanced(char* line, System* system){
     system->enhanced->active = true;
   } else if(strcmp(token,"its_temps")==0) {
     if(!system->enhanced->its) {
-      printf("ITS not defined yet!"); 
+      printf("ITS not defined yet!\n"); 
       exit(1);
     }
     int num_temps = io_nexti(line);
@@ -79,13 +79,13 @@ void parse_enhanced(char* line, System* system){
     system->enhanced->its->N_temp = num_temps;
   } else if (strcmp(token, "its_steps_per") == 0){
     if(!system->enhanced->its) {
-      printf("ITS not defined yet!"); 
+      printf("ITS not defined yet!\n"); 
       exit(1);
     }
     system->enhanced->its->steps_per_temp = io_nexti(line);
   } else if (strcmp(token, "its_flattening_strength") == 0){
     if(!system->enhanced->its) {
-      printf("ITS not defined yet!"); 
+      printf("ITS not defined yet!\n"); 
       exit(1);
     }
     system->enhanced->its->correction_strength = io_nextf(line);
@@ -97,7 +97,7 @@ void parse_enhanced(char* line, System* system){
     system->enhanced->its->sample_freq = io_nexti(line);
   } else if (strcmp(token, "its_alpha")==0){
     if(!system->enhanced->its) {
-      printf("ITS not defined yet!"); 
+      printf("ITS not defined yet!\n"); 
       exit(1);
     }
     system->enhanced->its->alpha = io_nextf(line);
@@ -106,8 +106,9 @@ void parse_enhanced(char* line, System* system){
 
 // Gets called each time a new run function is called
 void Enhanced::initialize(System* system){
-  its->initialize();
-
+  if(its) {
+    its->initialize();
+  }
   // TODO: Check settings and compatibility
 }
 

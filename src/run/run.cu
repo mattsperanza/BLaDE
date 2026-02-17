@@ -570,7 +570,7 @@ void Run::dynamics_initialize(System *system)
   system->potential->initialize(system);
 
   // Finish setting up enhanced sampling
-  system->enhanced->initialize(system);
+  if (system->enhanced) system->enhanced->initialize(system);
 
   // Rectify bond constraints
   holonomic_rectify(system);

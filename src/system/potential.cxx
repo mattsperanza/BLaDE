@@ -1620,7 +1620,7 @@ void Potential::calc_force(int step,System *system)
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
-  if (system->enhanced->its){ 
+  if (system->enhanced && system->enhanced->its){ 
     calcEnergy=true; // Need to compute energy every step for ITS
   }
 #ifdef REPLICAEXCHANGE
@@ -1693,7 +1693,7 @@ void Potential::calc_force(int step,System *system)
   // cudaEventRecord(r->forceComplete,r->updateStream);
 
   // Enhanced Sampling, wait on all other forces
-  if(system->enhanced->active){
+  if(system->enhanced && system->enhanced->active){
     cudaStreamWaitEvent(r->enhancedStream, r->bondedComplete);
     cudaStreamWaitEvent(r->enhancedStream, r->nbrecipComplete);
     cudaStreamWaitEvent(r->enhancedStream, r->nbdirectComplete);
