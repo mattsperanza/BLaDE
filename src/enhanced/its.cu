@@ -268,8 +268,6 @@ __global__ void update_its_expectation_kernel(
 }
 
 __global__ void update_weights_kernel(int N_temps, real* temps, real* expected_U, real* correction_strength, real* pBeta, real* g){
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-
   real eps = 1e-10;
   real scale = *correction_strength;
   real uniform_FE = -log(1.0/N_temps);
@@ -317,7 +315,6 @@ __global__ void update_weights_kernel(int N_temps, real* temps, real* expected_U
     g[i+1] = g[i] + I;
     norm += pBeta[i+1];
   }
-
   for(int i = 0; i < N_temps; i++){
     g[i] += scale*(-log(pBeta[i]/norm + eps) - uniform_FE); // lower the weight of higher sampled temps
   }
@@ -447,13 +444,13 @@ void write_small_its(System* system, std::string output_dir){
     if(!it->fp_beta){
       printf("Error opening %s. Please make directory!\n", fnm_temps.c_str());
       exit(1);
-      return;
     }
     for(int i = 0; i < it->N_temp_max; i++){
       real beta_k = 1.0/(kB*it->temperatures[i]);
       fprintf(it->fp_beta, "%f ", beta_k);
     }
     fprintf(it->fp_beta, "\n");
+    fflush(it->fp_beta);
   }
   // g_k
   if(!it->fp_g){
@@ -462,7 +459,6 @@ void write_small_its(System* system, std::string output_dir){
     if(!it->fp_g){
       printf("Error opening %s. Please make directory!\n", fnm_g_k.c_str());
       exit(1);
-      return;
     }
   }
   fprintf(it->fp_g, "%d ", system->run->step);
@@ -470,6 +466,7 @@ void write_small_its(System* system, std::string output_dir){
     fprintf(it->fp_g, "%f ", it->g_k[i]);
   }
   fprintf(it->fp_g, "\n");
+  fflush(it->fp_g);
   // <U>
   if(!it->fp_exp_U){
     std::string fnm_expected_U = output_dir + "/expected_U.dat";
@@ -477,7 +474,6 @@ void write_small_its(System* system, std::string output_dir){
     if(!it->fp_exp_U){
       printf("Error opening %s. Please make directory!\n", fnm_expected_U.c_str());
       exit(1);
-      return;
     }
   }
   fprintf(it->fp_exp_U, "%d ", system->run->step);
@@ -485,6 +481,7 @@ void write_small_its(System* system, std::string output_dir){
     fprintf(it->fp_exp_U, "%f ", it->expected_U[i]);
   }
   fprintf(it->fp_exp_U, "\n");
+  fflush(it->fp_exp_U);
   // Bk*U_bias
   if(!it->fp_red_bias){
      std::string fnm_its_bias   = output_dir + "/reduced_bias.dat";
@@ -492,15 +489,30 @@ void write_small_its(System* system, std::string output_dir){
      if(!it->fp_red_bias){
        printf("Error opening %s. Please make directory!\n", fnm_its_bias.c_str());
        exit(1);
-       return;
      }
   }
   fprintf(it->fp_red_bias, "%d ", system->run->step);
   for(int i = 0; i < it->N_temp_max; i++){
     real beta_k = 1.0/(kB*it->temperatures[i]);
-    fprintf(it->fp_red_bias, "%f ", it->its_bias[i]);
+    fprintf(it->fp_red_bias, "%f ", beta_k*it->its_bias[i]);
   }
   fprintf(it->fp_red_bias, "\n");
+  fflush(it->fp_red_bias);
+  // <T>
+  if(!it->fp_weighted_T){
+     std::string fnm_T   = output_dir + "/T.dat";
+     it->fp_weighted_T = fopen(fnm_T.c_str(), "w");
+     if(!it->fp_weighted_T){
+       printf("Error opening %s. Please make directory!\n", fnm_T.c_str());
+       exit(1);
+     }
+  }
+  fprintf(it->fp_weighted_T, "%d ", system->run->step);
+  real eff_beta = it->weighted_beta*(1.0/(kB*system->run->T));
+  real eff_temp = 1.0/(kB*eff_beta);
+  fprintf(it->fp_weighted_T, "%f ", eff_temp);
+  fprintf(it->fp_weighted_T, "\n");
+  fflush(it->fp_weighted_T);
 }
 
 

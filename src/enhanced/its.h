@@ -52,6 +52,7 @@ class Its {
     FILE* fp_g = NULL;
     FILE* fp_exp_U = NULL;
     FILE* fp_red_bias = NULL;
+    FILE* fp_weighted_T = NULL;
 };
     
 void getforce_its(System* system);
