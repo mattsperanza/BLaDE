@@ -30,6 +30,10 @@ Its::~Its(){
     if(weighted_beta_d) cudaFree(weighted_beta_d);
     if(U_d) cudaFree(U_d);
     if(correction_strength_d) cudaFree(correction_strength_d);
+    if(fp_beta) fclose(fp_beta);
+    if(fp_exp_U) fclose(fp_exp_U);
+    if(fp_g) fclose(fp_g);
+    if(fp_red_bias) fclose(fp_red_bias);
 }
 
 void Its::initialize(){
@@ -371,17 +375,20 @@ void update_its(System* system){
   }
 }
 
+void Its::recv_its(){
+  int size = N_temp_max*sizeof(real);
+  cudaMemcpy(&U, U_d, sizeof(real_e), cudaMemcpyDefault);
+  cudaMemcpy(&U_prime, U_prime_d, sizeof(real_e), cudaMemcpyDefault);
+  cudaMemcpy(&weighted_beta, weighted_beta_d, sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(pHist, pHist_d, size, cudaMemcpyDefault);
+  cudaMemcpy(expected_U, expected_U_d, size, cudaMemcpyDefault);
+  cudaMemcpy(g_k, g_k_d, size, cudaMemcpyDefault);
+  cudaMemcpy(its_bias, its_bias_d, size, cudaMemcpyDefault);
+}
+
 void log_its(System* system){
   State *s = system->state;
   Its* it = system->enhanced->its;
-  int size = it->N_temp*sizeof(real);
-  cudaMemcpy(&it->U, it->U_d, sizeof(real_e), cudaMemcpyDefault);
-  cudaMemcpy(&it->U_prime, it->U_prime_d, sizeof(real_e), cudaMemcpyDefault);
-  cudaMemcpy(&it->weighted_beta, it->weighted_beta_d, sizeof(real), cudaMemcpyDefault);
-  cudaMemcpy(it->pHist, it->pHist_d, size, cudaMemcpyDefault);
-  cudaMemcpy(it->expected_U, it->expected_U_d, size, cudaMemcpyDefault);
-  cudaMemcpy(it->g_k, it->g_k_d, size, cudaMemcpyDefault);
-  cudaMemcpy(it->its_bias, it->its_bias_d, size, cudaMemcpyDefault);
 
   if(it->potential == "torsion"){
     cudaMemcpy(&it->U, s->U_torsion_d, sizeof(real_e), cudaMemcpyDefault);
@@ -426,3 +433,75 @@ void log_its(System* system){
   printf("]\n");
   printf("\n");
 }
+
+void write_small_its(System* system, std::string output_dir){
+  Its* it = system->enhanced->its;
+  int size = it->N_temp_max*sizeof(real);
+  it->recv_its();
+  FILE* f;
+
+  // Temps
+  if(!it->fp_beta){ // only do this once
+    std::string fnm_temps      = output_dir + "/betas.dat";
+    it->fp_beta = fopen(fnm_temps.c_str(), "w");
+    if(!it->fp_beta){
+      printf("Error opening %s. Please make directory!\n", fnm_temps.c_str());
+      exit(1);
+      return;
+    }
+    for(int i = 0; i < it->N_temp_max; i++){
+      real beta_k = 1.0/(kB*it->temperatures[i]);
+      fprintf(it->fp_beta, "%f ", beta_k);
+    }
+    fprintf(it->fp_beta, "\n");
+  }
+  // g_k
+  if(!it->fp_g){
+    std::string fnm_g_k        = output_dir + "/g.dat";
+    it->fp_g = fopen(fnm_g_k.c_str(), "w");
+    if(!it->fp_g){
+      printf("Error opening %s. Please make directory!\n", fnm_g_k.c_str());
+      exit(1);
+      return;
+    }
+  }
+  fprintf(it->fp_g, "%d ", system->run->step);
+  for(int i = 0; i < it->N_temp_max; i++){
+    fprintf(it->fp_g, "%f ", it->g_k[i]);
+  }
+  fprintf(it->fp_g, "\n");
+  // <U>
+  if(!it->fp_exp_U){
+    std::string fnm_expected_U = output_dir + "/expected_U.dat";
+    it->fp_exp_U = fopen(fnm_expected_U.c_str(), "w");
+    if(!it->fp_exp_U){
+      printf("Error opening %s. Please make directory!\n", fnm_expected_U.c_str());
+      exit(1);
+      return;
+    }
+  }
+  fprintf(it->fp_exp_U, "%d ", system->run->step);
+  for(int i = 0; i < it->N_temp_max; i++){
+    fprintf(it->fp_exp_U, "%f ", it->expected_U[i]);
+  }
+  fprintf(it->fp_exp_U, "\n");
+  // Bk*U_bias
+  if(!it->fp_red_bias){
+     std::string fnm_its_bias   = output_dir + "/reduced_bias.dat";
+     it->fp_red_bias = fopen(fnm_its_bias.c_str(), "w");
+     if(!it->fp_red_bias){
+       printf("Error opening %s. Please make directory!\n", fnm_its_bias.c_str());
+       exit(1);
+       return;
+     }
+  }
+  fprintf(it->fp_red_bias, "%d ", system->run->step);
+  for(int i = 0; i < it->N_temp_max; i++){
+    real beta_k = 1.0/(kB*it->temperatures[i]);
+    fprintf(it->fp_red_bias, "%f ", it->its_bias[i]);
+  }
+  fprintf(it->fp_red_bias, "\n");
+}
+
+
+void write_big_its(System* system, std::string output_dir){};

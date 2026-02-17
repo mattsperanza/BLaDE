@@ -11,7 +11,7 @@ class Its {
     Its(std::string potential);
     ~Its();
     void initialize();
-    void recv_its(){};
+    void recv_its();
 
     // U selection
     std::string potential;
@@ -47,10 +47,17 @@ class Its {
     real* weighted_U_d = NULL; // sum U*exp(B*U_bias)
     real* weights_d = NULL; // sum exp(B*U_bias)
     real* offsets_d = NULL;
+
+    FILE* fp_beta = NULL;
+    FILE* fp_g = NULL;
+    FILE* fp_exp_U = NULL;
+    FILE* fp_red_bias = NULL;
 };
     
 void getforce_its(System* system);
 void update_its(System* system);
 void log_its(System* system);
+void write_small_its(System* system, std::string output_dir);
+void write_big_its(System* system, std::string output_dir);
 
 #endif

@@ -20,6 +20,7 @@ class Enhanced {
     int log_freq = 10000; // 20ps
     int write_small_freq = 100; // 2ps
     int write_big_freq = 10000; // 20ps
+    std::string output_dir = "nhcd";
 };
 
 void parse_enhanced(char* line, System* system);

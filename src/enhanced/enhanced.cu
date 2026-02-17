@@ -13,7 +13,6 @@
 
 #include "enhanced/enhanced.h"
 
-
 Enhanced::Enhanced(){
   its=NULL;
 }
@@ -40,8 +39,10 @@ void parse_enhanced(char* line, System* system){
     system->enhanced->log_freq = io_nexti(line);
   } else if (strcmp(token, "updating")==0){
     system->enhanced->updating = io_nextb(line);
+  } else if (strcmp(token,"dnmo")==0){
+    system->enhanced->output_dir = io_nexts(line);
   // ITS Reading
-  }else if (strcmp(token,"its")==0) {
+  } else if (strcmp(token,"its")==0) {
     if(system->enhanced->its){
       printf("ITS already exists!\n");
       exit(1);
@@ -119,8 +120,8 @@ void getforce_enhanced(System* system){
     if(es->updating){
       update_its(system); // internal update logic
       if (system->run->step % es->log_freq == 0) log_its(system);
-      //if (system->run->step % es->write_small_freq == 0) write_small_its(system); 
-      //if (system->run->step % es->write_bing_freq == 0) write_big_its(system); 
+      if (system->run->step % es->write_small_freq == 0) write_small_its(system, es->output_dir); 
+      if (system->run->step % es->write_big_freq == 0) write_big_its(system, es->output_dir); 
     }
   }
 }
