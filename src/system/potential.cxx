@@ -610,6 +610,22 @@ void Potential::initialize(System *system)
         rest+=system->msld->rest[dihe.idx[j]];
       }
     }
+    dihe.nselect = 0;
+    if (system->enhanced && system->enhanced->separate_interactions){
+      if(!system->enhanced->atom_selection_primary){
+        printf("Enhanced primary selection not defined!! This shouldn't happen.\n");
+        exit(1);
+      }
+      bool any_alchem = false;
+      int selected = 0;
+      for (j=0; j<4; j++){
+        // If alchemical, don't do selection unless alchemical atom is selected
+        int atom_id = dihe.idx[j];
+        any_alchem = any_alchem || (system->msld->atomBlock[atom_id] && !system->enhanced->atom_selection_primary[atom_id]);
+        selected+=system->enhanced->atom_selection_primary[atom_id];
+      }
+      dihe.nselect = any_alchem ? 0 : selected;
+    }
     // Include each harmonic as a separate dihedral.
     for (j=0; j<dp.size(); j++) {
       dihe.kdih=dp[j].kdih;
@@ -671,6 +687,22 @@ void Potential::initialize(System *system)
       for (j=0; j<4; j++) {
         rest+=system->msld->rest[impr.idx[j]];
       }
+    }
+    impr.nselect = 0;
+    if (system->enhanced && system->enhanced->separate_interactions){
+      if(!system->enhanced->atom_selection_primary){
+        printf("Enhanced primary selection not defined!! This shouldn't happen.\n");
+        exit(1);
+      }
+      bool any_alchem = false;
+      int selected = 0;
+      for (j=0; j<4; j++){
+        // If alchemical, don't do selection unless alchemical atom is selected
+        int atom_id = impr.idx[j];
+        any_alchem = any_alchem || (system->msld->atomBlock[atom_id] && !system->enhanced->atom_selection_primary[atom_id]);
+        selected+=system->enhanced->atom_selection_primary[atom_id];
+      }
+      impr.nselect = any_alchem ? 0 : selected;
     }
     impr.kimp=ip.kimp;
     impr.nimp=ip.nimp;
@@ -1609,8 +1641,11 @@ void Potential::reset_force(System *system,bool calcEnergy)
   if (calcEnergy) {
     cudaMemset(system->state->energy_d,0,eeend*sizeof(real_e));
   }
-  cudaMemset(system->state->U_torsion_d, 0, sizeof(real_e));
-  cudaMemset(system->state->torsionForceBuffer_d, 0, (2*system->state->lambdaCount+3*system->state->atomCount)*sizeof(real));
+  // Clear ITS memory
+  cudaMemset(system->state->U_ss_d, 0, sizeof(real_e));
+  cudaMemset(system->state->dU_ss_buffer_d, 0, (2*system->state->lambdaCount+3*system->state->atomCount)*sizeof(real));
+  cudaMemset(system->state->U_su_d, 0, sizeof(real_e));
+  cudaMemset(system->state->dU_su_buffer_d, 0, (2*system->state->lambdaCount+3*system->state->atomCount)*sizeof(real));
 }
 
 void Potential::calc_force(int step,System *system)

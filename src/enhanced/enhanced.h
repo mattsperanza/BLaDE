@@ -21,6 +21,13 @@ class Enhanced {
     int write_small_freq = 100; // 2ps
     int write_big_freq = 10000; // 20ps
     std::string output_dir = "nhcd";
+
+    bool separate_interactions = false;
+    bool torsions_only = false;
+    std::string primary_sele = "";
+    int* atom_selection_primary = NULL;
+    std::string secondary_sele = "";
+    int* atom_selection_secondary = NULL;
 };
 
 void parse_enhanced(char* line, System* system);

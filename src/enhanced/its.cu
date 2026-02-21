@@ -37,7 +37,7 @@ Its::~Its(){
     if(fp_red_bias) fclose(fp_red_bias);
 }
 
-void Its::initialize(){
+void Its::initialize(System* system){
     if(!temperatures){
       printf("Didn't set temperature range! Use \"enhanced its_temps {N_temp} {T_low} {T_high}\"\n");
       exit(1);
@@ -85,12 +85,28 @@ void Its::initialize(){
       update_steps = N_temp_max*steps_per_temp;
       printf("Set ITS update_steps < temp_count*steps_per_temp. Increasing update_steps to %d!", update_steps);
     }
+
+    // system->state pointers need to exist
+    // need to check if U_su_d or dU_su_d exist
+    if(potential == "total"){
+      // Reduce energy_d to eepotential
+      U_ss_d = U_d;
+      dU_ss_d = system->state->forceBuffer_d;
+    } else if (potential == "torsion"){
+      U_ss_d = system->state->U_ss_d;
+      dU_ss_d = system->state->dU_ss_buffer_d;
+    } else if(potential == "rest"){
+      U_ss_d = system->state->U_ss_d; // (includes torsions)
+      dU_ss_d = system->state->dU_ss_buffer_d;
+      U_su_d = system->state->U_su_d;
+      dU_su_d = system->state->dU_su_buffer_d;
+    }
 }
 
 __global__ void its_logsumexp_kernel(
   // Input
   int N_temps, real sim_kT, 
-  real_e* U_sele, real_e* U_int, real_e* U_solvent,
+  real_e* U_tot, real_e* U_sele, real_e* U_int, 
   real* temps, real* g, 
   // Output
   real* weighted_beta, real* weighted_root_beta, 
@@ -99,24 +115,17 @@ __global__ void its_logsumexp_kernel(
 ){
   int i=blockIdx.x*blockDim.x+threadIdx.x;
 
-  real_e U_ss=0;
+  real_e U_ss=U_sele[0];
   real_e U_su=0;
-  real_e U_uu=0;
-  if(U_sele){
-    U_ss = U_sele[0];
-  }
   if(U_int){
     U_su = U_int[0];
   }
-  if(U_solvent){
-    U_uu = U_solvent[0];
-  }
   // Compute the max exponent
   real beta_0 = 1.0/sim_kT;
-  real_e c = -1e9;
+  real c = -1e9;
   for(int i = 0; i < N_temps; i++){
-    real_e beta_k = 1.0/(kB*temps[i]);
-    real_e exp_arg = -(beta_k-beta_0)*U_ss - (sqrt(beta_k*beta_0) - beta_0)*U_su + g[i];
+    real beta_k = 1.0/(kB*temps[i]);
+    real exp_arg = -(beta_k-beta_0)*U_ss - (sqrt(beta_k*beta_0) - beta_0)*U_su + g[i];
     if(exp_arg > c){
       c = exp_arg;
     }
@@ -125,45 +134,41 @@ __global__ void its_logsumexp_kernel(
   //            = ln(exp(c) * sum_k exp(-beta_k*U + g - c))
   real exp_sum = 0;
   for(int i = 0; i < N_temps; i++){
-    real_e beta_k = 1.0/(kB*temps[i]);
-    real_e exp_arg = -(beta_k-beta_0)*U_ss - (sqrt(beta_k*beta_0) - beta_0)*U_su + g[i];
+    real beta_k = 1.0/(kB*temps[i]);
+    real exp_arg = -(beta_k-beta_0)*U_ss - (sqrt(beta_k*beta_0) - beta_0)*U_su + g[i];
     exp_sum += exp(exp_arg-c);
   }
-  real_e U = U_ss + U_su + U_uu;
-  real U_e = -(c+log(exp_sum))/beta_0;
-  *U_prime = U+U_e; // U + U_bias(@ beta_0)
-  atomicAdd(enhanced_energy, (real_e)U_e);
-  // exp(-bj*U) = exp(bj*U_bias)*(-b0*U')
-  // U_bias = (b0/bk)U' - U --> modify to have gk be the reference
-  *weighted_beta = 0;
-  *weighted_root_beta = 0;
+  real U_extra = -(c+log(exp_sum))/beta_0; // exp(-c) comes from beta_k=beta_0
+  U_prime[0] = U_tot[0]+U_extra;
+  atomicAdd(enhanced_energy, U_extra);
+  // exp(-bk*U) = exp(bk*U_bias)*(-b0*U')
+  // U_bias = (b0/bk)U' - U --> modify U' to have gk be the reference instead of g0
+  weighted_beta[0] = 0;
+  weighted_root_beta[0] = 0;
   for(int i = 0; i < N_temps; i++){
     real_e beta_k = 1.0/(kB*temps[i]);
-    its_bias[i] = (beta_0/beta_k)*(*U_prime + g[i]/beta_0) - U;
+    its_bias[i] = (beta_0/beta_k)*U_prime[0] - U_tot[0];
     real_e exp_arg = -(beta_k-beta_0)*U_ss - (sqrt(beta_k*beta_0) - beta_0)*U_su + g[i];
     real weight = exp(exp_arg-c) / exp_sum;
     pHist[i] += weight;
-    *weighted_beta += beta_k*weight;
-    *weighted_root_beta += sqrt(beta_k)*weight;
+    weighted_beta[0] += beta_k*weight;
+    weighted_root_beta[0] += sqrt(beta_k)*weight;
   }
-  *weighted_beta /= beta_0;
-  *weighted_root_beta /= sqrt(beta_0);
+  weighted_beta[0] /= beta_0;
+  weighted_root_beta[0] /= sqrt(beta_0);
 }
 
 __global__ void its_update_force_kernel(
   int DOF,  
   real* weighted_beta, real* weighted_root_beta,
-  real* dU_sel, real* dU_int, 
-  real* forceBuffer){
+  real_f* dU_sel, real_f* dU_int, 
+  real_f* forceBuffer){
   int i=blockIdx.x*blockDim.x+threadIdx.x;
 
   if(i < DOF){
     // Check NaN
-    real dU_ss = 0;
-    real dU_su = 0;
-    if(dU_sel){
-      dU_ss = dU_sel[i];
-    }
+    real_f dU_ss = dU_sel[i];
+    real_f dU_su = 0;
     if(dU_int){
       dU_su = dU_int[i];
     }
@@ -190,46 +195,23 @@ void getforce_its(System* system){
     stream = system->run->enhancedStream;
   }
 
+  // Calculate total potential prior to ITS
+  reduce_total_energy_kernel<<<1,1,0,stream>>>(s->energy_d, it->U_d);
   // Compute bias and forces due to ITS bias with weights
   real kT = kB*system->run->T;
-  real_e* U_ss = NULL;
-  real* dU_ss= NULL;
-  real_e* U_su = NULL;
-  real* dU_su= NULL;
-  real_e* U_uu = NULL;
-  bool torsion = false;
-  if(it->potential == "total"){
-    // Reduce energy_d to eepotential
-    reduce_total_energy_kernel<<<1,1,0,stream>>>(s->energy_d, it->U_d);
-    U_ss = it->U_d;
-    dU_ss = s->forceBuffer_d;
-  }
-  else if(it->potential == "torsion"){
-    U_ss = s->U_torsion_d;
-    dU_ss = s->torsionForceBuffer_d;
-    torsion=true;
-  }
-  else if(it->potential == "rest"){
-    // U_ss = s->U_ss_d; (needs to include torsions)
-    // dU_ss = s->dU_ss_d;
-    // U_su = s->U_su_d;
-    // dU_su = s->dU_su_d;
-    // U_uu = s->U_uu_d;
-  }
   // Compute <B>/B0 & <sqrt(B/B0)>
   its_logsumexp_kernel<<<1,1,shMem,stream>>>(
-    it->N_temp, kT, U_ss, U_su, U_uu, 
+    it->N_temp, kT, it->U_d, it->U_ss_d, it->U_su_d, 
     it->temperatures_d, it->g_k_d,
     it->weighted_beta_d, it->weighted_root_beta_d,
     it->its_bias_d, it->pHist_d, 
     &(s->energy_d[eeenhanced]), it->U_prime_d);
-
   // dU'/dX = dU/dX + (<B>/B0-1)*dU_ss/dX + (<sqrt(B/B0)>-1)*dU_su/dX
   int dof = 3*s->atomCount + s->lambdaCount;
   its_update_force_kernel<<<(dof+BLMS-1)/BLMS,BLMS, 0,stream>>>(
     dof, 
     it->weighted_beta_d, it->weighted_root_beta_d,
-    dU_ss, dU_su, 
+    it->dU_ss_d, it->dU_su_d, 
     s->forceBuffer_d
   );
 }
@@ -244,11 +226,8 @@ __global__ void update_its_expectation_kernel(
   int i=blockIdx.x*blockDim.x+threadIdx.x;
 
   if(i < N_temps){
-    real_e U_ss=0;
+    real_e U_ss=U_sele[0];
     real_e U_su=0;
-    if(U_sele){
-      U_ss = U_sele[0];
-    }
     if(U_int){
       U_su = U_int[0];
     }
@@ -339,25 +318,9 @@ void update_its(System* system){
   if(system->run->step % it->sample_freq == 0){
     // Compute bias and forces due to ITS bias with weights
     real kT = kB*system->run->T;
-    real_e* U_ss = NULL;
-    real_e* U_su = NULL;
-    if(it->potential == "total"){
-      // Reduce energy_d to eepotential already complete
-      U_ss = it->U_d;
-    }
-    if(it->potential == "torsion"){
-      U_ss = s->U_torsion_d;
-    }
-    if(it->potential == "rest"){
-      // U_ss = s->U_ss_d;
-      // dU_ss = s->dU_ss_d;
-      // U_su = s->U_su_d;
-      // dU_su = s->dU_su_d;
-    }
-  
     update_its_expectation_kernel<<<(it->N_temp+BLMS-1)/BLMS,BLMS,0,stream>>>(
       it->N_temp, it->temperatures_d, 
-      U_ss, U_su, 
+      it->U_ss_d, it->U_su_d, 
       it->weighted_root_beta_d, it->its_bias_d,
       it->expected_U_d, it->weighted_U_d,
       it->weights_d, it->offsets_d);
@@ -379,7 +342,11 @@ void Its::recv_its(){
   int size = N_temp_max*sizeof(real);
   cudaMemcpy(&U, U_d, sizeof(real_e), cudaMemcpyDefault);
   cudaMemcpy(&U_prime, U_prime_d, sizeof(real_e), cudaMemcpyDefault);
+  cudaMemcpy(&U_ss, U_ss_d, sizeof(real_e), cudaMemcpyDefault);
+  if(U_su_d) cudaMemcpy(&U_su, U_su_d, sizeof(real_e), cudaMemcpyDefault);
+
   cudaMemcpy(&weighted_beta, weighted_beta_d, sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(&weighted_root_beta, weighted_root_beta_d, sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(pHist, pHist_d, size, cudaMemcpyDefault);
   cudaMemcpy(expected_U, expected_U_d, size, cudaMemcpyDefault);
   cudaMemcpy(g_k, g_k_d, size, cudaMemcpyDefault);
@@ -389,16 +356,15 @@ void Its::recv_its(){
 void log_its(System* system){
   State *s = system->state;
   Its* it = system->enhanced->its;
-
-  if(it->potential == "torsion"){
-    cudaMemcpy(&it->U, s->U_torsion_d, sizeof(real_e), cudaMemcpyDefault);
-  }
+  it->recv_its();
 
   real beta0= 1.0/(kB*system->run->T);
   real eff_beta = it->weighted_beta*(1.0/(kB*system->run->T));
   real eff_temp = 1.0/(kB*eff_beta);
-  printf("Step: %d, U: %.2f, U': %.2f, Force Scale: %.2f, <beta>: %.2f, <T>: %.2f\n", 
-    system->run->step, it->U, it->U_prime, eff_beta/beta0, eff_beta, eff_temp);
+  printf("Step: %d, U: %.2f, U_ss: %.2f, U_su: %.2f, U': %.2f\n", 
+    system->run->step, it->U, it->U_ss, it->U_su, it->U_prime);
+  printf("Force Scale: %.2f, <beta>: %.2f, <T>: %.2f\n", 
+    eff_beta/beta0, eff_beta, eff_temp);
   printf("Accessible Temperatures: %d / %d\n", it->N_temp, it->N_temp_max);
   real sum = 0;
   for(int i = 0; i < it->N_temp; i++){

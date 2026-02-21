@@ -70,6 +70,7 @@ struct DihePotential {
   real kdih;
   int ndih;
   real dih0;
+  int nselect;
 };
 
 struct ImprPotential {
@@ -78,6 +79,7 @@ struct ImprPotential {
   real kimp;
   int nimp;
   real imp0;
+  int nselect;
 };
 
 struct CmapPotential {

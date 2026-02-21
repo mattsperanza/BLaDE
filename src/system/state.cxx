@@ -45,11 +45,19 @@ State::State(System *system) {
   cudaMalloc(&(forceBackup_d),(2*nL+3*n)*sizeof(real_f));
 
   // ITS buffer initialization
-  U_torsion=(real_e*)malloc(sizeof(real_e));
-  cudaMalloc(&U_torsion_d, sizeof(real_e));
-  torsionForceBuffer=(real*)calloc(rootFactor*(2*nL+3*n),sizeof(real_f));
-  cudaMalloc(&torsionForceBuffer_d, rootFactor*(2*nL+3*n)*sizeof(real));
-  torsionForceBuffer3_d=(real_f(*)[3])(torsionForceBuffer_d+nL);
+  U_ss=0;
+  cudaMalloc(&U_ss_d, sizeof(real_e));
+  dU_ss_buffer=(real*)calloc(rootFactor*(2*nL+3*n),sizeof(real_f));
+  cudaMalloc(&dU_ss_buffer_d, rootFactor*(2*nL+3*n)*sizeof(real));
+  dU_ss_spaceBuffer3_d=(real_f(*)[3])(dU_ss_buffer_d+nL);
+  dU_ss_lambdaForce_d=dU_ss_buffer_d;
+
+  U_su=0;
+  cudaMalloc(&U_su_d, sizeof(real_e));
+  dU_su_buffer=(real*)calloc(rootFactor*(2*nL+3*n),sizeof(real_f));
+  cudaMalloc(&dU_su_buffer_d, rootFactor*(2*nL+3*n)*sizeof(real));
+  dU_su_spaceBuffer3_d=(real_f(*)[3])(dU_su_buffer_d+nL);
+  dU_su_lambdaForce_d=dU_su_buffer_d;
 
   if (system->idCount>0) { // OMP
 #pragma omp barrier // OMP
@@ -165,10 +173,12 @@ State::~State() {
   if (forceBuffer_d) cudaFree(forceBuffer_d);
   if (forceBackup_d) cudaFree(forceBackup_d);
   // ITS Buffers
-  if(U_torsion) free(U_torsion);
-  if(U_torsion_d) cudaFree(U_torsion_d);
-  if (torsionForceBuffer) cudaFree(torsionForceBuffer);
-  if (torsionForceBuffer_d) cudaFree(torsionForceBuffer_d);
+  if(U_ss_d) cudaFree(U_ss_d);
+  if (dU_ss_buffer) cudaFree(dU_ss_buffer);
+  if (dU_ss_buffer_d) cudaFree(dU_ss_buffer_d);
+  if(U_su_d) cudaFree(U_su_d);
+  if (dU_su_buffer) cudaFree(dU_su_buffer);
+  if (dU_su_buffer_d) cudaFree(dU_su_buffer_d);
   // Other buffers
   if (energy) free(energy);
   if (energy_d) cudaFree(energy_d);

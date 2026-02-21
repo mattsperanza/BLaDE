@@ -19,6 +19,8 @@ Enhanced::Enhanced(){
 
 Enhanced::~Enhanced(){
   if(its) delete(its);
+  if(atom_selection_primary) delete(atom_selection_primary);
+  if(atom_selection_secondary) delete(atom_selection_secondary);
 }
 
 void parse_enhanced(char* line, System* system){
@@ -41,6 +43,32 @@ void parse_enhanced(char* line, System* system){
     system->enhanced->updating = io_nextb(line);
   } else if (strcmp(token,"dnmo")==0){
     system->enhanced->output_dir = io_nexts(line);
+  } else if (strcmp(token,"atom_selection")==0){
+    std::string name=io_nexts(line);
+    if (system->selections->selectionMap.count(name)==0) {
+      fatal(__FILE__,__LINE__,"Selection %s not found\n",name.c_str());
+    }
+    system->enhanced->primary_sele=name;
+    if (system->enhanced->atom_selection_primary) free(system->enhanced->atom_selection_primary);
+    system->enhanced->atom_selection_primary=(int*)calloc(system->structure->atomList.size(),sizeof(int));
+    for (i=0; i<system->structure->atomList.size(); i++) {
+      system->enhanced->atom_selection_primary[i]=system->selections->selectionMap[name].boolSelection[i];
+    }
+  } else if (strcmp(token,"atom_selection_2") == 0){
+    std::string name=io_nexts(line);
+    if (system->selections->selectionMap.count(name)==0) {
+      fatal(__FILE__,__LINE__,"Selection %s not found\n",name.c_str());
+    }
+    system->enhanced->secondary_sele=name;
+    if (system->enhanced->atom_selection_secondary) free(system->enhanced->atom_selection_secondary);
+    system->enhanced->atom_selection_secondary=(int*)calloc(system->structure->atomList.size(),sizeof(int));
+    for (i=0; i<system->structure->atomList.size(); i++) {
+      system->enhanced->atom_selection_secondary[i]=system->selections->selectionMap[name].boolSelection[i];
+    }
+  } else if (strcmp(token,"print_sele")==0){
+    printf("Dumping enhanced selections! Will segfault if no selection is defined.\n");
+    printf("Primary Selection: %s, Secondary Selection: %s\n", system->enhanced->primary_sele.c_str(), system->enhanced->secondary_sele.c_str());
+    system->selections->dump();
   // ITS Reading
   } else if (strcmp(token,"its")==0) {
     if(system->enhanced->its){
@@ -49,10 +77,22 @@ void parse_enhanced(char* line, System* system){
     }
     std::string potential = io_nexts(line); 
     if(potential == "rest"){
-      printf("REST scaling not supported yet! Availible: total, torsion\n");
-      exit(1);
+      if(!system->enhanced->atom_selection_primary){
+        printf("Primary atom selection is NULL!\n");
+        exit(1);
+      }
+      system->enhanced->separate_interactions = true;
+      printf("REST scaling requires separated nbdirect calculation. This may hurt performance!\n");
     }
-    if(potential != "total" && potential != "torsion"){
+    if(potential == "torsion"){
+      if(!system->enhanced->atom_selection_primary){
+        printf("Primary atom selection is NULL!\n");
+        exit(1);
+      }
+      system->enhanced->separate_interactions = true;
+      system->enhanced->torsions_only = true;
+    }
+    if(potential != "total" && potential != "torsion" && potential != "rest"){
       printf("Unsuppored ITS potential scaling: %s. Availible: total, torsion\n");
       exit(1);
     }
@@ -101,7 +141,7 @@ void parse_enhanced(char* line, System* system){
 // Gets called each time a new run function is called
 void Enhanced::initialize(System* system){
   if(its) {
-    its->initialize();
+    its->initialize(system);
   }
   // TODO: Check settings and compatibility
 }

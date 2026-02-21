@@ -569,7 +569,8 @@ void Run::dynamics_initialize(System *system)
   system->potential=new Potential();
   system->potential->initialize(system);
 
-  // Finish setting up enhanced sampling
+  // Depends on system->state pointers, which need to be updated each time
+  // enhanced selections need to be defined to do potential->initialize()
   if (system->enhanced) system->enhanced->initialize(system);
 
   // Rectify bond constraints

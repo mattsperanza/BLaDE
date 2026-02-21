@@ -10,18 +10,26 @@ class Its {
   public:
     Its(std::string potential);
     ~Its();
-    void initialize();
+    void initialize(System* system);
     void recv_its();
 
     // U selection
     std::string potential;
 
     real_e U; // used to accumulate total potential
-    real_e* U_d;
+    real_e* U_d = NULL;
     real_e U_prime;
     real_e* U_prime_d = NULL;
     real* its_bias = NULL; // [N_temp real] bias relative to each temp
     real* its_bias_d = NULL; // [N_temp real] bias relative to each temp
+
+    // Do not free, pointers to system->state->*
+    real_e U_ss=0;
+    real_e* U_ss_d = NULL;
+    real_f* dU_ss_d = NULL;
+    real_e U_su=0;
+    real_e* U_su_d = NULL;
+    real_f* dU_su_d = NULL;
 
     // Used for calculating bias potential
     int N_temp; // Number of temperatures to integrate over
