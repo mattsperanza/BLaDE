@@ -95,12 +95,6 @@ void parse_enhanced(char* line, System* system){
       exit(1);
     }
     system->enhanced->its->sample_freq = io_nexti(line);
-  } else if (strcmp(token, "its_alpha")==0){
-    if(!system->enhanced->its) {
-      printf("ITS not defined yet!\n"); 
-      exit(1);
-    }
-    system->enhanced->its->alpha = io_nextf(line);
   }
 };
 
@@ -119,7 +113,7 @@ void getforce_enhanced(System* system){
   if(es->its){
     getforce_its(system); 
     if(es->updating){
-      update_its(system); // internal update logic
+      update_its(system); // internal update timing logic
       if (system->run->step % es->log_freq == 0) log_its(system);
       if (system->run->step % es->write_small_freq == 0) write_small_its(system, es->output_dir); 
       if (system->run->step % es->write_big_freq == 0) write_big_its(system, es->output_dir); 

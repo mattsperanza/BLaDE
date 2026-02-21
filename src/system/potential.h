@@ -36,6 +36,7 @@ typedef enum eeterm {
   eeharmonic,
   eemmfp,
   eebias,
+  eeenhanced,
   eepotential,
   eekinetic,
   eetotal,

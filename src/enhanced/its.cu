@@ -6,6 +6,7 @@
 #include "enhanced/enhanced.h"
 #include "system/potential.h"
 #include "main/gpu_check.h"
+#include "main/real3.h"
 
 Its::Its(std::string potential){
     this->potential = potential;
@@ -22,12 +23,12 @@ Its::~Its(){
     if(weighted_U_d) cudaFree(weighted_U_d);
     if(weights_d) cudaFree(weights_d);
     if(offsets_d) cudaFree(offsets_d);
-    if(alpha_d) cudaFree(alpha_d);
     if(pHist_d) cudaFree(pHist_d);
     if(U_prime_d) cudaFree(U_prime_d);
     if(g_k) free(g_k);
     if(g_k_d) cudaFree(g_k_d);
     if(weighted_beta_d) cudaFree(weighted_beta_d);
+    if(weighted_root_beta_d) cudaFree(weighted_root_beta_d);
     if(U_d) cudaFree(U_d);
     if(correction_strength_d) cudaFree(correction_strength_d);
     if(fp_beta) fclose(fp_beta);
@@ -66,9 +67,8 @@ void Its::initialize(){
         offsets[i] = -1e9; // offset is largest U value observed
       }
       cudaMemcpy(offsets_d, offsets, N_temp*sizeof(real), cudaMemcpyDefault);
-      cudaMalloc(&alpha_d, sizeof(real));
-      cudaMemcpy(alpha_d, &alpha_d, sizeof(real), cudaMemcpyDefault);
       cudaMalloc(&weighted_beta_d, sizeof(real));
+      cudaMalloc(&weighted_root_beta_d, sizeof(real));
       cudaMalloc(&pHist_d, N_temp*sizeof(real));
       cudaMemset(pHist_d, 0, N_temp*sizeof(real));
       pHist = (real*) calloc(N_temp, sizeof(real));
@@ -80,16 +80,22 @@ void Its::initialize(){
 
     N_temp_max = N_temp;
     N_temp = 2; // slowly add additional temperatures
+
+    if(update_steps < (N_temp_max-1)*steps_per_temp){
+      update_steps = N_temp_max*steps_per_temp;
+      printf("Set ITS update_steps < temp_count*steps_per_temp. Increasing update_steps to %d!", update_steps);
+    }
 }
 
 __global__ void its_logsumexp_kernel(
   // Input
   int N_temps, real sim_kT, 
   real_e* U_sele, real_e* U_int, real_e* U_solvent,
-  real* temps, real* g, real* alpha,
+  real* temps, real* g, 
   // Output
-  real* weighted_beta, real* its_bias,
-  real* pHist, real_e* U_prime
+  real* weighted_beta, real* weighted_root_beta, 
+  real* its_bias, real* pHist, 
+  real_e* enhanced_energy, real_e* U_prime
 ){
   int i=blockIdx.x*blockDim.x+threadIdx.x;
 
@@ -105,13 +111,12 @@ __global__ void its_logsumexp_kernel(
   if(U_solvent){
     U_uu = U_solvent[0];
   }
-
-  // Compute the max [beta_k*U_ss + ((1-alpha)*beta_0 + alpha*beta_k)*U_su + beta_0*U_uu + g_k]
+  // Compute the max exponent
   real beta_0 = 1.0/sim_kT;
   real_e c = -1e9;
   for(int i = 0; i < N_temps; i++){
     real_e beta_k = 1.0/(kB*temps[i]);
-    real_e exp_arg = -(beta_k*U_ss + ((1-alpha[0])*beta_0 + alpha[0]*beta_k)*U_su + beta_0*U_uu) + g[i];
+    real_e exp_arg = -(beta_k-beta_0)*U_ss - (sqrt(beta_k*beta_0) - beta_0)*U_su + g[i];
     if(exp_arg > c){
       c = exp_arg;
     }
@@ -121,29 +126,34 @@ __global__ void its_logsumexp_kernel(
   real exp_sum = 0;
   for(int i = 0; i < N_temps; i++){
     real_e beta_k = 1.0/(kB*temps[i]);
-    real_e exp_arg = -(beta_k*U_ss + ((1-alpha[0])*beta_0 + alpha[0]*beta_k)*U_su + beta_0*U_uu) + g[i];
+    real_e exp_arg = -(beta_k-beta_0)*U_ss - (sqrt(beta_k*beta_0) - beta_0)*U_su + g[i];
     exp_sum += exp(exp_arg-c);
   }
-  *U_prime = -(c+log(exp_sum))/beta_0;
+  real_e U = U_ss + U_su + U_uu;
+  real U_e = -(c+log(exp_sum))/beta_0;
+  *U_prime = U+U_e; // U + U_bias(@ beta_0)
+  atomicAdd(enhanced_energy, (real_e)U_e);
   // exp(-bj*U) = exp(bj*U_bias)*(-b0*U')
-  // U_bias = (b0/bk)U' - U
-  real U = U_ss + U_su + U_uu;
+  // U_bias = (b0/bk)U' - U --> modify to have gk be the reference
   *weighted_beta = 0;
+  *weighted_root_beta = 0;
   for(int i = 0; i < N_temps; i++){
     real_e beta_k = 1.0/(kB*temps[i]);
     its_bias[i] = (beta_0/beta_k)*(*U_prime + g[i]/beta_0) - U;
-    real_e exp_arg = -(beta_k*U_ss + ((1-alpha[0])*beta_0 + alpha[0]*beta_k)*U_su + beta_0*U_uu) + g[i];
+    real_e exp_arg = -(beta_k-beta_0)*U_ss - (sqrt(beta_k*beta_0) - beta_0)*U_su + g[i];
     real weight = exp(exp_arg-c) / exp_sum;
     pHist[i] += weight;
     *weighted_beta += beta_k*weight;
+    *weighted_root_beta += sqrt(beta_k)*weight;
   }
   *weighted_beta /= beta_0;
+  *weighted_root_beta /= sqrt(beta_0);
 }
 
 __global__ void its_update_force_kernel(
-  int DOF,  real* weighted_beta, real* alpha,
-  real* dU_sel, real* dU_int, real* dU_solv, 
-  bool torsion,
+  int DOF,  
+  real* weighted_beta, real* weighted_root_beta,
+  real* dU_sel, real* dU_int, 
   real* forceBuffer){
   int i=blockIdx.x*blockDim.x+threadIdx.x;
 
@@ -151,24 +161,15 @@ __global__ void its_update_force_kernel(
     // Check NaN
     real dU_ss = 0;
     real dU_su = 0;
-    real dU_uu = 0;
     if(dU_sel){
       dU_ss = dU_sel[i];
     }
     if(dU_int){
       dU_su = dU_int[i];
     }
-    if(dU_solv){
-      dU_uu = dU_solv[i];
-    }
-    real heated = weighted_beta[0]*(dU_ss + alpha[0]*dU_su);
-    real bath = dU_uu + (1-alpha[0])*dU_su;
-    if(!torsion){
-      forceBuffer[i] = heated + bath;
-    } else {
-      // remove existing forces and replace with scaled version
-      forceBuffer[i] += (weighted_beta[0] - 1)*dU_ss;
-    }
+    // Already contains dU_uu
+    // Remove exising and replace with scaled versions of dU_ss & dU_su
+    forceBuffer[i] += (weighted_beta[0]-1)*dU_ss + (weighted_root_beta[0]-1)*dU_su;
   }
 }
 
@@ -196,7 +197,6 @@ void getforce_its(System* system){
   real_e* U_su = NULL;
   real* dU_su= NULL;
   real_e* U_uu = NULL;
-  real* dU_uu = NULL;
   bool torsion = false;
   if(it->potential == "total"){
     // Reduce energy_d to eepotential
@@ -215,19 +215,21 @@ void getforce_its(System* system){
     // U_su = s->U_su_d;
     // dU_su = s->dU_su_d;
     // U_uu = s->U_uu_d;
-    // dU_uu = s->dU_uu_d;
   }
-  // Compute <B>
+  // Compute <B>/B0 & <sqrt(B/B0)>
   its_logsumexp_kernel<<<1,1,shMem,stream>>>(
     it->N_temp, kT, U_ss, U_su, U_uu, 
-    it->temperatures_d, it->g_k_d, it->alpha_d, 
-    it->weighted_beta_d, it->its_bias_d, it->pHist_d, it->U_prime_d);
+    it->temperatures_d, it->g_k_d,
+    it->weighted_beta_d, it->weighted_root_beta_d,
+    it->its_bias_d, it->pHist_d, 
+    &(s->energy_d[eeenhanced]), it->U_prime_d);
 
-  // dU/dX = <B>/B0*(dU_ss/dX + a*dU_su/dX) + (1-a)*dU_su/dX + a*dU_uu/dX
+  // dU'/dX = dU/dX + (<B>/B0-1)*dU_ss/dX + (<sqrt(B/B0)>-1)*dU_su/dX
   int dof = 3*s->atomCount + s->lambdaCount;
   its_update_force_kernel<<<(dof+BLMS-1)/BLMS,BLMS, 0,stream>>>(
-    dof, it->weighted_beta_d, it->alpha_d,
-    dU_ss, dU_su, dU_uu, torsion,
+    dof, 
+    it->weighted_beta_d, it->weighted_root_beta_d,
+    dU_ss, dU_su, 
     s->forceBuffer_d
   );
 }
@@ -235,7 +237,7 @@ void getforce_its(System* system){
 __global__ void update_its_expectation_kernel(
   int N_temps, real* temps, 
   real_e* U_sele, real_e* U_int, 
-  real* alpha, real* its_bias,
+  real* weighted_root_beta, real* its_bias,
   real* expected_U, real* weighted_U,
   real* weights, real* offsets
 ){
@@ -251,7 +253,7 @@ __global__ void update_its_expectation_kernel(
       U_su = U_int[0];
     }
   
-    real U = U_ss + alpha[0]*U_su;
+    real U = U_ss + 0.5*(*weighted_root_beta)*U_su;
     real beta_k = 1.0/(kB*temps[i]);
     real reduced_bias = beta_k*its_bias[i];
     if(reduced_bias > offsets[i]){
@@ -330,12 +332,15 @@ void update_its(System* system){
     stream = system->run->enhancedStream;
   }
 
+  if (system->run->step > it->update_steps){
+    return;
+  }
+
   if(system->run->step % it->sample_freq == 0){
     // Compute bias and forces due to ITS bias with weights
     real kT = kB*system->run->T;
     real_e* U_ss = NULL;
     real_e* U_su = NULL;
-    real_e* U_uu = NULL;
     if(it->potential == "total"){
       // Reduce energy_d to eepotential already complete
       U_ss = it->U_d;
@@ -348,14 +353,12 @@ void update_its(System* system){
       // dU_ss = s->dU_ss_d;
       // U_su = s->U_su_d;
       // dU_su = s->dU_su_d;
-      // U_uu = s->U_uu_d;
-      // dU_uu = s->dU_uu_d;
     }
   
     update_its_expectation_kernel<<<(it->N_temp+BLMS-1)/BLMS,BLMS,0,stream>>>(
       it->N_temp, it->temperatures_d, 
       U_ss, U_su, 
-      it->alpha_d, it->its_bias_d,
+      it->weighted_root_beta_d, it->its_bias_d,
       it->expected_U_d, it->weighted_U_d,
       it->weights_d, it->offsets_d);
   
