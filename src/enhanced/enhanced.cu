@@ -137,6 +137,12 @@ void parse_enhanced(char* line, System* system){
       exit(1);
     }
     system->enhanced->its->sample_freq = io_nexti(line);
+  } else if (strcmp(token, "its_update_steps")==0){
+    if(!system->enhanced->its) {
+      printf("ITS not defined yet!"); 
+      exit(1);
+    }
+    system->enhanced->its->update_steps=io_nexti(line);
   }
 };
 

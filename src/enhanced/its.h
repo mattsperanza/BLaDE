@@ -32,6 +32,7 @@ class Its {
     real_f* dU_su_d = NULL;
 
     // Used for calculating bias potential
+    int low_idx;
     int N_temp; // Number of temperatures to integrate over
     int N_temp_max;
     real* temperatures = NULL; // [N_temp real] integrated temperature range
@@ -42,8 +43,10 @@ class Its {
     real* weighted_beta_d = NULL; // stores <B/B0>
     real weighted_root_beta;
     real* weighted_root_beta_d = NULL; // stores <sqrt(B/B0)>
+    real* pHist_accum = NULL;
+    real* pHist_accum_d = NULL; // [N_temp real] p(B | X)
     real* pHist = NULL;
-    real* pHist_d = NULL; // [N_temp real] p(B | X)
+    real* pHist_d = NULL;
     real correction_strength = 0; // 5 is a fine value (does this depend on number of temps?)
     real* correction_strength_d = NULL;
 
