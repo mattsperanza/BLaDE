@@ -1041,7 +1041,9 @@ void Potential::initialize(System *system)
             bool selected = system->enhanced->atom_selection_primary[id] == 1;
             if(alchem && !selected){
               nb14.selection+=-1;
-            } else if (selected){
+            } else if (alchem && selected){
+              nb14.selection+=2;
+            } else if (selected) {
               nb14.selection+=1;
             }
           }
@@ -1280,9 +1282,11 @@ void Potential::initialize(System *system)
       bool alchem = system->msld->atomBlock[i] != 0;
       bool selected = system->enhanced->atom_selection_primary[i] == 1;
       if(alchem && !selected){
-        nbond.selection=-1;
-      } else if (selected){
-        nbond.selection=1;
+        nbond.selection+=-1;
+      } else if (alchem && selected){
+        nbond.selection+=2; // alchemical interactions always ss
+      } else if (selected) {
+        nbond.selection+=1;
       }
     }
   }

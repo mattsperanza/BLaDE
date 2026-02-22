@@ -196,7 +196,7 @@ __global__ void getforce_pair_kernel(
     real* lEnergycpy = &lU_uu; // defaults to UU
     real* lForcecpy = lForce_uu;
     real3_f* forcecpy = force_uu;
-    if(t==2){
+    if(t>=2){
       lEnergycpy = &lU_ss;
       lForcecpy = lForce_ss;
       forcecpy = force_ss;

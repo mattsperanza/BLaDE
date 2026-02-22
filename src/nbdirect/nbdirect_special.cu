@@ -415,10 +415,10 @@ __global__ void getforce_nbdirect_kernel_special(
               fjtmp=real3_scale<real3>(-fij*rinv,dr);
 
               // current interaction stored in eij & fij
-              // Calculate if this is a ss (2), su (1), or uu (0) interaction
+              // Calculate if this is a ss (>2), su (1), or uu (0) interaction
               int t = inp.selection + jtmpnp_selection;
               int jidx = 32*jBlock+jtmp;
-              if(t==2){
+              if(t>=2){
                 real3_scaleinc(&fi_ss, fij*rinv, dr);
                 at_real3_scaleinc(&force_ss[jidx], -fij*rinv, dr);
                 if(calcAlch) {
