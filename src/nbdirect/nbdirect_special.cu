@@ -134,19 +134,19 @@ __global__ void getforce_nbdirect_kernel_special(
   int jtmpnp_selection;
   real fij,eij;
   real lEnergy=0;
-  real lU_ss=0;
-  real lU_su=0;
-  real lU_uu=0;
+  real lEnergy_ss=0;
+  real lEnergy_su=0;
+  real lEnergy_uu=0;
   // extern __shared__ real sEnergy[];
   real3 xi,xj,xjtmp;
   real3 fi,fj,fjtmp;
-  real3 dU_ss_i, dU_ss_j,dU_ss_jtmp;
-  real3 dU_su_i, dU_su_j,dU_su_jtmp;
-  real3 dU_uu_i, dU_uu_j,dU_uu_jtmp;
+  real3 fi_ss, fj_ss,fjtmp_ss;
+  real3 fi_su, fj_su,fjtmp_su;
+  real3 fi_uu, fj_uu,fjtmp_uu;
   real fli,flj,fljtmp;
-  real fl_ss_i, fl_ss_j, fl_ss_jtmp;
-  real fl_su_i, fl_su_j, fl_su_jtmp;
-  real fl_uu_i, fl_uu_j, fl_uu_jtmp;
+  real fli_ss, flj_ss, fljtmp_ss;
+  real fli_su, flj_su, fljtmp_su;
+  real fli_uu, flj_uu, fljtmp_uu;
   int bi,bj,bjtmp;
   real li,lj,ljtmp,lixljtmp;
   real rEff,dredr,dredll; // Soft core stuff
@@ -173,14 +173,14 @@ __global__ void getforce_nbdirect_kernel_special(
     // iBlockVolume=blockVolume[iBlock];
 
     fi=real3_reset<real3>();
-    dU_ss_i=real3_reset<real3>();
-    dU_su_i=real3_reset<real3>();
-    dU_uu_i=real3_reset<real3>();
+    fi_ss=real3_reset<real3>();
+    fi_su=real3_reset<real3>();
+    fi_uu=real3_reset<real3>();
     if (calcAlch) {
       fli=0;
-      fl_ss_i=0;
-      fl_su_i=0;
-      fl_uu_i=0;
+      fli_ss=0;
+      fli_su=0;
+      fli_uu=0;
     }
 
     // used i/32 instead of iBlock to shift to beginning of array
@@ -234,14 +234,8 @@ __global__ void getforce_nbdirect_kernel_special(
       bool jFlag=check_proximity(iBlockVolume,xj,cutoffs.rCut*cutoffs.rCut);
 
       fj=real3_reset<real3>();
-      dU_ss_j=real3_reset<real3>();
-      dU_su_j=real3_reset<real3>();
-      dU_uu_j=real3_reset<real3>();
       if (calcAlch) {
         flj=0;
-        fl_ss_j=0;
-        fl_su_j=0;
-        fl_uu_j=0;
       }
 
       for (jtmp=0; jtmp<jCount; jtmp++) {
@@ -258,14 +252,8 @@ __global__ void getforce_nbdirect_kernel_special(
           }
 
           fjtmp=real3_reset<real3>();
-          dU_ss_jtmp=real3_reset<real3>();
-          dU_su_jtmp=real3_reset<real3>();
-          dU_uu_jtmp=real3_reset<real3>();
           if (calcAlch){
             fljtmp=0;
-            fl_ss_jtmp=0;
-            fl_su_jtmp=0;
-            fl_uu_jtmp=0;
           }
           if (iThread<iCount && ((1<<jtmp)&exclMask)) {
 #ifdef USE_TEXTURE
@@ -397,50 +385,24 @@ __global__ void getforce_nbdirect_kernel_special(
               }
               if (calcAlch) fij*=lixljtmp;
 
-              // current interaction stored in eij & fij
-              // Calculate if this is a ss (2), su (1), or uu (0) interaction
-              int t = inp.selection + jtmpnp_selection;
-              real* lEnergycpy = &lU_uu; // defaults to UU
-              real* flicpy = &fl_uu_i;
-              real* fljtmpcpy = &fl_uu_jtmp;
-              real3* ficpy = &dU_uu_i;
-              real3* fjtmpcpy = &dU_uu_jtmp;
-              if(t==2){
-                lEnergycpy = &lU_ss;
-                flicpy = &fl_ss_i;
-                fljtmpcpy = &fl_ss_jtmp;
-                ficpy = &dU_ss_i;
-                fjtmpcpy = &dU_ss_jtmp;
-              } else if (t==1){
-                lEnergycpy = &lU_su;
-                flicpy = &fl_su_i;
-                fljtmpcpy = &fl_su_jtmp;
-                ficpy = &dU_su_i;
-                fjtmpcpy = &dU_su_jtmp;
-              }
-
               // Lambda force
+              real fli_tmp = 0;
               if (calcAlch && (bi || bjtmp)) {
                 if (useSoftCore) {
                   fljtmp=eij+fij*dredll;
-                  *fljtmpcpy=eij+fij*dredll;
                 } else {
                   fljtmp=eij;
-                  *fljtmpcpy=eij;
                 }
                 if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) {
                   if (bi==bjtmp) {
                     fli+=fljtmp;
-                    *flicpy+=fljtmp;
+                    fli_tmp+=fljtmp;
                   }
                   fljtmp=0;
-                  *fljtmpcpy=0;
                 } else {
                   fli+=ljtmp*fljtmp;
+                  fli_tmp+=ljtmp*fljtmp;
                   fljtmp*=li;
-
-                  *flicpy+=ljtmp*(*fljtmpcpy);
-                  *fljtmpcpy*=li;
                 }
               }
 
@@ -450,19 +412,52 @@ __global__ void getforce_nbdirect_kernel_special(
                 fij*=dredr;
               }
               real3_scaleinc(&fi, fij*rinv,dr);
-              real3_scaleinc(ficpy, fij*rinv,dr);
               fjtmp=real3_scale<real3>(-fij*rinv,dr);
-              *fjtmpcpy=real3_scale<real3>(-fij*rinv,dr);
+
+              // current interaction stored in eij & fij
+              // Calculate if this is a ss (2), su (1), or uu (0) interaction
+              int t = inp.selection + jtmpnp_selection;
+              int jidx = 32*jBlock+jtmp;
+              if(t==2){
+                real3_scaleinc(&fi_ss, fij*rinv, dr);
+                at_real3_scaleinc(&force_ss[jidx], -fij*rinv, dr);
+                if(calcAlch) {
+                  fli_ss += fli_tmp;
+                  atomicAdd(&lambdaForce_ss[0xFFFF & bjtmp], fljtmp);
+                  lEnergy_ss += lixljtmp*eij;
+                } else {
+                  lEnergy_ss += eij;
+                }
+              }else if (t==1){
+                real3_scaleinc(&fi_su, fij*rinv, dr);
+                at_real3_scaleinc(&force_su[jidx], -fij*rinv, dr);
+                if(calcAlch) {
+                  fli_su += fli_tmp;
+                  atomicAdd(&lambdaForce_su[0xFFFF & bjtmp], fljtmp);
+                  lEnergy_su += lixljtmp*eij;
+                } else {
+                  lEnergy_su += eij;
+                }
+              } 
+              //else {
+              //  real3_scaleinc(&fi_uu, fij*rinv, dr);
+              //  at_real3_scaleinc(&force_uu[jidx], -fij*rinv, dr);
+              //  if(calcAlch) {
+              //    fli_uu += fli_tmp;
+              //    atomicAdd(&lambdaForce_uu[0xFFFF & bjtmp], fljtmp);
+              //    lEnergy_uu += lixljtmp*eij;
+              //  } else {
+              //    lEnergy_uu += eij;
+              //  }
+              //}
 
               // Energy, if requested
               if (calcEnergy) {
                 // if (!(lixljtmp*eij>-5000000)) printf("lixljtmp*eij=%f lixljtmp=%f eij=%f\n",lixljtmp*eij,lixljtmp,eij);
                 if (calcAlch) {
                 lEnergy+=lixljtmp*eij;
-                *lEnergycpy+=lixljtmp*eij;
                 } else {
                 lEnergy+=eij;
-                *lEnergycpy+=eij;
                 }
               }
             }
@@ -475,28 +470,6 @@ __global__ void getforce_nbdirect_kernel_special(
           fjtmp.x+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.x,8);
           fjtmp.x+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.x,16);
           if (iThread==jtmp) fj.x=fjtmp.x;
-          // ss
-          dU_ss_jtmp.x+=__shfl_xor_sync(0xFFFFFFFF,dU_ss_jtmp.x,1);
-          dU_ss_jtmp.x+=__shfl_xor_sync(0xFFFFFFFF,dU_ss_jtmp.x,2);
-          dU_ss_jtmp.x+=__shfl_xor_sync(0xFFFFFFFF,dU_ss_jtmp.x,4);
-          dU_ss_jtmp.x+=__shfl_xor_sync(0xFFFFFFFF,dU_ss_jtmp.x,8);
-          dU_ss_jtmp.x+=__shfl_xor_sync(0xFFFFFFFF,dU_ss_jtmp.x,16);
-          if (iThread==jtmp) dU_ss_j.x=dU_ss_jtmp.x;
-          // su
-          dU_su_jtmp.x+=__shfl_xor_sync(0xFFFFFFFF,dU_su_jtmp.x,1);
-          dU_su_jtmp.x+=__shfl_xor_sync(0xFFFFFFFF,dU_su_jtmp.x,2);
-          dU_su_jtmp.x+=__shfl_xor_sync(0xFFFFFFFF,dU_su_jtmp.x,4);
-          dU_su_jtmp.x+=__shfl_xor_sync(0xFFFFFFFF,dU_su_jtmp.x,8);
-          dU_su_jtmp.x+=__shfl_xor_sync(0xFFFFFFFF,dU_su_jtmp.x,16);
-          if (iThread==jtmp) dU_su_j.x=dU_su_jtmp.x;
-          // uu
-          dU_uu_jtmp.x+=__shfl_xor_sync(0xFFFFFFFF,dU_uu_jtmp.x,1);
-          dU_uu_jtmp.x+=__shfl_xor_sync(0xFFFFFFFF,dU_uu_jtmp.x,2);
-          dU_uu_jtmp.x+=__shfl_xor_sync(0xFFFFFFFF,dU_uu_jtmp.x,4);
-          dU_uu_jtmp.x+=__shfl_xor_sync(0xFFFFFFFF,dU_uu_jtmp.x,8);
-          dU_uu_jtmp.x+=__shfl_xor_sync(0xFFFFFFFF,dU_uu_jtmp.x,16);
-          if (iThread==jtmp) dU_uu_j.x=dU_uu_jtmp.x;
-
           ////// y
           fjtmp.y+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.y,1);
           fjtmp.y+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.y,2);
@@ -504,27 +477,6 @@ __global__ void getforce_nbdirect_kernel_special(
           fjtmp.y+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.y,8);
           fjtmp.y+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.y,16);
           if (iThread==jtmp) fj.y=fjtmp.y;
-          // ss
-          dU_ss_jtmp.y+=__shfl_xor_sync(0xFFFFFFFF,dU_ss_jtmp.y,1);
-          dU_ss_jtmp.y+=__shfl_xor_sync(0xFFFFFFFF,dU_ss_jtmp.y,2);
-          dU_ss_jtmp.y+=__shfl_xor_sync(0xFFFFFFFF,dU_ss_jtmp.y,4);
-          dU_ss_jtmp.y+=__shfl_xor_sync(0xFFFFFFFF,dU_ss_jtmp.y,8);
-          dU_ss_jtmp.y+=__shfl_xor_sync(0xFFFFFFFF,dU_ss_jtmp.y,16);
-          if (iThread==jtmp) dU_ss_j.y=dU_ss_jtmp.y;
-          // su
-          dU_su_jtmp.y+=__shfl_xor_sync(0xFFFFFFFF,dU_su_jtmp.y,1);
-          dU_su_jtmp.y+=__shfl_xor_sync(0xFFFFFFFF,dU_su_jtmp.y,2);
-          dU_su_jtmp.y+=__shfl_xor_sync(0xFFFFFFFF,dU_su_jtmp.y,4);
-          dU_su_jtmp.y+=__shfl_xor_sync(0xFFFFFFFF,dU_su_jtmp.y,8);
-          dU_su_jtmp.y+=__shfl_xor_sync(0xFFFFFFFF,dU_su_jtmp.y,16);
-          if (iThread==jtmp) dU_su_j.y=dU_su_jtmp.y;
-          // uu
-          dU_uu_jtmp.y+=__shfl_xor_sync(0xFFFFFFFF,dU_uu_jtmp.y,1);
-          dU_uu_jtmp.y+=__shfl_xor_sync(0xFFFFFFFF,dU_uu_jtmp.y,2);
-          dU_uu_jtmp.y+=__shfl_xor_sync(0xFFFFFFFF,dU_uu_jtmp.y,4);
-          dU_uu_jtmp.y+=__shfl_xor_sync(0xFFFFFFFF,dU_uu_jtmp.y,8);
-          dU_uu_jtmp.y+=__shfl_xor_sync(0xFFFFFFFF,dU_uu_jtmp.y,16);
-          if (iThread==jtmp) dU_uu_j.y=dU_uu_jtmp.y;
           ////// z
           fjtmp.z+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.z,1);
           fjtmp.z+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.z,2);
@@ -532,28 +484,6 @@ __global__ void getforce_nbdirect_kernel_special(
           fjtmp.z+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.z,8);
           fjtmp.z+=__shfl_xor_sync(0xFFFFFFFF,fjtmp.z,16);
           if (iThread==jtmp) fj.z=fjtmp.z;
-          // ss
-          dU_ss_jtmp.z+=__shfl_xor_sync(0xFFFFFFFF,dU_ss_jtmp.z,1);
-          dU_ss_jtmp.z+=__shfl_xor_sync(0xFFFFFFFF,dU_ss_jtmp.z,2);
-          dU_ss_jtmp.z+=__shfl_xor_sync(0xFFFFFFFF,dU_ss_jtmp.z,4);
-          dU_ss_jtmp.z+=__shfl_xor_sync(0xFFFFFFFF,dU_ss_jtmp.z,8);
-          dU_ss_jtmp.z+=__shfl_xor_sync(0xFFFFFFFF,dU_ss_jtmp.z,16);
-          if (iThread==jtmp) dU_ss_j.z=dU_ss_jtmp.z;
-          // su
-          dU_su_jtmp.z+=__shfl_xor_sync(0xFFFFFFFF,dU_su_jtmp.z,1);
-          dU_su_jtmp.z+=__shfl_xor_sync(0xFFFFFFFF,dU_su_jtmp.z,2);
-          dU_su_jtmp.z+=__shfl_xor_sync(0xFFFFFFFF,dU_su_jtmp.z,4);
-          dU_su_jtmp.z+=__shfl_xor_sync(0xFFFFFFFF,dU_su_jtmp.z,8);
-          dU_su_jtmp.z+=__shfl_xor_sync(0xFFFFFFFF,dU_su_jtmp.z,16);
-          if (iThread==jtmp) dU_su_j.z=dU_su_jtmp.z;
-          // uu
-          dU_uu_jtmp.z+=__shfl_xor_sync(0xFFFFFFFF,dU_uu_jtmp.z,1);
-          dU_uu_jtmp.z+=__shfl_xor_sync(0xFFFFFFFF,dU_uu_jtmp.z,2);
-          dU_uu_jtmp.z+=__shfl_xor_sync(0xFFFFFFFF,dU_uu_jtmp.z,4);
-          dU_uu_jtmp.z+=__shfl_xor_sync(0xFFFFFFFF,dU_uu_jtmp.z,8);
-          dU_uu_jtmp.z+=__shfl_xor_sync(0xFFFFFFFF,dU_uu_jtmp.z,16);
-          if (iThread==jtmp) dU_uu_j.z=dU_uu_jtmp.z;
-
           // Alchem
           if (calcAlch && bjtmp) {
             fljtmp+=__shfl_xor_sync(0xFFFFFFFF,fljtmp,1);
@@ -562,27 +492,6 @@ __global__ void getforce_nbdirect_kernel_special(
             fljtmp+=__shfl_xor_sync(0xFFFFFFFF,fljtmp,8);
             fljtmp+=__shfl_xor_sync(0xFFFFFFFF,fljtmp,16);
             if (iThread==jtmp) flj=fljtmp;
-            // ss
-            fl_ss_jtmp+=__shfl_xor_sync(0xFFFFFFFF,fl_ss_jtmp,1);
-            fl_ss_jtmp+=__shfl_xor_sync(0xFFFFFFFF,fl_ss_jtmp,2);
-            fl_ss_jtmp+=__shfl_xor_sync(0xFFFFFFFF,fl_ss_jtmp,4);
-            fl_ss_jtmp+=__shfl_xor_sync(0xFFFFFFFF,fl_ss_jtmp,8);
-            fl_ss_jtmp+=__shfl_xor_sync(0xFFFFFFFF,fl_ss_jtmp,16);
-            if (iThread==jtmp) fl_ss_j=fl_ss_jtmp;
-            // su
-            fl_su_jtmp+=__shfl_xor_sync(0xFFFFFFFF,fl_su_jtmp,1);
-            fl_su_jtmp+=__shfl_xor_sync(0xFFFFFFFF,fl_su_jtmp,2);
-            fl_su_jtmp+=__shfl_xor_sync(0xFFFFFFFF,fl_su_jtmp,4);
-            fl_su_jtmp+=__shfl_xor_sync(0xFFFFFFFF,fl_su_jtmp,8);
-            fl_su_jtmp+=__shfl_xor_sync(0xFFFFFFFF,fl_su_jtmp,16);
-            if (iThread==jtmp) fl_su_j=fl_su_jtmp;
-            // uu
-            fl_uu_jtmp+=__shfl_xor_sync(0xFFFFFFFF,fl_uu_jtmp,1);
-            fl_uu_jtmp+=__shfl_xor_sync(0xFFFFFFFF,fl_uu_jtmp,2);
-            fl_uu_jtmp+=__shfl_xor_sync(0xFFFFFFFF,fl_uu_jtmp,4);
-            fl_uu_jtmp+=__shfl_xor_sync(0xFFFFFFFF,fl_uu_jtmp,8);
-            fl_uu_jtmp+=__shfl_xor_sync(0xFFFFFFFF,fl_uu_jtmp,16);
-            if (iThread==jtmp) fl_uu_j=fl_uu_jtmp;
           }
         }
       }
@@ -590,14 +499,8 @@ __global__ void getforce_nbdirect_kernel_special(
       if ((iThread)<jCount) {
         if (calcAlch && bj) {
           atomicAdd(&lambdaForce[0xFFFF & bj],flj);
-          atomicAdd(&lambdaForce_ss[0xFFFF & bj],fl_ss_j);
-          atomicAdd(&lambdaForce_su[0xFFFF & bj],fl_su_j);
-          atomicAdd(&lambdaForce_uu[0xFFFF & bj],fl_uu_j);
         }
         at_real3_inc(&force[32*jBlock+iThread],fj);
-        at_real3_inc(&force_ss[32*jBlock+iThread],dU_ss_j);
-        at_real3_inc(&force_su[32*jBlock+iThread],dU_su_j);
-        at_real3_inc(&force_uu[32*jBlock+iThread],dU_uu_j);
       }
       if (iThread==0) j=atomicInc((unsigned int*)(&jnext),0xFFFFFFFF);
       j=__shfl_sync(0xFFFFFFFF,j,0);
@@ -606,14 +509,14 @@ __global__ void getforce_nbdirect_kernel_special(
     if ((iThread)<iCount) {
       if (calcAlch && bi) {
         atomicAdd(&lambdaForce[0xFFFF & bi],fli);
-        atomicAdd(&lambdaForce_ss[0xFFFF & bi],fl_ss_i);
-        atomicAdd(&lambdaForce_su[0xFFFF & bi],fl_su_i);
-        atomicAdd(&lambdaForce_uu[0xFFFF & bi],fl_uu_i);
+        atomicAdd(&lambdaForce_ss[0xFFFF & bi],fli_ss);
+        atomicAdd(&lambdaForce_su[0xFFFF & bi],fli_su);
+        //atomicAdd(&lambdaForce_uu[0xFFFF & bi],fli_uu);
       }
       at_real3_inc(&force[32*iBlock+iThread],fi);
-      at_real3_inc(&force_ss[32*iBlock+iThread],dU_ss_i);
-      at_real3_inc(&force_su[32*iBlock+iThread],dU_su_i);
-      at_real3_inc(&force_uu[32*iBlock+iThread],dU_uu_i);
+      at_real3_inc(&force_ss[32*iBlock+iThread],fi_ss);
+      at_real3_inc(&force_su[32*iBlock+iThread],fi_su);
+      //at_real3_inc(&force_uu[32*iBlock+iThread],fi_uu);
     }
   }
 
@@ -623,9 +526,9 @@ __global__ void getforce_nbdirect_kernel_special(
     // #warning "Using reduction without shared memory"
     // real_sum_reduce(lEnergy,sEnergy,energy);
     real_sum_reduce(lEnergy,energy);
-    real_sum_reduce(lU_ss,U_ss);
-    real_sum_reduce(lU_su,U_su);
-    real_sum_reduce(lU_uu,U_uu);
+    real_sum_reduce(lEnergy_ss,U_ss);
+    real_sum_reduce(lEnergy_su,U_su);
+    //real_sum_reduce(lEnergy_uu,U_uu);
   }
 }
 
@@ -746,8 +649,6 @@ void getforce_nbdirect_reduce_special(System *system,bool calcEnergy)
   int N=3*s->atomCount+2*s->lambdaCount;
 
   getforce_nbdirect_reduce_kernel_special<<<(N+BLNB-1)/BLNB,BLNB,0,r->updateStream>>>(N,system->idCount,s->forceBuffer_d);
-  getforce_nbdirect_reduce_kernel_special<<<(N+BLNB-1)/BLNB,BLNB,0,r->updateStream>>>(N,system->idCount,s->dU_ss_buffer_d);
-  getforce_nbdirect_reduce_kernel_special<<<(N+BLNB-1)/BLNB,BLNB,0,r->updateStream>>>(N,system->idCount,s->dU_su_buffer_d);
 
   if (calcEnergy) {
     N=eeend;

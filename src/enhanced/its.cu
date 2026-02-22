@@ -186,7 +186,7 @@ __global__ void its_update_force_kernel(
     //  dU_uu = dU_solv[i];
     //}
     //if(abs(forceBuffer[i]-(dU_ss + dU_su + dU_uu)) > 1e-3){
-    //  printf("force: %f, sum: %f\n", forceBuffer[i], dU_ss+dU_su+dU_uu);
+    //  printf("idx: %d, idx/3: %d, force: %f, sum: %f\n", i, i/3, forceBuffer[i], dU_ss+dU_su+dU_uu);
     //}
     // Already contains dU_uu
     // Remove exising and replace with scaled versions of dU_ss & dU_su
@@ -210,8 +210,6 @@ void getforce_its(System* system){
   if (system->run) {
     stream = system->run->enhancedStream;
   }
-
-  if (system->run->calcTermFlag[eeenhanced]==false) return;
 
   // Calculate total potential prior to ITS
   reduce_total_energy_kernel<<<1,1,0,stream>>>(s->energy_d, it->U_d);

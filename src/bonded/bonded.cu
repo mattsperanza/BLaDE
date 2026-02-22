@@ -342,7 +342,8 @@ __device__ void function_torsion(ImprPotential ip,real phi,real *fphi,real *lE,b
 
 // getforce_dihe_kernel<<<(N+BLBO-1)/BLBO,BLBO,shMem,p->bondedStream>>>(N,p->dihes_d,(real3*)s->position_d,(real3*)s->force_d,s->orthBox,m->lambda_d,m->lambdaForce_d,pEnergy);
 template <bool flagBox,class TorsionPotential,bool soft,typename box_type>
-__global__ void getforce_torsion_kernel(int torsionCount,TorsionPotential *torsions,real3 *position,real3_f *force, real3* dU_ss, box_type box,real *lambda,real_f *lambdaForce, real_f* dU_ss_lambdaForce, real softExp, real_e* U_ss, real_e *energy)
+__global__ void getforce_torsion_kernel(int torsionCount,TorsionPotential *torsions,real3 *position,real3_f *force, real3* dU_ss, box_type box,real *lambda,
+  real_f *lambdaForce, real_f* dU_ss_lambdaForce, real softExp, real_e* U_ss, real_e *energy)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   int ii,jj,kk,ll;
@@ -454,7 +455,6 @@ __global__ void getforce_torsion_kernel(int torsionCount,TorsionPotential *torsi
   }
 
   // Energy, if requested
-  atomicAdd(U_ss, U_tors_local); // TODO: use shared mem, always need to do this if doing ITS, always non-alchemical
   if (energy) {
     lEnergy*=l[0]*l[1];
     real_sum_reduce(lEnergy,sEnergy,energy);

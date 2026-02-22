@@ -156,6 +156,7 @@ void Enhanced::initialize(System* system){
 
 void getforce_enhanced(System* system){
   Enhanced* es = system->enhanced;
+  if (system->run->calcTermFlag[eeenhanced]==false) return;
 
   // ITS should be last (capture to capture other bias in scaling)
   if(es->its){
