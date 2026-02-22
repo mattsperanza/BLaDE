@@ -158,7 +158,12 @@ __device__ void function_pair(NbExPotential pp,Cutoffs rc,real r,real *fpair,rea
 
 
 template <bool flagBox,class PairPotential,bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
-__global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs cutoffs,real3 *position,real3_f *force,box_type box,real *lambda,real_f *lambdaForce,real_e *energy)
+__global__ void getforce_pair_kernel(
+  int pairCount,PairPotential *pairs,Cutoffs cutoffs,real3 *position,
+  real3_f *force, real3_f *force_ss, real3_f *force_su, real3_f *force_uu,
+  box_type box,real *lambda,
+  real_f *lambdaForce, real_f* lForce_ss, real_f* lForce_su, real_f* lForce_uu,
+  real_e* U_ss, real_e* U_su, real_e* U_uu, real_e *energy)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   int ii,jj;
@@ -167,6 +172,9 @@ __global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs 
   PairPotential pp;
   real fpair;
   real lEnergy=0;
+  real lU_ss=0;
+  real lU_su=0;
+  real lU_uu=0;
   extern __shared__ real sEnergy[];
   real3 xi,xj;
   int b[2];
@@ -182,6 +190,21 @@ __global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs 
     xj=position[jj];
     dr=real3_subpbc<flagBox>(xi,xj,box);
     r=real3_mag<real>(dr);
+
+    // Choose which kind of interaction this is ss=(2), su=(1), uu=(0)
+    int t = pp.selection;
+    real* lEnergycpy = &lU_uu; // defaults to UU
+    real* lForcecpy = lForce_uu;
+    real3_f* forcecpy = force_uu;
+    if(t==2){
+      lEnergycpy = &lU_ss;
+      lForcecpy = lForce_ss;
+      forcecpy = force_ss;
+    } else if (t==1){
+      lEnergycpy= &lU_su;
+      lForcecpy = lForce_su;
+      forcecpy = force_su;
+    }
 
     // Scaling
     b[0]=0xFFFF & pp.siteBlock[0];
@@ -215,20 +238,25 @@ __global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs 
     // Interaction
     function_pair(pp,cutoffs,rEff,&fpair,&lEnergy, b[0] || energy,usevdWSwitch,usePME);
     fpair*=l[0]*l[1];
+    *lEnergycpy=lEnergy;
 
     // Lambda force
     if (useSoftCore) {
       if (b[0]) {
         atomicAdd(&lambdaForce[b[0]],l[1]*(lEnergy+fpair*dredll));
+        atomicAdd(&lForcecpy[b[0]],l[1]*(lEnergy+fpair*dredll));
         if (b[1]) {
           atomicAdd(&lambdaForce[b[1]],l[0]*(lEnergy+fpair*dredll));
+          atomicAdd(&lForcecpy[b[1]],l[0]*(lEnergy+fpair*dredll));
         }
       }
     } else {
       if (b[0]) {
         atomicAdd(&lambdaForce[b[0]],l[1]*lEnergy);
+        atomicAdd(&lForcecpy[b[0]],l[1]*lEnergy);
         if (b[1]) {
           atomicAdd(&lambdaForce[b[1]],l[0]*lEnergy);
+          atomicAdd(&lForcecpy[b[1]],l[0]*lEnergy);
         }
       }
     }
@@ -238,13 +266,18 @@ __global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs 
       fpair*=dredr;
     }
     at_real3_scaleinc(&force[ii], fpair/r,dr);
+    at_real3_scaleinc(&forcecpy[ii], fpair/r,dr);
     at_real3_scaleinc(&force[jj],-fpair/r,dr);
+    at_real3_scaleinc(&forcecpy[jj],-fpair/r,dr);
   }
 
   // Energy, if requested
   if (energy) {
     lEnergy*=l[0]*l[1];
     real_sum_reduce(lEnergy,sEnergy,energy);
+    real_sum_reduce(lU_ss,sEnergy,U_ss);
+    real_sum_reduce(lU_su,sEnergy,U_su);
+    real_sum_reduce(lU_uu,sEnergy,U_uu);
   }
 }
 
@@ -267,7 +300,12 @@ void getforce_nb14TTTT(System *system,box_type box,bool calcEnergy)
     pEnergy=s->energy_d+eenb14;
   }
 
-  getforce_pair_kernel <flagBox,Nb14Potential,useSoftCore,usevdWSwitch,usePME> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->nb14s_d,system->run->cutoffs,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,pEnergy);
+  getforce_pair_kernel <flagBox,Nb14Potential,useSoftCore,usevdWSwitch,usePME> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+    N,p->nb14s_d,system->run->cutoffs,(real3*)s->position_fd,
+    (real3_f*)s->force_d, (real3_f*)s->dU_ss_spaceBuffer3_d, (real3_f*)s->dU_su_spaceBuffer3_d, (real3_f*)s->dU_uu_spaceBuffer3_d,
+    box,s->lambda_fd,
+    s->lambdaForce_d, s->dU_ss_buffer_d, s->dU_su_buffer_d, s->dU_uu_buffer_d,
+    s->U_ss_d, s->U_su_d, s->U_uu_d, pEnergy);
 }
 
 template <bool flagBox,bool useSoftCore,bool usevdWSwitch,typename box_type>
@@ -332,7 +370,12 @@ void getforce_nbexT(System *system,box_type box,bool calcEnergy)
   }
 
   // Never use soft cores for nbex, they're already soft.
-  getforce_pair_kernel <flagBox,NbExPotential,false,false,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->nbexs_d,system->run->cutoffs,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,pEnergy);
+  getforce_pair_kernel <flagBox,NbExPotential,false,false,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
+    N,p->nbexs_d,system->run->cutoffs,(real3*)s->position_fd,
+    (real3_f*)s->force_d,(real3_f*)s->dU_ss_spaceBuffer3_d, (real3_f*)s->dU_su_spaceBuffer3_d, (real3_f*)s->dU_uu_spaceBuffer3_d,
+    box,s->lambda_fd,
+    s->lambdaForce_d,s->dU_ss_buffer_d, s->dU_su_buffer_d, s->dU_uu_buffer_d,
+    s->U_ss_d, s->U_su_d, s->U_uu_d, pEnergy);
 }
 
 void getforce_nbex(System *system,bool calcEnergy)

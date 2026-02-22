@@ -96,18 +96,21 @@ struct Nb14Potential {
   real c12;
   real c6;
   real e14fac;
+  int selection;
 };
 
 struct NbExPotential {
   int idx[2];
   int siteBlock[2];
   real qxq;
+  int selection;
 };
 
 struct NbondPotential {
   int siteBlock;
   real q;
   int typeIdx;
+  int selection; // -1=alchemical & unselected, 0 = unselected, 1 = selected
 };
 
 struct VdwPotential {

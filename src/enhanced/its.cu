@@ -147,7 +147,8 @@ __global__ void its_logsumexp_kernel(
   weighted_root_beta[0] = 0;
   for(int i = 0; i < N_temps; i++){
     real_e beta_k = 1.0/(kB*temps[i]);
-    its_bias[i] = (beta_0/beta_k)*U_prime[0] - U_tot[0];
+    // add g[0] to remove the weight from the expectation
+    its_bias[i] = (beta_0/beta_k)*(U_prime[0]+g[0]/beta_0) - U_tot[0];
     real_e exp_arg = -(beta_k-beta_0)*U_ss - (sqrt(beta_k*beta_0) - beta_0)*U_su + g[i];
     real weight = exp(exp_arg-c) / exp_sum;
     pHist[i] += weight;
@@ -161,7 +162,7 @@ __global__ void its_logsumexp_kernel(
 __global__ void its_update_force_kernel(
   int DOF,  
   real* weighted_beta, real* weighted_root_beta,
-  real_f* dU_sel, real_f* dU_int, 
+  real_f* dU_sel, real_f* dU_int, real_f* dU_solv,
   real_f* forceBuffer){
   int i=blockIdx.x*blockDim.x+threadIdx.x;
 
@@ -169,9 +170,16 @@ __global__ void its_update_force_kernel(
     // Check NaN
     real_f dU_ss = dU_sel[i];
     real_f dU_su = 0;
+    real_f dU_uu = 0;
     if(dU_int){
       dU_su = dU_int[i];
     }
+    //if(dU_solv){
+    //  dU_uu = dU_solv[i];
+    //}
+    //if(abs(forceBuffer[i]-(dU_ss + dU_su + dU_uu)) > 1e-3){
+    //  printf("force: %f, sum: %f\n", forceBuffer[i], dU_ss+dU_su+dU_uu);
+    //}
     // Already contains dU_uu
     // Remove exising and replace with scaled versions of dU_ss & dU_su
     forceBuffer[i] += (weighted_beta[0]-1)*dU_ss + (weighted_root_beta[0]-1)*dU_su;
@@ -195,6 +203,8 @@ void getforce_its(System* system){
     stream = system->run->enhancedStream;
   }
 
+  if (system->run->calcTermFlag[eeenhanced]==false) return;
+
   // Calculate total potential prior to ITS
   reduce_total_energy_kernel<<<1,1,0,stream>>>(s->energy_d, it->U_d);
   // Compute bias and forces due to ITS bias with weights
@@ -211,13 +221,13 @@ void getforce_its(System* system){
   its_update_force_kernel<<<(dof+BLMS-1)/BLMS,BLMS, 0,stream>>>(
     dof, 
     it->weighted_beta_d, it->weighted_root_beta_d,
-    it->dU_ss_d, it->dU_su_d, 
-    s->forceBuffer_d
-  );
+    it->dU_ss_d, it->dU_su_d, system->state->dU_uu_buffer_d,
+    s->forceBuffer_d);
 }
 
 __global__ void update_its_expectation_kernel(
-  int N_temps, real* temps, 
+  int N_temps, real sys_kT,
+  real* temps, 
   real_e* U_sele, real_e* U_int, 
   real* weighted_root_beta, real* its_bias,
   real* expected_U, real* weighted_U,
@@ -232,8 +242,9 @@ __global__ void update_its_expectation_kernel(
       U_su = U_int[0];
     }
   
-    real U = U_ss + 0.5*(*weighted_root_beta)*U_su;
+    real beta_0 = 1.0/sys_kT;
     real beta_k = 1.0/(kB*temps[i]);
+    real U = U_ss + 0.5*sqrt(beta_0/beta_k)*U_su;
     real reduced_bias = beta_k*its_bias[i];
     if(reduced_bias > offsets[i]){
       // update offset
@@ -319,7 +330,8 @@ void update_its(System* system){
     // Compute bias and forces due to ITS bias with weights
     real kT = kB*system->run->T;
     update_its_expectation_kernel<<<(it->N_temp+BLMS-1)/BLMS,BLMS,0,stream>>>(
-      it->N_temp, it->temperatures_d, 
+      it->N_temp, kT,
+      it->temperatures_d, 
       it->U_ss_d, it->U_su_d, 
       it->weighted_root_beta_d, it->its_bias_d,
       it->expected_U_d, it->weighted_U_d,

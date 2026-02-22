@@ -453,3 +453,14 @@ void Domdec::unpack_forces(System *system)
     unpack_forces_kernel<<<(32*N+BLUP-1)/BLUP,BLUP,0,r->nbdirectStream>>>(N,blockBounds_d,localToGlobal_d,(real3_f*)system->state->force_d,localForce_d);
   }
 }
+
+void Domdec::unpack_forces_special(System *system){
+  Run *r=system->run;
+  int N=blockCount[idCount];
+  if (id>=0) {
+    unpack_forces_kernel<<<(32*N+BLUP-1)/BLUP,BLUP,0,r->nbdirectStream>>>(N,blockBounds_d,localToGlobal_d,(real3_f*)system->state->force_d,localForce_d);
+    unpack_forces_kernel<<<(32*N+BLUP-1)/BLUP,BLUP,0,r->nbdirectStream>>>(N,blockBounds_d,localToGlobal_d,(real3_f*)system->state->dU_ss_spaceBuffer3_d,localdU_ss_d);
+    unpack_forces_kernel<<<(32*N+BLUP-1)/BLUP,BLUP,0,r->nbdirectStream>>>(N,blockBounds_d,localToGlobal_d,(real3_f*)system->state->dU_su_spaceBuffer3_d,localdU_su_d);
+    unpack_forces_kernel<<<(32*N+BLUP-1)/BLUP,BLUP,0,r->nbdirectStream>>>(N,blockBounds_d,localToGlobal_d,(real3_f*)system->state->dU_uu_spaceBuffer3_d,localdU_uu_d);
+  }
+}

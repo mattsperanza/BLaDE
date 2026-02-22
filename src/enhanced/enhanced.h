@@ -23,7 +23,9 @@ class Enhanced {
     std::string output_dir = "nhcd";
 
     bool separate_interactions = false;
-    bool torsions_only = false;
+    bool special_nbdirect = false;
+    bool osrw = false;
+
     std::string primary_sele = "";
     int* atom_selection_primary = NULL;
     std::string secondary_sele = "";

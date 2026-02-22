@@ -82,6 +82,7 @@ void parse_enhanced(char* line, System* system){
         exit(1);
       }
       system->enhanced->separate_interactions = true;
+      system->enhanced->special_nbdirect = true;
       printf("REST scaling requires separated nbdirect calculation. This may hurt performance!\n");
     }
     if(potential == "torsion"){
@@ -90,7 +91,8 @@ void parse_enhanced(char* line, System* system){
         exit(1);
       }
       system->enhanced->separate_interactions = true;
-      system->enhanced->torsions_only = true;
+      system->enhanced->special_nbdirect = false;
+      printf("ITS on selected torsion potential!\n");
     }
     if(potential != "total" && potential != "torsion" && potential != "rest"){
       printf("Unsuppored ITS potential scaling: %s. Availible: total, torsion\n");

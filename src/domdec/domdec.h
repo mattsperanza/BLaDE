@@ -58,6 +58,9 @@ class Domdec {
   int *globalToLocal_d;
   real3 *localPosition_d;
   real3_f *localForce_d;
+  real3_f *localdU_ss_d;
+  real3_f *localdU_su_d;
+  real3_f *localdU_uu_d;
   struct NbondPotential *localNbonds_d;
 // For sorting atoms into blocks
   int2 domainDiv;
@@ -96,6 +99,7 @@ class Domdec {
   void assign_blocks(System *system);
   void pack_positions(System *system);
   void unpack_forces(System *system);
+  void unpack_forces_special(System *system);
   // From domdec/cull.cu
   void cull_blocks(System *system);
   // From domdec/assign_excl.cu

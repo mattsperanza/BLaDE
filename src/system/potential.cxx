@@ -1029,6 +1029,23 @@ void Potential::initialize(System *system)
             }
           }
         }
+        nb14.selection=0;
+        if (system->enhanced && system->enhanced->special_nbdirect && !system->enhanced->osrw){
+          if(!system->enhanced->atom_selection_primary){
+            printf("Enhanced primary selection not defined!! This shouldn't happen.\n");
+            exit(1);
+          }
+          for(j=0; j<2; j++){
+            int id= nb14.idx[j];
+            bool alchem = system->msld->atomBlock[id] != 0;
+            bool selected = system->enhanced->atom_selection_primary[id] == 1;
+            if(alchem && !selected){
+              nb14.selection+=-1;
+            } else if (selected){
+              nb14.selection+=1;
+            }
+          }
+        }
         real sig6=np.sig14*np.sig14;
         sig6*=(sig6*sig6);
         nb14.c12=np.eps14*sig6*sig6;
@@ -1053,6 +1070,7 @@ void Potential::initialize(System *system)
           nbex.qxq=charge[nbex.idx[0]]*charge[nbex.idx[1]];
           nbexs_tmp.push_back(nbex);
         }
+        nbex.selection=0; // this is not ideal
       }
     }
   }
@@ -1253,6 +1271,20 @@ void Potential::initialize(System *system)
     nbond.q=charge[i];
     nbond.typeIdx=typeLookup[type];
     nbonds[i]=nbond;
+    nbond.selection=0; // default unselected
+    if (system->enhanced && system->enhanced->special_nbdirect && !system->enhanced->osrw){
+      if(!system->enhanced->atom_selection_primary){
+        printf("Enhanced primary selection not defined!! This shouldn't happen.\n");
+        exit(1);
+      }
+      bool alchem = system->msld->atomBlock[i] != 0;
+      bool selected = system->enhanced->atom_selection_primary[i] == 1;
+      if(alchem && !selected){
+        nbond.selection=-1;
+      } else if (selected){
+        nbond.selection=1;
+      }
+    }
   }
   cudaMemcpy(nbonds_d,nbonds,atomCount*sizeof(NbondPotential),cudaMemcpyHostToDevice);
   // Save van der Waals interaction parameters
@@ -1644,8 +1676,13 @@ void Potential::reset_force(System *system,bool calcEnergy)
   // Clear ITS memory
   cudaMemset(system->state->U_ss_d, 0, sizeof(real_e));
   cudaMemset(system->state->dU_ss_buffer_d, 0, (2*system->state->lambdaCount+3*system->state->atomCount)*sizeof(real));
+  cudaMemset(system->domdec->localdU_ss_d,0,32*system->domdec->maxBlocks*sizeof(real3_f));
   cudaMemset(system->state->U_su_d, 0, sizeof(real_e));
   cudaMemset(system->state->dU_su_buffer_d, 0, (2*system->state->lambdaCount+3*system->state->atomCount)*sizeof(real));
+  cudaMemset(system->domdec->localdU_su_d,0,32*system->domdec->maxBlocks*sizeof(real3_f));
+  cudaMemset(system->state->U_uu_d, 0, sizeof(real_e));
+  cudaMemset(system->state->dU_uu_buffer_d, 0, (2*system->state->lambdaCount+3*system->state->atomCount)*sizeof(real));
+  cudaMemset(system->domdec->localdU_uu_d,0,32*system->domdec->maxBlocks*sizeof(real3_f));
 }
 
 void Potential::calc_force(int step,System *system)
@@ -1711,7 +1748,11 @@ void Potential::calc_force(int step,System *system)
 
   if (system->domdec->id>=0) {
     cudaStreamWaitEvent(r->nbdirectStream,r->forceBegin,0);
-    getforce_nbdirect(system,calcEnergy);
+    if(system->enhanced && system->enhanced->special_nbdirect){
+      getforce_nbdirect_special(system,calcEnergy);
+    } else {
+      getforce_nbdirect(system,calcEnergy);
+    }
     cudaEventRecord(r->nbdirectComplete,r->nbdirectStream);
     cudaStreamWaitEvent(r->updateStream,r->nbdirectComplete,0);
   }
@@ -1719,7 +1760,11 @@ void Potential::calc_force(int step,System *system)
   if (system->idCount>1) {
     system->state->gather_force(system,calcEnergy);
     if (system->id==0) {
-      getforce_nbdirect_reduce(system,calcEnergy);
+      if(system->enhanced && system->enhanced->special_nbdirect){
+        getforce_nbdirect_reduce_special(system,calcEnergy);
+      } else {
+        getforce_nbdirect_reduce(system,calcEnergy);
+      }
     }
   }
 

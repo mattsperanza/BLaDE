@@ -83,6 +83,12 @@ class State {
   real_f* dU_su_buffer_d;
   real_f* dU_su_lambdaForce_d;
   real_f (*dU_su_spaceBuffer3_d)[3];
+  real_e U_uu; // unselected-unselected
+  real_e* U_uu_d;
+  real_f* dU_uu_buffer;
+  real_f* dU_uu_buffer_d;
+  real_f* dU_uu_lambdaForce_d;
+  real_f (*dU_uu_spaceBuffer3_d)[3];
 
   // Other buffers
   real_e *energy;

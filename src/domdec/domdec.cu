@@ -22,6 +22,9 @@ Domdec::Domdec()
   globalToLocal_d=NULL;
   localPosition_d=NULL;
   localForce_d=NULL;
+  localdU_ss_d=NULL;
+  localdU_su_d=NULL;
+  localdU_uu_d=NULL;
   localNbonds_d=NULL;
   blockSort_d=NULL;
   blockToken_d=NULL;
@@ -51,6 +54,8 @@ Domdec::~Domdec()
   if (globalToLocal_d) cudaFree(globalToLocal_d);
   if (localPosition_d) cudaFree(localPosition_d);
   if (localForce_d) cudaFree(localForce_d);
+  if (localdU_ss_d) cudaFree(localdU_ss_d);
+  if (localdU_su_d) cudaFree(localdU_su_d);
   if (localNbonds_d) cudaFree(localNbonds_d);
   if (blockSort_d) cudaFree(blockSort_d);
   if (blockToken_d) cudaFree(blockToken_d);
@@ -140,6 +145,9 @@ void Domdec::initialize(System *system)
   // See also localForce_d size in src/system/potential.cxx
   cudaMalloc(&localPosition_d,32*maxBlocks*sizeof(real3));
   cudaMalloc(&localForce_d,32*maxBlocks*sizeof(real3_f));
+  cudaMalloc(&localdU_ss_d,32*maxBlocks*sizeof(real3_f));
+  cudaMalloc(&localdU_su_d,32*maxBlocks*sizeof(real3_f));
+  cudaMalloc(&localdU_uu_d,32*maxBlocks*sizeof(real3_f));
   cudaMalloc(&localNbonds_d,32*maxBlocks*sizeof(struct NbondPotential));
   cudaMalloc(&blockSort_d,(globalCount+1)*sizeof(struct DomdecBlockSort));
   cudaMalloc(&blockToken_d,(globalCount+1)*sizeof(struct DomdecBlockToken));
