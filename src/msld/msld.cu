@@ -896,7 +896,7 @@ void Msld::calc_thetaForce_from_lambdaForce(cudaStream_t stream,System *system)
   }
 }
 
-__global__ void getforce_fixedBias_kernel(real *lambda,real *lambdaBias,real_f *lambdaForce, real_f* lForce_ss, real_e *energy, real_e* U_ss, int blockCount)
+__global__ void getforce_fixedBias_kernel(real *lambda,real *lambdaBias,real_f *lambdaForce, real_e *energy, int blockCount)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   extern __shared__ real sEnergy[];
@@ -904,7 +904,6 @@ __global__ void getforce_fixedBias_kernel(real *lambda,real *lambdaBias,real_f *
 
   if (i<blockCount) {
     atomicAdd(&lambdaForce[i],lambdaBias[i]);
-    atomicAdd(&lForce_ss[i],lambdaBias[i]);
     if (energy) {
       lEnergy=lambdaBias[i]*lambda[i];
     }
@@ -914,7 +913,6 @@ __global__ void getforce_fixedBias_kernel(real *lambda,real *lambdaBias,real_f *
   if (energy) {
     __syncthreads();
     real_sum_reduce(lEnergy,sEnergy,energy);
-    real_sum_reduce(lEnergy,sEnergy,U_ss);
   }
 }
 
@@ -938,12 +936,12 @@ void Msld::getforce_fixedBias(System *system,bool calcEnergy)
 
   getforce_fixedBias_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
     s->lambda_fd,lambdaBias_d,
-    s->lambdaForce_d,s->dU_ss_lambdaForce_d,
-    pEnergy,s->U_ss_d,
+    s->lambdaForce_d,
+    pEnergy,
     blockCount);
 }
 
-__global__ void getforce_variableBias_kernel(real *lambda,real_f *lambdaForce,real_f* lForce_ss, real_e *energy, real_e* U_ss, int variableBiasCount,struct VariableBias *variableBias)
+__global__ void getforce_variableBias_kernel(real *lambda,real_f *lambdaForce,real_e *energy, int variableBiasCount,struct VariableBias *variableBias)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   struct VariableBias vb;
@@ -1024,10 +1022,8 @@ __global__ void getforce_variableBias_kernel(real *lambda,real_f *lambdaForce,re
       fj=0;
     }
     atomicAdd(&lambdaForce[vb.i],fi);
-    atomicAdd(&lForce_ss[vb.i],fi);
     if (fj) {
       atomicAdd(&lambdaForce[vb.j],fj);
-      atomicAdd(&lForce_ss[vb.j],fj);
     }
   }
 
@@ -1035,7 +1031,6 @@ __global__ void getforce_variableBias_kernel(real *lambda,real_f *lambdaForce,re
   if (energy) {
     __syncthreads();
     real_sum_reduce(lEnergy,sEnergy,energy);
-    real_sum_reduce(lEnergy,sEnergy,U_ss);
   }
 }
 
@@ -1060,8 +1055,8 @@ void Msld::getforce_variableBias(System *system,bool calcEnergy)
   if (variableBiasCount>0) {
     getforce_variableBias_kernel<<<(variableBiasCount+BLMS-1)/BLMS,BLMS,shMem,stream>>>(
       s->lambda_fd,
-      s->lambdaForce_d,s->dU_ss_lambdaForce_d,
-      pEnergy, s->U_ss_d,
+      s->lambdaForce_d,
+      pEnergy, 
       variableBiasCount,variableBias_d);
   }
 }

@@ -345,7 +345,8 @@ void update_its(System* system){
   }
 
   // This needs to go after the update (since its_bias was not filled)
-  if(system->run->step % it->steps_per_temp == 0 && it->N_temp <= it->N_temp_max){
+  if(system->run->step0 != system->run->step && 
+       system->run->step % it->steps_per_temp == 0 && it->N_temp <= it->N_temp_max){
     if(it->N_temp == it->N_temp_max){
       it->low_idx = 0;
     } else {
