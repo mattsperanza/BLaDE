@@ -195,8 +195,12 @@ Potential::~Potential()
   if (chargeGridPME_d) cudaFree(chargeGridPME_d);
   if (fourierGridPME_d) cudaFree(fourierGridPME_d);
   if (potentialGridPME_d) cudaFree(potentialGridPME_d);
+  if (potentialGridPME_ss_d) cudaFree(potentialGridPME_ss_d);
 #ifdef USE_TEXTURE
   if (potentialGridPME_tex) cudaDestroyTextureObject(potentialGridPME_tex);
+#endif
+#ifdef USE_TEXTURE
+  if (potentialGridPME_ss_tex) cudaDestroyTextureObject(potentialGridPME_ss_tex);
 #endif
 
   if (nbonds) free(nbonds);
@@ -619,12 +623,13 @@ void Potential::initialize(System *system)
       bool any_alchem = false;
       int selected = 0;
       for (j=0; j<4; j++){
-        // If alchemical, don't do selection unless alchemical atom is selected
+        // If alchemical, always select
         int atom_id = dihe.idx[j];
-        any_alchem = any_alchem || (system->msld->atomBlock[atom_id] && !system->enhanced->atom_selection_primary[atom_id]);
+        any_alchem = any_alchem || system->msld->atomBlock[atom_id];
         selected+=system->enhanced->atom_selection_primary[atom_id];
       }
-      dihe.nselect = any_alchem ? 0 : selected;
+      dihe.nselect = selected;
+      dihe.nselect += any_alchem ? 1 : 0;
     }
     // Include each harmonic as a separate dihedral.
     for (j=0; j<dp.size(); j++) {
@@ -697,12 +702,14 @@ void Potential::initialize(System *system)
       bool any_alchem = false;
       int selected = 0;
       for (j=0; j<4; j++){
-        // If alchemical, don't do selection unless alchemical atom is selected
+        // If alchemical, select
         int atom_id = impr.idx[j];
-        any_alchem = any_alchem || (system->msld->atomBlock[atom_id] && !system->enhanced->atom_selection_primary[atom_id]);
+        any_alchem = any_alchem || system->msld->atomBlock[atom_id];
         selected+=system->enhanced->atom_selection_primary[atom_id];
       }
-      impr.nselect = any_alchem ? 0 : selected;
+      // Don't restrict alchemical
+      impr.nselect = selected;
+      impr.nselect += any_alchem ? 1 : 0;
     }
     impr.kimp=ip.kimp;
     impr.nimp=ip.nimp;
@@ -1030,17 +1037,17 @@ void Potential::initialize(System *system)
           }
         }
         nb14.selection=0;
-        if (system->enhanced && system->enhanced->special_nbdirect && !system->enhanced->osrw){
+        if (system->enhanced && system->enhanced->special_elec && !system->enhanced->osrw){
           if(!system->enhanced->atom_selection_primary){
             printf("Enhanced primary selection not defined!! This shouldn't happen.\n");
             exit(1);
           }
           for(j=0; j<2; j++){
-            int id= nb14.idx[j];
-            bool alchem = system->msld->atomBlock[id] != 0;
+            int id = nb14.idx[j];
+            int alchem = 0xFFFF & nb14.siteBlock[j];
             bool selected = system->enhanced->atom_selection_primary[id] == 1;
             if(alchem){
-              nb14.selection+=-1;
+              nb14.selection+=2; // alchemical interactions = ss
             } else if (selected) {
               nb14.selection+=1;
             }
@@ -1064,13 +1071,24 @@ void Potential::initialize(System *system)
         // Get participating atoms
         nbex.idx[0]=i;
         nbex.idx[1]=*jj;
+        nbex.selection=0; 
+        for(j=0; j<2; j++){
+          int id = nbex.idx[j];
+          // siteblock not filled
+          int alchem = system->msld->atomBlock[i];
+          bool selected = system->enhanced->atom_selection_primary[id] == 1;
+          if(alchem){
+            nbex.selection+=2; // alchemical interactions = ss
+          } else if (selected) {
+            nbex.selection+=1;
+          }
+        }
         // Get their MSLD scaling
         if (msld->nbex_scaling(nbex.idx,nbex.siteBlock)) {
           // Get their parameters
           nbex.qxq=charge[nbex.idx[0]]*charge[nbex.idx[1]];
           nbexs_tmp.push_back(nbex);
         }
-        nbex.selection=0; // this is not ideal
       }
     }
   }
@@ -1138,6 +1156,7 @@ void Potential::initialize(System *system)
   cudaMalloc(&chargeGridPME_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
   cudaMalloc(&fourierGridPME_d,gridDimPME[0]*gridDimPME[1]*(gridDimPME[2]/2+1)*sizeof(myCufftComplex));
   cudaMalloc(&potentialGridPME_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
+  cudaMalloc(&potentialGridPME_ss_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
 #ifdef USE_TEXTURE
   {
     cudaResourceDesc resDesc;
@@ -1150,6 +1169,8 @@ void Potential::initialize(System *system)
     memset(&texDesc,0,sizeof(texDesc));
     texDesc.readMode=cudaReadModeElementType;
     cudaCreateTextureObject(&potentialGridPME_tex,&resDesc,&texDesc,NULL);
+    // ss grid has exact same properties
+    cudaCreateTextureObject(&potentialGridPME_ss_tex,&resDesc,&texDesc,NULL);
   }
 #endif
 
@@ -1270,21 +1291,18 @@ void Potential::initialize(System *system)
     // Get their parameters
     nbond.q=charge[i];
     nbond.typeIdx=typeLookup[type];
-    nbonds[i]=nbond;
     nbond.selection=0; // default unselected
-    if (system->enhanced && system->enhanced->special_nbdirect && !system->enhanced->osrw){
-      if(!system->enhanced->atom_selection_primary){
-        printf("Enhanced primary selection not defined!! This shouldn't happen.\n");
-        exit(1);
-      }
-      bool alchem = system->msld->atomBlock[i] != 0;
+    if (system->enhanced && system->enhanced->atom_selection_primary){
+      int alchem = 0xFFFF & nbond.siteBlock;
       bool selected = system->enhanced->atom_selection_primary[i] == 1;
       if(alchem){
-        nbond.selection+=-1;
+        //printf("Alchemical Atom: %d, block: %d, siteblock: %d\n", i, system->msld->atomBlock[i], 0xFFFF & alchem);
+        nbond.selection+=2;
       } else if (selected){
         nbond.selection+=1; 
       }
     }
+    nbonds[i]=nbond;
   }
   cudaMemcpy(nbonds_d,nbonds,atomCount*sizeof(NbondPotential),cudaMemcpyHostToDevice);
   // Save van der Waals interaction parameters
@@ -1695,6 +1713,7 @@ void Potential::calc_force(int step,System *system)
   if (system->enhanced && system->enhanced->its){ 
     calcEnergy=true; // Need to compute energy every step for ITS
   }
+  calcEnergy=true; // Need to compute energy every step for ITS
 #ifdef REPLICAEXCHANGE
   if (system->run->freqREx>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqREx==0));
@@ -1725,6 +1744,9 @@ void Potential::calc_force(int step,System *system)
     cudaStreamWaitEvent(r->nbrecipStream,r->forceBegin,0);
     getforce_ewaldself(system,calcEnergy);
     getforce_ewald(system,calcEnergy);
+    if(system->enhanced && system->enhanced->special_elec && system->enhanced->boost_recip){
+      getforce_ewald_select(system,calcEnergy);
+    }
     system->rngGPU->rand_normal(s->leapState->N,s->leapState->random,r->nbrecipStream);
     cudaEventRecord(r->nbrecipComplete,r->nbrecipStream);
     cudaStreamWaitEvent(r->updateStream,r->nbrecipComplete,0);
@@ -1748,7 +1770,7 @@ void Potential::calc_force(int step,System *system)
 
   if (system->domdec->id>=0) {
     cudaStreamWaitEvent(r->nbdirectStream,r->forceBegin,0);
-    if(system->enhanced && system->enhanced->special_nbdirect){
+    if(system->enhanced && system->enhanced->special_elec){
       getforce_nbdirect_special(system,calcEnergy);
     } else {
       getforce_nbdirect(system,calcEnergy);
@@ -1760,7 +1782,7 @@ void Potential::calc_force(int step,System *system)
   if (system->idCount>1) {
     system->state->gather_force(system,calcEnergy);
     if (system->id==0) {
-      if(system->enhanced && system->enhanced->special_nbdirect){
+      if(system->enhanced && system->enhanced->special_elec){
         getforce_nbdirect_reduce_special(system,calcEnergy);
       } else {
         getforce_nbdirect_reduce(system,calcEnergy);

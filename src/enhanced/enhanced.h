@@ -23,11 +23,13 @@ class Enhanced {
     std::string output_dir = "nhcd";
 
     bool separate_interactions = false;
-    bool special_nbdirect = false;
+    bool special_elec = false;
+    bool boost_recip = true;
     bool osrw = false;
 
     std::string primary_sele = "";
     int* atom_selection_primary = NULL;
+    int* atom_selection_primary_d = NULL;
     std::string secondary_sele = "";
     int* atom_selection_secondary = NULL;
 };

@@ -19,8 +19,9 @@ Enhanced::Enhanced(){
 
 Enhanced::~Enhanced(){
   if(its) delete(its);
-  if(atom_selection_primary) delete(atom_selection_primary);
-  if(atom_selection_secondary) delete(atom_selection_secondary);
+  if(atom_selection_primary) free(atom_selection_primary);
+  if(atom_selection_primary_d) cudaFree(atom_selection_primary_d);
+  if(atom_selection_secondary) free(atom_selection_secondary);
 }
 
 void parse_enhanced(char* line, System* system){
@@ -54,6 +55,8 @@ void parse_enhanced(char* line, System* system){
     for (i=0; i<system->structure->atomList.size(); i++) {
       system->enhanced->atom_selection_primary[i]=system->selections->selectionMap[name].boolSelection[i];
     }
+    cudaMalloc(&system->enhanced->atom_selection_primary_d, system->structure->atomList.size()*sizeof(int));
+    cudaMemcpy(system->enhanced->atom_selection_primary_d, system->enhanced->atom_selection_primary, system->structure->atomList.size()*sizeof(int), cudaMemcpyDefault);
   } else if (strcmp(token,"atom_selection_2") == 0){
     std::string name=io_nexts(line);
     if (system->selections->selectionMap.count(name)==0) {
@@ -69,6 +72,8 @@ void parse_enhanced(char* line, System* system){
     printf("Dumping enhanced selections! Will segfault if no selection is defined.\n");
     printf("Primary Selection: %s, Secondary Selection: %s\n", system->enhanced->primary_sele.c_str(), system->enhanced->secondary_sele.c_str());
     system->selections->dump();
+  } else if (strcmp(token,"recip")==0){
+    system->enhanced->boost_recip = io_nextb(line);
   // ITS Reading
   } else if (strcmp(token,"its")==0) {
     if(system->enhanced->its){
@@ -82,7 +87,7 @@ void parse_enhanced(char* line, System* system){
         exit(1);
       }
       system->enhanced->separate_interactions = true;
-      system->enhanced->special_nbdirect = true;
+      system->enhanced->special_elec = true;
       printf("REST scaling requires separated nbdirect calculation. This may hurt performance!\n");
     }
     if(potential == "torsion"){
@@ -91,7 +96,7 @@ void parse_enhanced(char* line, System* system){
         exit(1);
       }
       system->enhanced->separate_interactions = true;
-      system->enhanced->special_nbdirect = false;
+      system->enhanced->special_elec = false;
       printf("ITS on selected torsion potential!\n");
     }
     if(potential != "total" && potential != "torsion" && potential != "rest"){
@@ -143,6 +148,12 @@ void parse_enhanced(char* line, System* system){
       exit(1);
     }
     system->enhanced->its->update_steps=io_nexti(line);
+  } else if (strcmp(token, "its_alpha")==0){
+    if(!system->enhanced->its) {
+      printf("ITS not defined yet!"); 
+      exit(1);
+    }
+    system->enhanced->its->alpha=io_nextf(line);
   }
 };
 

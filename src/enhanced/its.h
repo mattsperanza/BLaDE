@@ -24,6 +24,7 @@ class Its {
     real* its_bias_d = NULL; // [N_temp real] bias relative to each temp
 
     // Do not free, pointers to system->state->*
+    real alpha=.5; // .5=scale su slower then ss, 1.0=scale su like ss, 1.5=scale su faster then ss
     real_e U_ss=0;
     real_e* U_ss_d = NULL;
     real_f* dU_ss_d = NULL;
@@ -39,10 +40,10 @@ class Its {
     real* temperatures_d = NULL; // [N_temp real] integrated temperature range
     real* g_k = NULL;
     real* g_k_d = NULL;
-    real weighted_beta;
-    real* weighted_beta_d = NULL; // stores <B/B0>
-    real weighted_root_beta;
-    real* weighted_root_beta_d = NULL; // stores <sqrt(B/B0)>
+    real scale_ss;
+    real* scale_ss_d = NULL; // stores <B/B0>
+    real scale_su;
+    real* scale_su_d = NULL; // stores <pow(B/B0, alpha)>
     real* pHist_accum = NULL;
     real* pHist_accum_d = NULL; // [N_temp real] p(B | X)
     real* pHist = NULL;
