@@ -28,12 +28,11 @@ Its::~Its(){
     if(pHist_accum_d) cudaFree(pHist_accum_d);
     if(pHist_accum) cudaFree(pHist_accum);
     if(U_prime_d) cudaFree(U_prime_d);
-    if(g_k) free(g_k);
-    if(g_k_d) cudaFree(g_k_d);
+    if(g) free(g);
+    if(g_d) cudaFree(g_d);
     if(scale_ss_d) cudaFree(scale_ss_d);
     if(scale_su_d) cudaFree(scale_su_d);
     if(U_d) cudaFree(U_d);
-    if(correction_strength_d) cudaFree(correction_strength_d);
     if(fp_beta) fclose(fp_beta);
     if(fp_exp_U) fclose(fp_exp_U);
     if(fp_g) fclose(fp_g);
@@ -51,9 +50,9 @@ void Its::initialize(System* system){
       // N_temp initialized in enhanced.cu
       cudaMalloc(&temperatures_d, N_temp*sizeof(real));
       cudaMemcpy(temperatures_d, temperatures, N_temp*sizeof(real), cudaMemcpyDefault);
-      cudaMalloc(&g_k_d, N_temp*sizeof(real));
-      cudaMemset(g_k_d, 0, N_temp*sizeof(real));
-      g_k = (real*)calloc(N_temp,sizeof(real));
+      cudaMalloc(&g_d, N_temp*sizeof(real));
+      cudaMemset(g_d, 0, N_temp*sizeof(real));
+      g = (real*)calloc(N_temp,sizeof(real));
       cudaMalloc(&its_bias_d, N_temp*sizeof(real));
       its_bias = (real*)calloc(N_temp,sizeof(real));
       cudaMalloc(&expected_U_d, N_temp*sizeof(real));
@@ -80,8 +79,6 @@ void Its::initialize(System* system){
       pHist_accum = (real*) calloc(N_temp, sizeof(real));
       cudaMalloc(&U_prime_d, sizeof(real_e));
       cudaMalloc(&U_d, sizeof(real_e));
-      cudaMalloc(&correction_strength_d, sizeof(real));
-      cudaMemcpy(correction_strength_d, &correction_strength, sizeof(real), cudaMemcpyDefault);
     }
 
     N_temp_max = N_temp;
@@ -117,7 +114,7 @@ __global__ void its_logsumexp_kernel(
   real* temps, real* g, real alpha,
   // Output
   real* scale_ss, real* scale_su, 
-  real* its_bias, real* pHist_accum, real* pHist,
+  real* its_bias, real* pHist,
   real_e* enhanced_energy, real_e* U_prime
 ){
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -128,24 +125,24 @@ __global__ void its_logsumexp_kernel(
     U_su = U_int[0];
   }
   // Compute the max exponent
-  real beta_0 = 1.0/sim_kT;
-  real c = -1e9;
+  real_e beta_0 = 1.0/sim_kT;
+  real_e c = -1e9;
   for(int i = low_idx; i < N_temps; i++){
-    real beta_k = 1.0/(kB*temps[i]);
-    real exp_arg = -(beta_k-beta_0)*U_ss - (beta_k*pow(beta_k/beta_0, alpha-1) - beta_0)*U_su + g[i];
+    real_e beta_k = 1.0/(kB*temps[i]);
+    real_e exp_arg = -(beta_k-beta_0)*U_ss - (beta_k*pow(beta_k/beta_0, (double)alpha-1.0) - beta_0)*U_su + g[i];
     if(exp_arg > c){
       c = exp_arg;
     }
   }
   // -beta_0 U' = ln(sum_k exp(-beta_k*U + g))
   //            = ln(exp(c) * sum_k exp(-beta_k*U + g - c))
-  real exp_sum = 0;
+  real_e exp_sum = 0;
   for(int i = low_idx; i < N_temps; i++){
-    real beta_k = 1.0/(kB*temps[i]);
-    real exp_arg = -(beta_k-beta_0)*U_ss - (beta_k*pow(beta_k/beta_0, alpha-1) - beta_0)*U_su + g[i];
+    real_e beta_k = 1.0/(kB*temps[i]);
+    real_e exp_arg = -(beta_k-beta_0)*U_ss - (beta_k*pow(beta_k/beta_0, (double)alpha-1.0) - beta_0)*U_su + g[i];
     exp_sum += exp(exp_arg-c);
   }
-  real U_extra = -(c+log(exp_sum))/beta_0; // exp(-c) comes from beta_k=beta_0
+  real_e U_extra = -(c+log(exp_sum))/beta_0; // exp(-c) comes from beta_k=beta_0
   U_prime[0] = U_tot[0]+U_extra;
   atomicAdd(enhanced_energy, U_extra);
   // exp(-bk*U) = exp(bk*U_bias)*(-b0*U')
@@ -154,11 +151,10 @@ __global__ void its_logsumexp_kernel(
   scale_su[0] = 0;
   for(int i = low_idx; i < N_temps; i++){
     real_e beta_k = 1.0/(kB*temps[i]);
-    // add g[0] to remove the weight from the expectation
-    its_bias[i] = (beta_0/beta_k)*(U_prime[0] + g[i]/beta_0) - U_tot[0];
-    real exp_arg = -(beta_k-beta_0)*U_ss - (beta_k*pow(beta_k/beta_0, alpha-1) - beta_0)*U_su + g[i];
-    real weight = exp(exp_arg-c) / exp_sum;
-    pHist_accum[i] += weight;
+    // add g[i] to set this temperature as the zero point?
+    its_bias[i] = (beta_0/beta_k)*U_prime[0] - U_tot[0];
+    real_e exp_arg = -(beta_k-beta_0)*U_ss - (beta_k*pow(beta_k/beta_0, (double)alpha-1.0) - beta_0)*U_su + g[i];
+    real_e weight = exp(exp_arg-c) / exp_sum;
     pHist[i] = weight;
     scale_ss[0] += (beta_k/beta_0)*weight;
     scale_su[0] += pow(beta_k/beta_0, alpha)*weight;
@@ -180,7 +176,7 @@ __global__ void its_update_force_kernel(
     if(dU_int){
       dU_su = dU_int[i];
     }
-    //if(dU_solv){
+    // if(dU_solv){
     //  dU_uu = dU_solv[i];
     //}
     //if(abs(forceBuffer[i]-(dU_ss + dU_su + dU_uu)) > 1e-3){
@@ -219,9 +215,9 @@ void getforce_its(System* system){
   // Compute <B>/B0 & <sqrt(B/B0)>
   its_logsumexp_kernel<<<1,1,shMem,stream>>>(
     it->low_idx, it->N_temp, kT, it->U_d, it->U_ss_d, it->U_su_d, 
-    it->temperatures_d, it->g_k_d, it->alpha,
+    it->temperatures_d, it->g_d, it->alpha,
     it->scale_ss_d, it->scale_su_d,
-    it->its_bias_d, it->pHist_accum_d, it->pHist_d,
+    it->its_bias_d, it->pHist_d,
     &(s->energy_d[eeenhanced]), it->U_prime_d);
   // dU'/dX = dU/dX + (<B>/B0-1)*dU_ss/dX + (<sqrt(B/B0)>-1)*dU_su/dX
   int dof = 3*s->atomCount + s->lambdaCount;
@@ -256,27 +252,20 @@ __global__ void update_its_expectation_kernel(
     weighted_U[i] += U * pHist[i];
     weights[i] += pHist[i];
     expected_U[i] = weighted_U[i] / weights[i];
+    pHist_accum[i] += pHist[i];
   }
 }
 
-__global__ void update_weights_kernel(int N_temps, real* temps, real* expected_U, real* correction_strength, real* pBeta, real* g){
-  real eps = 1e-10;
-  real scale = *correction_strength;
-  real uniform_FE = -log(1.0/N_temps);
-  real norm = pBeta[0];
-  g[0] = 0;
+__global__ void update_weights_kernel(int N_temps, real* temps, real* expected_U, real bias_mag, real* pBeta_accum, real* g){
   real kbi = 1/kB;
-  
+  g[0] = 0;
   if (N_temps < 2){
     return;
   } else if (N_temps == 2) {
     g[1] = (kbi/temps[1] - kbi/temps[0]) * (expected_U[0] + expected_U[1]) / 2.0;
-    norm = pBeta[0] + pBeta[1];
-    g[0] += scale*(-log(pBeta[0]/norm + eps) - uniform_FE);
-    g[1] += scale*(-log(pBeta[1]/norm + eps) - uniform_FE);
+    g[1] += bias_mag*(pBeta_accum[1]-pBeta_accum[0]);
     return;
   }
-
   // See scipy cumulative simpsons
   real x1 = kbi/temps[0];
   real x2 = kbi/temps[1];
@@ -291,7 +280,6 @@ __global__ void update_weights_kernel(int N_temps, real* temps, real* expected_U
   real I12 = (h23/6.0)*((3.0 - h23/h13)*y3 + (3.0 + (h23*h23)/(h12*h13) + h23/h13)*y2 - (h23*h23)/(h12*h13)*y1);
   g[1] = I01;
   g[2] = I01 + I12;
-  norm += pBeta[1] + pBeta[2];
   // ---- Remaining intervals ----
   for (int i = 2; i < N_temps - 1; i++) {
     real x1 = kbi/temps[i-1];
@@ -305,10 +293,9 @@ __global__ void update_weights_kernel(int N_temps, real* temps, real* expected_U
     real h13 = x3 - x1;
     real I = (h23/6.0)*((3.0 - h23/h13)*y3 + (3.0 + (h23*h23)/(h12*h13) + h23/h13)*y2 - (h23*h23)/(h12*h13)*y1);
     g[i+1] = g[i] + I;
-    norm += pBeta[i+1];
   }
   for(int i = 0; i < N_temps; i++){
-    g[i] += scale*(-log(pBeta[i]/norm + eps) - uniform_FE); // lower the weight of higher sampled temps
+    g[i] -= bias_mag*(pBeta_accum[i]-pBeta_accum[0]);
   }
 };
 
@@ -341,8 +328,8 @@ void update_its(System* system){
     update_weights_kernel<<<1,1,0,stream>>>(
       it->N_temp, it->temperatures_d, 
       it->expected_U_d, 
-      it->correction_strength_d, it->pHist_accum_d, 
-      it->g_k_d);
+      it->bias_mag, it->pHist_accum_d, 
+      it->g_d);
   }
 
   // This needs to go after the update (since its_bias was not filled)
@@ -369,7 +356,7 @@ void Its::recv_its(){
   cudaMemcpy(pHist, pHist_d, size, cudaMemcpyDefault);
   cudaMemcpy(pHist_accum, pHist_accum_d, size, cudaMemcpyDefault);
   cudaMemcpy(expected_U, expected_U_d, size, cudaMemcpyDefault);
-  cudaMemcpy(g_k, g_k_d, size, cudaMemcpyDefault);
+  cudaMemcpy(g, g_d, size, cudaMemcpyDefault);
   cudaMemcpy(its_bias, its_bias_d, size, cudaMemcpyDefault);
 }
 
@@ -401,9 +388,9 @@ void log_its(System* system){
     printf("%.3f, ", it->pHist[i]);
   }
   printf("]\n");
-  printf("Flattening correction: [ ");
+  printf("temps: [");
   for(int i = 0; i < it->N_temp; i++){
-    printf("%.2f, ", it->correction_strength*(-log(it->pHist_accum[i]/sum + 1e-10) + log(1.0/it->N_temp)));
+    printf("%.2f, ", it->temperatures[i]);
   }
   printf("]\n");
   printf("its_bias: [");
@@ -411,16 +398,19 @@ void log_its(System* system){
     printf("%.2f, ", it->its_bias[i]);
   }
   printf("]\n");
-
   printf("<U>_k: [ ");
   for(int i = 0; i < it->N_temp; i++){
     printf("%.2f, ", it->expected_U[i]);
   }
   printf("]\n");
-
+  printf("Wang-Landau: [ ");
+  for(int i = 0; i < it->N_temp; i++){
+    printf("%.2f, ", -it->bias_mag*(it->pHist_accum[i]-it->pHist_accum[0]));
+  }
+  printf("]\n");
   printf("g_k: [ ");
   for(int i = 0; i < it->N_temp; i++){
-    printf("%.2f, ", it->g_k[i]);
+    printf("%.2f, ", it->g[i]);
   }
   printf("]\n");
   printf("\n");
@@ -458,7 +448,7 @@ void write_small_its(System* system, std::string output_dir){
   }
   fprintf(it->fp_g, "%d ", system->run->step);
   for(int i = 0; i < it->N_temp_max; i++){
-    fprintf(it->fp_g, "%f ", it->g_k[i]);
+    fprintf(it->fp_g, "%f ", it->g[i]);
   }
   fprintf(it->fp_g, "\n");
   fflush(it->fp_g);

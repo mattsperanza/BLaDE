@@ -215,7 +215,7 @@ __global__ void getforce_pair_kernel(
         l[1]=lambda[b[1]];
       }
     }
-    if(t==1 && (b[0] || b[1])){printf("Wrong!!!\n");}
+    //if(t==1 && (b[0] || b[1])){printf("Wrong!!! i: %d, j: %d\n", ii, jj);}
 
     rEff=r;
     if (useSoftCore) {

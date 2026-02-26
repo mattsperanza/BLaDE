@@ -115,7 +115,10 @@ void parse_enhanced(char* line, System* system){
     real temp_high = io_nextf(line);
     real* temps = (real*) malloc(num_temps*sizeof(real));
     for(int i = 0; i < num_temps; i++){
-      temps[i] = temp_low*pow(temp_high/temp_low, ((real)i)/(num_temps-1));
+      // Optimal Exp spacing
+      //temps[i] = temp_low*pow(temp_high/temp_low, ((real)i)/(num_temps-1));
+      // Linear Spacing
+      temps[i] = temp_low + ((real) i)*(temp_high - temp_low)/(num_temps-1.0);
     }
     printf("ITS Temps: [ ");
     for(int i = 0; i < num_temps; i++){
@@ -130,12 +133,12 @@ void parse_enhanced(char* line, System* system){
       exit(1);
     }
     system->enhanced->its->steps_per_temp = io_nexti(line);
-  } else if (strcmp(token, "its_flattening_strength") == 0){
+  } else if (strcmp(token, "its_bias_mag") == 0){
     if(!system->enhanced->its) {
       printf("ITS not defined yet!\n"); 
       exit(1);
     }
-    system->enhanced->its->correction_strength = io_nextf(line);
+    system->enhanced->its->bias_mag = io_nextf(line);
   } else if (strcmp(token, "its_sample_freq") == 0){
     if(!system->enhanced->its) {
       printf("ITS not defined yet!"); 

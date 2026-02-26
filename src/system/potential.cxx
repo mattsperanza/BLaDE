@@ -1071,20 +1071,23 @@ void Potential::initialize(System *system)
         // Get participating atoms
         nbex.idx[0]=i;
         nbex.idx[1]=*jj;
+        bool nb_pair = msld->nbex_scaling(nbex.idx,nbex.siteBlock);
         nbex.selection=0; 
-        for(j=0; j<2; j++){
-          int id = nbex.idx[j];
-          // siteblock not filled
-          int alchem = system->msld->atomBlock[i];
-          bool selected = system->enhanced->atom_selection_primary[id] == 1;
-          if(alchem){
-            nbex.selection+=2; // alchemical interactions = ss
-          } else if (selected) {
-            nbex.selection+=1;
+        if(system->enhanced && system->enhanced->atom_selection_primary){
+          for(j=0; j<2; j++){
+            int id = nbex.idx[j];
+            // siteblock not filled
+            int alchem = 0xFFFF & nbex.siteBlock[j];
+            bool selected = system->enhanced->atom_selection_primary[id] == 1;
+            if(alchem){
+              nbex.selection+=2; // alchemical interactions = ss
+            } else if (selected) {
+              nbex.selection+=1;
+            }
           }
         }
         // Get their MSLD scaling
-        if (msld->nbex_scaling(nbex.idx,nbex.siteBlock)) {
+        if (nb_pair) {
           // Get their parameters
           nbex.qxq=charge[nbex.idx[0]]*charge[nbex.idx[1]];
           nbexs_tmp.push_back(nbex);
@@ -1713,7 +1716,6 @@ void Potential::calc_force(int step,System *system)
   if (system->enhanced && system->enhanced->its){ 
     calcEnergy=true; // Need to compute energy every step for ITS
   }
-  calcEnergy=true; // Need to compute energy every step for ITS
 #ifdef REPLICAEXCHANGE
   if (system->run->freqREx>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqREx==0));
