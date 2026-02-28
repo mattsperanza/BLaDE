@@ -138,9 +138,9 @@ void parse_enhanced(char* line, System* system){
     real* temps = (real*) malloc(num_temps*sizeof(real));
     for(int i = 0; i < num_temps; i++){
       // Optimal Exp spacing
-      //temps[i] = temp_low*pow(temp_high/temp_low, ((real)i)/(num_temps-1));
+      temps[i] = temp_low*pow(temp_high/temp_low, ((real)i)/(num_temps-1));
       // Linear Spacing
-      temps[i] = temp_low + ((real) i)*(temp_high - temp_low)/(num_temps-1.0);
+      //temps[i] = temp_low + ((real) i)*(temp_high - temp_low)/(num_temps-1.0);
     }
     printf("ITS Temps: [ ");
     for(int i = 0; i < num_temps; i++){
@@ -200,7 +200,10 @@ void getforce_enhanced(System* system){
   // Lambda Dynamics REST
   if(es->ldyn_rest){
     getforce_ldyn_rest(system);
-    if (system->run->step % es->log_freq == 0) log_ldyn_rest(system);
+    if(es->updating){
+      update_ldyn_rest(system);
+      if (system->run->step % es->log_freq == 0) log_ldyn_rest(system);
+    }
   }
 
   // ITS should be last (capture to capture other bias in scaling)

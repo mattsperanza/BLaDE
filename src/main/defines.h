@@ -27,7 +27,7 @@
 
 // See values in charmm/source/ltm/consta_ltm.F90
 #define ANGSTROM ((real)1.0)
-#define SOFTCORERADIUS ((real)4.0)
+#define SOFTCORERADIUS ((real)5.0)
 #define KCAL_MOL ((real)1.0)
 // 1 / CHARMM TIMFAC value 0.0488882129
 #define PICOSECOND ((real)20.454828284385908)

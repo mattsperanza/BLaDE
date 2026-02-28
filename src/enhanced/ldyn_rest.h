@@ -17,8 +17,9 @@ class Ldyn_rest {
     real T_high;
 
     // expected U
-    int ramp_length = 300;
-    int bin_count = 50;
+    int sample_freq = 1;
+    int ramp_length = 100;
+    int bin_count = 101;
     int* counts = NULL;
     int* counts_d = NULL;
     real* sum_dUdL = NULL;
@@ -36,6 +37,7 @@ class Ldyn_rest {
 };
 
 void getforce_ldyn_rest(System* system);
+void update_ldyn_rest(System* system);
 void log_ldyn_rest(System* system);
 
 #endif
