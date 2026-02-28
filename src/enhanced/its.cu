@@ -112,7 +112,7 @@ void Its::initialize(System* system){
 __global__ void its_logsumexp_kernel(
   // Input
   int low_idx, int N_temps, real sim_kT, 
-  real_e* U_tot, real_e* U_sele, real_e* U_int, real_e* U_unsel,
+  real_e* U_tot, real_e* U_sele, real_e* U_int, 
   real* temps, real* g, real alpha,
   // Output
   real* scale_ss, real* scale_su, 
@@ -126,13 +126,6 @@ __global__ void its_logsumexp_kernel(
   real_e U_uu=0;
   if(U_int){
     U_su = U_int[0];
-  }
-  if(U_unsel){
-    U_uu = U_unsel[0];
-  }
-  if(true || abs(U_tot[0] - (U_ss + U_su + U_uu)) > 1e-3){
-    printf("U_tot: %f, U_tot_diff: %f, U_ss: %f, U_su: %f, U_uu: %f\n", 
-      U_tot[0], (U_ss + U_su + U_uu), U_ss, U_su, U_uu);
   }
   // Compute the max exponent
   real_e beta_0 = 1.0/sim_kT;
@@ -187,13 +180,6 @@ __global__ void its_update_force_kernel(
     if(dU_int){
       dU_su = dU_int[i];
     }
-     if(dU_solv){
-      dU_uu = dU_solv[i];
-    }
-    if(abs(forceBuffer[i]-(dU_ss + dU_su + dU_uu)) > 1e-3){
-      printf("idx: %d, idx/3: %d, force: %f, sum: %f, dU_ss: %f, dU_su: %f, dU_uu: %f\n", 
-        i, i/3, forceBuffer[i], dU_ss+dU_su+dU_uu, dU_ss, dU_su, dU_uu);
-    }
     // Already contains dU_uu
     // Remove exising and replace with scaled versions of dU_ss & dU_su
     forceBuffer[i] += (scale_ss[0]-1)*dU_ss + (scale_su[0]-1)*dU_su;
@@ -223,7 +209,7 @@ void getforce_its(System* system){
   real kT = kB*system->run->T;
   // Compute <B>/B0 & <sqrt(B/B0)>
   its_logsumexp_kernel<<<1,1,shMem,stream>>>(
-    it->low_idx, it->N_temp, kT, it->U_d, it->U_ss_d, it->U_su_d, it->U_uu_d, 
+    it->low_idx, it->N_temp, kT, it->U_d, it->U_ss_d, it->U_su_d, 
     it->temperatures_d, it->g_d, it->alpha,
     it->scale_ss_d, it->scale_su_d,
     it->its_bias_d, it->pHist_d,

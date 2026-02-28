@@ -21,7 +21,6 @@ set(PRECISION "FLOAT" CACHE STRING "FLOAT OR DOUBLE")
 if (PRECISION STREQUAL "DOUBLE")
   add_definitions(-DDOUBLE)
 endif()
-add_definitions(-DDOUBLE)
 
 ## Add compiler definition flags here
 # add_definitions(-DPROFILESERIAL)
