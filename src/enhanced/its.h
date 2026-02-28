@@ -31,6 +31,8 @@ class Its {
     real_e U_su=0;
     real_e* U_su_d = NULL;
     real_f* dU_su_d = NULL;
+    real_e* U_uu_d = NULL;
+    real_f* dU_uu_d = NULL;
 
     // Used for calculating bias potential
     int low_idx;

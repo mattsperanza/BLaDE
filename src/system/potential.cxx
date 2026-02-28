@@ -195,12 +195,16 @@ Potential::~Potential()
   if (chargeGridPME_d) cudaFree(chargeGridPME_d);
   if (fourierGridPME_d) cudaFree(fourierGridPME_d);
   if (potentialGridPME_d) cudaFree(potentialGridPME_d);
-  if (potentialGridPME_ss_d) cudaFree(potentialGridPME_ss_d);
+  if (potentialGridPME_sele_d) cudaFree(potentialGridPME_sele_d);
+  if (potentialGridPME_unsele_d) cudaFree(potentialGridPME_unsele_d);
 #ifdef USE_TEXTURE
   if (potentialGridPME_tex) cudaDestroyTextureObject(potentialGridPME_tex);
 #endif
 #ifdef USE_TEXTURE
-  if (potentialGridPME_ss_tex) cudaDestroyTextureObject(potentialGridPME_ss_tex);
+  if (potentialGridPME_sele_tex) cudaDestroyTextureObject(potentialGridPME_sele_tex);
+#endif
+#ifdef USE_TEXTURE
+  if (potentialGridPME_unsele_tex) cudaDestroyTextureObject(potentialGridPME_unsele_tex);
 #endif
 
   if (nbonds) free(nbonds);
@@ -1159,7 +1163,8 @@ void Potential::initialize(System *system)
   cudaMalloc(&chargeGridPME_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
   cudaMalloc(&fourierGridPME_d,gridDimPME[0]*gridDimPME[1]*(gridDimPME[2]/2+1)*sizeof(myCufftComplex));
   cudaMalloc(&potentialGridPME_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
-  cudaMalloc(&potentialGridPME_ss_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
+  cudaMalloc(&potentialGridPME_sele_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
+  cudaMalloc(&potentialGridPME_unsele_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
 #ifdef USE_TEXTURE
   {
     cudaResourceDesc resDesc;
@@ -1173,7 +1178,10 @@ void Potential::initialize(System *system)
     texDesc.readMode=cudaReadModeElementType;
     cudaCreateTextureObject(&potentialGridPME_tex,&resDesc,&texDesc,NULL);
     // ss grid has exact same properties
-    cudaCreateTextureObject(&potentialGridPME_ss_tex,&resDesc,&texDesc,NULL);
+    resDesc.res.linear.devPtr=potentialGridPME_sele_d;
+    cudaCreateTextureObject(&potentialGridPME_sele_tex,&resDesc,&texDesc,NULL);
+    resDesc.res.linear.devPtr=potentialGridPME_unsele_d;
+    cudaCreateTextureObject(&potentialGridPME_unsele_tex,&resDesc,&texDesc,NULL);
   }
 #endif
 

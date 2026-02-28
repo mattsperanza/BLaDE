@@ -90,6 +90,7 @@ Run::Run(System *system)
   termStringToInt["lambda"]=eelambda;
   termStringToInt["theta"]=eetheta;
   termStringToInt["cats"]=eecats;
+  termStringToInt["enhanced"]=eeenhanced;
   termStringToInt["eenoe"]=eenoe;
   termStringToInt["eeharmonic"]=eeharmonic;
   termStringToInt["eemmfp"]=eemmfp;

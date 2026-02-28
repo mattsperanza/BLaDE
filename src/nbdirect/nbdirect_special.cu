@@ -446,7 +446,6 @@ __global__ void getforce_nbdirect_kernel_special(
                   lEnergy_su += eij;
                 }
               } 
-              /*
               else {
                 real3_scaleinc(&fi_uu, fij*rinv, dr);
                 at_real3_scaleinc(&force_uu[jidx], -fij*rinv, dr);
@@ -458,7 +457,6 @@ __global__ void getforce_nbdirect_kernel_special(
                   lEnergy_uu += eij;
                 }
               }
-                */
 
               // Energy, if requested
               if (calcEnergy) {
@@ -525,6 +523,7 @@ __global__ void getforce_nbdirect_kernel_special(
           atomicAdd(&lambdaForce[0xFFFF & bj],flj);
           atomicAdd(&lambdaForce_ss[0xFFFF & bj],flj_ss);
           atomicAdd(&lambdaForce_su[0xFFFF & bj],flj_su);
+          atomicAdd(&lambdaForce_uu[0xFFFF & bj],flj_uu);
         }
         at_real3_inc(&force[32*jBlock+iThread],fj);
       }
@@ -537,12 +536,12 @@ __global__ void getforce_nbdirect_kernel_special(
         atomicAdd(&lambdaForce[0xFFFF & bi],fli);
         atomicAdd(&lambdaForce_ss[0xFFFF & bi],fli_ss);
         atomicAdd(&lambdaForce_su[0xFFFF & bi],fli_su);
-        //atomicAdd(&lambdaForce_uu[0xFFFF & bi],fli_uu);
+        atomicAdd(&lambdaForce_uu[0xFFFF & bi],fli_uu);
       }
       at_real3_inc(&force[32*iBlock+iThread],fi);
       at_real3_inc(&force_ss[32*iBlock+iThread],fi_ss);
       at_real3_inc(&force_su[32*iBlock+iThread],fi_su);
-      //at_real3_inc(&force_uu[32*iBlock+iThread],fi_uu);
+      at_real3_inc(&force_uu[32*iBlock+iThread],fi_uu);
     }
   }
 
@@ -554,7 +553,7 @@ __global__ void getforce_nbdirect_kernel_special(
     real_sum_reduce(lEnergy,energy);
     real_sum_reduce(lEnergy_ss,U_ss);
     real_sum_reduce(lEnergy_su,U_su);
-    //real_sum_reduce(lEnergy_uu,U_uu);
+    real_sum_reduce(lEnergy_uu,U_uu);
   }
 }
 
