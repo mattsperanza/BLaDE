@@ -5,6 +5,7 @@
 
 class System;
 class Its;
+class Ldyn_rest;
 
 class Enhanced {
   public:
@@ -15,6 +16,7 @@ class Enhanced {
 
     bool active = false;
     bool updating = true; // don't collect samples (ex. during pressure coupling)
+    Ldyn_rest* ldyn_rest = NULL;
     Its* its = NULL;
 
     int log_freq = 10000; // 20ps

@@ -1721,7 +1721,7 @@ void Potential::calc_force(int step,System *system)
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
-  if (system->enhanced && system->enhanced->its){ 
+  if (system->enhanced && (system->enhanced->its || system->enhanced->ldyn_rest)){ 
     calcEnergy=true; // Need to compute energy every step for ITS
   }
 #ifdef REPLICAEXCHANGE

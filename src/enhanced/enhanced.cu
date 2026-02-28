@@ -10,6 +10,7 @@
 #include "system/potential.h"
 #include "run/run.h"
 #include "enhanced/its.h"
+#include "enhanced/ldyn_rest.h"
 
 #include "enhanced/enhanced.h"
 
@@ -19,6 +20,7 @@ Enhanced::Enhanced(){
 
 Enhanced::~Enhanced(){
   if(its) delete(its);
+  if(ldyn_rest) delete(ldyn_rest);
   if(atom_selection_primary) free(atom_selection_primary);
   if(atom_selection_primary_d) cudaFree(atom_selection_primary_d);
   if(atom_selection_secondary) free(atom_selection_secondary);
@@ -37,7 +39,7 @@ void parse_enhanced(char* line, System* system){
   }
 
   io_nexta(line,token);
-
+  system->enhanced->active = true;
   if(strcmp(token, "log_freq")==0){
     system->enhanced->log_freq = io_nexti(line);
   } else if (strcmp(token, "updating")==0){
@@ -74,6 +76,26 @@ void parse_enhanced(char* line, System* system){
     system->selections->dump();
   } else if (strcmp(token,"recip")==0){
     system->enhanced->boost_recip = io_nextb(line);
+  // Lambda Dynamics REST Reading
+  } else if (strcmp(token, "ldyn_rest") == 0){
+    if(system->enhanced->ldyn_rest){
+      printf("Lambda Dynamics REST already exists!\n");
+      exit(1);
+    }
+    if(!system->enhanced->atom_selection_primary){
+        printf("Primary atom selection is NULL!\n");
+        exit(1);
+    }
+    system->enhanced->separate_interactions = true;
+    system->enhanced->special_elec = false; // enhanced recip doesn't gain much?
+    real T = io_nextf(line);
+    system->enhanced->ldyn_rest = new Ldyn_rest(T);
+  } else if (strcmp(token, "ldyn_rest_alpha")==0){
+    if(!system->enhanced->ldyn_rest){
+      printf("Lambda Dynamics REST already exists!\n");
+      exit(1);
+    }
+    system->enhanced->ldyn_rest->alpha=io_nextf(line);
   // ITS Reading
   } else if (strcmp(token,"its")==0) {
     if(system->enhanced->its){
@@ -165,12 +187,21 @@ void Enhanced::initialize(System* system){
   if(its) {
     its->initialize(system);
   }
+  if(ldyn_rest){
+    ldyn_rest->initialize(system);
+  }
   // TODO: Check settings and compatibility
 }
 
 void getforce_enhanced(System* system){
   Enhanced* es = system->enhanced;
   if (system->run->calcTermFlag[eeenhanced]==false) return;
+
+  // Lambda Dynamics REST
+  if(es->ldyn_rest){
+    getforce_ldyn_rest(system);
+    if (system->run->step % es->log_freq == 0) log_ldyn_rest(system);
+  }
 
   // ITS should be last (capture to capture other bias in scaling)
   if(es->its){
