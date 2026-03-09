@@ -111,7 +111,7 @@ void Its::initialize(System* system){
 
 __global__ void its_logsumexp_kernel(
   // Input
-  int low_idx, int N_temps, real sim_kT, 
+  int low_idx, int N_temps, real_e sim_T, 
   real_e* U_tot, real_e* U_sele, real_e* U_int, 
   real* temps, real* g, real alpha,
   // Output
@@ -128,7 +128,7 @@ __global__ void its_logsumexp_kernel(
     U_su = U_int[0];
   }
   // Compute the max exponent
-  real_e beta_0 = 1.0/sim_kT;
+  real_e beta_0 = 1.0/(kB*sim_T);
   real_e c = -1e9;
   for(int i = low_idx; i < N_temps; i++){
     real_e beta_k = 1.0/(kB*temps[i]);
@@ -206,10 +206,9 @@ void getforce_its(System* system){
   // Calculate total potential prior to ITS
   reduce_total_energy_kernel<<<1,1,0,stream>>>(s->energy_d, it->U_d);
   // Compute bias and forces due to ITS bias with weights
-  real kT = kB*system->run->T;
   // Compute <B>/B0 & <sqrt(B/B0)>
   its_logsumexp_kernel<<<1,1,shMem,stream>>>(
-    it->low_idx, it->N_temp, kT, it->U_d, it->U_ss_d, it->U_su_d, 
+    it->low_idx, it->N_temp, system->run->T, it->U_d, it->U_ss_d, it->U_su_d, 
     it->temperatures_d, it->g_d, it->alpha,
     it->scale_ss_d, it->scale_su_d,
     it->its_bias_d, it->pHist_d,
@@ -364,8 +363,8 @@ void log_its(System* system){
   real eff_beta = it->scale_ss*(1.0/(kB*system->run->T));
   real eff_temp = 1.0/(kB*eff_beta);
   real root_beta = it->scale_su*sqrt(1.0/(kB*system->run->T));
-  printf("Step: %d, U: %.2f, U_ss: %.2f, U_su: %.2f, U': %.2f\n", 
-    system->run->step, it->U, it->U_ss, it->U_su, it->U_prime);
+  printf("Step: %d, U: %.2f, U_ss: %.2f, U_su: %.2f, U': %.2f, U'-U: %.2f\n", 
+    system->run->step, it->U, it->U_ss, it->U_su, it->U_prime, it->U_prime-it->U);
   printf("Force Scale ss: %.2f, Force Scale su: %.2f, <beta>: %.2f, <T>: %.2f\n", 
     it->scale_ss, it->scale_su, eff_beta, eff_temp);
   printf("Accessible Temperatures: %d / %d\n", it->N_temp, it->N_temp_max);
