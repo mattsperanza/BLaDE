@@ -40,26 +40,30 @@ class Its {
     int N_temp_max;
     real* temperatures = NULL; // [N_temp real] integrated temperature range
     real* temperatures_d = NULL; // [N_temp real] integrated temperature range
-    real* g = NULL; // int_bl^bh (<U>_b) db + wl_g
+    real* g = NULL; // int_bl^bh (<U>_b) db + wl_f
     real* g_d = NULL;
     real scale_ss = 1.0;
     real* scale_ss_d = NULL; // stores <B/B0>
     real scale_su = 1.0;
     real* scale_su_d = NULL; // stores <pow(B/B0, alpha)>
-    real bias_mag = 0.05; // 0.05 = 1 kcal / (sample_freq*20)
-    real* pHist_accum = NULL;
-    real* pHist_accum_d = NULL; // [N_temp real] p(B)
-    real* pHist = NULL;
-    real* pHist_d = NULL; // p(B|X)
-
     // Expanded ensemble
-    bool expanded_ensemble = false;
-    int temp_sample_freq = 1; // set higher to turn on expanded ensemble (faster dynamics)
-
-    // OnTheFly Weight Updates
     int update_steps = 1e9; // update until system->run->step > update_steps
+    real wl_inc = 5; // initial wl update in kcal/mol
+    real* wl_inc_d;
+    real wl_ratio = 0.8; // flatness criteria
+    real wl_alpha = 0.5; // increment scaling factor
+    bool expanded_ensemble = true;
+    int sample_freq = 10; // update WL and <U> with new sample every x steps, default matches lambda sampling
+
+    real* wl_hist = NULL;
+    real* wl_hist_d = NULL; // wang-landau histogram
+    real* wl_f = NULL; // wang-landau FE
+    real* wl_f_d = NULL; // wang-landau FE
+    real* pBeta = NULL;
+    real* pBeta_d = NULL; // indicator of which temperature we are at
+
+    // Initial TI simulations
     int steps_per_temp = 5000; // Add temp every x steps
-    int sample_freq = 10; // update <U> with new sample every x steps
     real* expected_U = NULL; // <U> = weighted_U / weights 
     real* expected_U_d = NULL; // <U> = weighted_U / weights 
     real* weighted_U_d = NULL; // sum U*exp(B*U_bias)

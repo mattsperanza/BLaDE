@@ -1710,7 +1710,7 @@ void Potential::calc_force(int step,System *system)
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
   if (system->enhanced && (system->enhanced->its || system->enhanced->ldyn_rest)){
-    calcEnergy=calcEnergy||(step%system->enhanced->its->temp_sample_freq==0); // Need to compute energy every step for ITS
+    calcEnergy=calcEnergy||(system->run->step%system->enhanced->its->sample_freq==0); // EE step
     calcEnergy=calcEnergy||system->enhanced->ldyn_rest;
   }
 #ifdef REPLICAEXCHANGE

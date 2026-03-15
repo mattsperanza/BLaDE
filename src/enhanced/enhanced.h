@@ -20,9 +20,9 @@ class Enhanced {
     Ldyn_rest* ldyn_rest = NULL;
     Its* its = NULL;
 
-    int log_freq = 10000; // 20ps
-    int write_small_freq = 100; // 2ps
-    int write_big_freq = 10000; // 20ps
+    int log_freq = 100000; // 200ps
+    int write_big_freq = 1000; // 20ps
+    int write_small_freq = 10; // Same as lambda sampling
     std::string output_dir = "nhcd";
 
     bool separate_interactions = false;

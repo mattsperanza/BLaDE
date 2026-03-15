@@ -162,7 +162,7 @@ void parse_enhanced(char* line, System* system){
       printf("ITS not defined yet!\n"); 
       exit(1);
     }
-    system->enhanced->its->bias_mag = io_nextf(line);
+    system->enhanced->its->wl_inc = io_nextf(line);
   } else if (strcmp(token, "its_sample_freq") == 0){
     if(!system->enhanced->its) {
       printf("ITS not defined yet!"); 
@@ -181,13 +181,6 @@ void parse_enhanced(char* line, System* system){
       exit(1);
     }
     system->enhanced->its->alpha=io_nextf(line);
-  } else if (strcmp(token, "its_temp_sample_freq")==0){
-    if(!system->enhanced->its){
-      printf("ITS not defined yet!"); 
-      exit(1);
-    }
-    system->enhanced->its->temp_sample_freq=io_nexti(line);
-    system->enhanced->its->expanded_ensemble=true;
   }
 };
 
