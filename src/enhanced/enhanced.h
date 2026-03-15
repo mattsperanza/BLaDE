@@ -14,6 +14,7 @@ class Enhanced {
 
     void initialize(System* system);
 
+    bool init = false;
     bool active = false;
     bool updating = true; // don't collect samples (ex. during pressure coupling)
     Ldyn_rest* ldyn_rest = NULL;
@@ -26,7 +27,6 @@ class Enhanced {
 
     bool separate_interactions = false;
     bool special_elec = false;
-    bool boost_recip = true;
     bool osrw = false;
 
     std::string primary_sele = "";

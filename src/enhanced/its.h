@@ -35,7 +35,7 @@ class Its {
     real_f* dU_uu_d = NULL;
 
     // Used for calculating bias potential
-    int low_idx;
+    int low_idx=0;
     int N_temp; // Number of temperatures to integrate over
     int N_temp_max;
     real* temperatures = NULL; // [N_temp real] integrated temperature range
@@ -55,7 +55,7 @@ class Its {
     // OnTheFly Weight Updates
     int update_steps = 1e9; // update until system->run->step > update_steps
     int steps_per_temp = 5000; // Add temp every x steps
-    int sample_freq = 20; // update <U> with new sample every x steps
+    int sample_freq = 10; // update <U> with new sample every x steps
     real* expected_U = NULL; // <U> = weighted_U / weights 
     real* expected_U_d = NULL; // <U> = weighted_U / weights 
     real* weighted_U_d = NULL; // sum U*exp(B*U_bias)
@@ -67,6 +67,7 @@ class Its {
     FILE* fp_exp_U = NULL;
     FILE* fp_red_bias = NULL;
     FILE* fp_weighted_T = NULL;
+    FILE* fp_potentials = NULL;
 };
     
 void getforce_its(System* system);

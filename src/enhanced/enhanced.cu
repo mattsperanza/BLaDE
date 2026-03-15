@@ -13,6 +13,7 @@
 #include "enhanced/ldyn_rest.h"
 
 #include "enhanced/enhanced.h"
+#include "main/gpu_check.h"
 
 Enhanced::Enhanced(){
   its=NULL;
@@ -74,8 +75,6 @@ void parse_enhanced(char* line, System* system){
     printf("Dumping enhanced selections! Will segfault if no selection is defined.\n");
     printf("Primary Selection: %s, Secondary Selection: %s\n", system->enhanced->primary_sele.c_str(), system->enhanced->secondary_sele.c_str());
     system->selections->dump();
-  } else if (strcmp(token,"recip")==0){
-    system->enhanced->boost_recip = io_nextb(line);
   // Lambda Dynamics REST Reading
   } else if (strcmp(token, "ldyn_rest") == 0){
     if(system->enhanced->ldyn_rest){
@@ -132,15 +131,18 @@ void parse_enhanced(char* line, System* system){
       printf("ITS not defined yet!\n"); 
       exit(1);
     }
-    int num_temps = io_nexti(line);
+    //printf("Automatically adding system temperature! Equivalent to doubling weight if included already.\n");
+    int num_temps = io_nexti(line); //+1;
     real temp_low = io_nextf(line);
     real temp_high = io_nextf(line);
     real* temps = (real*) malloc(num_temps*sizeof(real));
+    //temps[0] = system->run->T;
     for(int i = 0; i < num_temps; i++){
       // Optimal Exp spacing
-      temps[i] = temp_low*pow(temp_high/temp_low, ((real)i)/(num_temps-1));
+      temps[i] = temp_low*pow(temp_high/temp_low, ((real)(i))/(num_temps-1));
+      temps[i] = round(temps[i]); // round temperatures
       // Linear Spacing
-      //temps[i] = temp_low + ((real) i)*(temp_high - temp_low)/(num_temps-1.0);
+      //temps[i] = temp_low + ((real) (i-1))*(temp_high - temp_low)/(num_temps-2.0);
     }
     printf("ITS Temps: [ ");
     for(int i = 0; i < num_temps; i++){
@@ -184,13 +186,14 @@ void parse_enhanced(char* line, System* system){
 
 // Gets called each time a new run function is called
 void Enhanced::initialize(System* system){
-  if(its) {
+  if(its) { // reset pointers
     its->initialize(system);
   }
   if(ldyn_rest){
     ldyn_rest->initialize(system);
   }
   // TODO: Check settings and compatibility
+  init = true;
 }
 
 void getforce_enhanced(System* system){

@@ -23,8 +23,6 @@ __global__ void getforce_ewaldself_kernel(int atomCount,real *charge,real prefac
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   real q;
   real lEnergy=0;
-  real lU_ss=0;
-  real lU_su=0;
   extern __shared__ real sEnergy[];
   int b;
   real l=1;
@@ -41,17 +39,12 @@ __global__ void getforce_ewaldself_kernel(int atomCount,real *charge,real prefac
     // interaction
     if (b || energy) {
       lEnergy=prefactor*q*q;
-      if(selections && selections[i]) {
-        lU_ss = lEnergy;
-      } // su interaction doesn't exist
     }
 
     // Lambda force
     if (b) {
       atomicAdd(&lambdaForce[b],2*l*lEnergy);
-      if(selections && selections[i]) {
-        atomicAdd(&lForce_ss[b], 2*l*lEnergy);
-      }
+      atomicAdd(&lForce_ss[b], 2*l*lEnergy);
     }
   }
 
@@ -59,7 +52,7 @@ __global__ void getforce_ewaldself_kernel(int atomCount,real *charge,real prefac
   if (energy) {
     lEnergy*=l*l;
     real_sum_reduce(lEnergy,sEnergy,energy);
-    real_sum_reduce(l*l*lU_ss, sEnergy, U_ss);
+    real_sum_reduce(lEnergy, sEnergy, U_ss);
   }
 }
 
@@ -289,10 +282,14 @@ __global__ void getforce_ewald_gather_kernel(
 #endif
   real3 *position,
   real3_f *force,
+  real3_f *force_ss,
   box_type kbox,
   real *lambda,
   real_f *lambdaForce,
-  real_e *energy)
+  real_f *lambdaForce_ss,
+  real_e *energy, 
+  real_e *energy_ss 
+)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   real q=0; // Avoid unitialized values for iAtom>=atomCount
@@ -466,6 +463,7 @@ __global__ void getforce_ewald_gather_kernel(
   if (iAtom<atomCount) {
     if (b && threadOfAtom==0) {
       atomicAdd(&lambdaForce[b],2*q*lEnergy);
+      atomicAdd(&lambdaForce_ss[b],2*q*lEnergy);
     }
   }
 
@@ -485,6 +483,7 @@ __global__ void getforce_ewald_gather_kernel(
     }
     if (threadOfAtom==0) {
       at_real3_inc(&force[iAtom], fi);
+      at_real3_inc(&force_ss[iAtom], fi);
     }
   }
 
@@ -500,6 +499,7 @@ __global__ void getforce_ewald_gather_kernel(
     // }
     // note, had to use reduction without shared memory here for a while to avoid errors. That seems to have passed.
     real_sum_reduce(lEnergy,sEnergy,energy);
+    real_sum_reduce(lEnergy,sEnergy,energy_ss);
     // real_sum_reduce(lEnergy,energy);
   }
 }
@@ -547,7 +547,9 @@ void getforce_ewaldTT(System *system,box_type kbox,bool calcEnergy)
 #else
     p->potentialGridPME_d,
 #endif
-    (real3*)s->position_fd,(real3_f*)s->force_d,kbox,s->lambda_fd,s->lambdaForce_d,pEnergy);
+    (real3*)s->position_fd,(real3_f*)s->force_d,(real3_f*)s->dU_ss_spaceBuffer3_d, kbox,s->lambda_fd,
+    s->lambdaForce_d,s->dU_ss_lambdaForce_d, 
+    pEnergy, s->U_ss_d);
 }
 
 template <bool flagBox,typename box_type>

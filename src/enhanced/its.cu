@@ -43,7 +43,27 @@ void Its::initialize(System* system){
     if(!temperatures){
       printf("Didn't set temperature range! Use \"enhanced its_temps {N_temp} {T_low} {T_high}\"\n");
       exit(1);
+    } 
+    
+    // system->state pointers need to exist
+    // need to check if U_su_d or dU_su_d exist
+    if(potential == "total"){
+      // Reduce energy_d to eepotential
+      U_ss_d = U_d;
+      dU_ss_d = system->state->forceBuffer_d;
+    } else if (potential == "torsion"){
+      U_ss_d = system->state->U_ss_d;
+      dU_ss_d = system->state->dU_ss_buffer_d;
+    } else if(potential == "rest"){
+      U_ss_d = system->state->U_ss_d; // (includes torsions)
+      dU_ss_d = system->state->dU_ss_buffer_d;
+      U_su_d = system->state->U_su_d;
+      dU_su_d = system->state->dU_su_buffer_d;
+      U_uu_d = system->state->U_uu_d;
+      dU_uu_d = system->state->dU_uu_buffer_d;
     }
+
+    if(system->enhanced->init){ return; } // don't overallocate or reset mem/temps
 
     // Just assume that if this isn't set all of them are or aren't
     if(!expected_U){
@@ -88,24 +108,6 @@ void Its::initialize(System* system){
     if(update_steps < (N_temp_max-1)*steps_per_temp){
       update_steps = N_temp_max*steps_per_temp;
       printf("Set ITS update_steps < temp_count*steps_per_temp. Increasing update_steps to %d!", update_steps);
-    }
-
-    // system->state pointers need to exist
-    // need to check if U_su_d or dU_su_d exist
-    if(potential == "total"){
-      // Reduce energy_d to eepotential
-      U_ss_d = U_d;
-      dU_ss_d = system->state->forceBuffer_d;
-    } else if (potential == "torsion"){
-      U_ss_d = system->state->U_ss_d;
-      dU_ss_d = system->state->dU_ss_buffer_d;
-    } else if(potential == "rest"){
-      U_ss_d = system->state->U_ss_d; // (includes torsions)
-      dU_ss_d = system->state->dU_ss_buffer_d;
-      U_su_d = system->state->U_su_d;
-      dU_su_d = system->state->dU_su_buffer_d;
-      U_uu_d = system->state->U_uu_d;
-      dU_uu_d = system->state->dU_uu_buffer_d;
     }
 }
 
@@ -165,7 +167,7 @@ __global__ void its_logsumexp_kernel(
 }
 
 __global__ void its_update_force_kernel(
-  int DOF,  int L_dof, real alpha,
+  int DOF,  int nL, real alpha,
   real* scale_ss, real* scale_su,
   real_f* dU_sel, real_f* dU_int, real_f* dU_solv,
   real_f* forceBuffer 
@@ -182,6 +184,9 @@ __global__ void its_update_force_kernel(
     }
     // Already contains dU_uu
     // Remove exising and replace with scaled versions of dU_ss & dU_su
+    //if(i < nL){ //&& abs(dU_ss - forceBuffer[i]) > 1e-3){
+    //  printf("diff: %f\n", dU_ss - forceBuffer[i]);
+    //}
     forceBuffer[i] += (scale_ss[0]-1)*dU_ss + (scale_su[0]-1)*dU_su;
   }
 }
@@ -253,6 +258,13 @@ __global__ void update_its_expectation_kernel(
 __global__ void update_weights_kernel(int N_temps, real* temps, real* expected_U, real bias_mag, real* pBeta_accum, real* g){
   real kbi = 1/kB;
   g[0] = 0;
+  /*
+  for(int i = 1; i < N_temps; i++){
+    real x1 = kbi/temps[i-1];
+    real x2 = kbi/temps[i];
+    g[i] = g[i-1] + (x2-x1)*(expected_U[i]+expected_U[i-1])/2.0;
+  }
+    */
   if (N_temps < 2){
     return;
   } else if (N_temps == 2) {
@@ -326,7 +338,7 @@ void update_its(System* system){
       it->g_d);
   }
 
-  // This needs to go after the update (since its_bias was not filled)
+  // This needs to go after the update (since its_bias/pHist was not filled)
   if(system->run->step0 != system->run->step && 
        (system->run->step-system->run->step0) % it->steps_per_temp == 0 && it->N_temp <= it->N_temp_max){
     if(it->N_temp == it->N_temp_max){
@@ -492,6 +504,19 @@ void write_small_its(System* system, std::string output_dir){
   fprintf(it->fp_weighted_T, "%f ", eff_temp);
   fprintf(it->fp_weighted_T, "\n");
   fflush(it->fp_weighted_T);
+  // Potentials
+  if(!it->fp_potentials){
+     std::string fnm_pot   = output_dir + "/potentials.dat";
+     it->fp_potentials = fopen(fnm_pot.c_str(), "w");
+     if(!it->fp_potentials){
+       printf("Error opening %s. Please make directory!\n", fnm_pot.c_str());
+       exit(1);
+     }
+  }
+  fprintf(it->fp_potentials, "%d ", system->run->step);
+  fprintf(it->fp_potentials, "%f %f %f %f\n", it->U, it->U_ss, it->U_su, it->U_prime);
+  fflush(it->fp_potentials);
+
 }
 
 

@@ -181,13 +181,13 @@ State::~State() {
   if (forceBackup_d) cudaFree(forceBackup_d);
   // ITS Buffers
   if(U_ss_d) cudaFree(U_ss_d);
-  if (dU_ss_buffer) cudaFree(dU_ss_buffer);
+  if (dU_ss_buffer) free(dU_ss_buffer);
   if (dU_ss_buffer_d) cudaFree(dU_ss_buffer_d);
   if(U_su_d) cudaFree(U_su_d);
-  if (dU_su_buffer) cudaFree(dU_su_buffer);
+  if (dU_su_buffer) free(dU_su_buffer);
   if (dU_su_buffer_d) cudaFree(dU_su_buffer_d);
   if(U_uu_d) cudaFree(U_uu_d);
-  if (dU_uu_buffer) cudaFree(dU_uu_buffer);
+  if (dU_uu_buffer) free(dU_uu_buffer);
   if (dU_uu_buffer_d) cudaFree(dU_uu_buffer_d);
   // Other buffers
   if (energy) free(energy);
