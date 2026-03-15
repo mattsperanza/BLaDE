@@ -47,8 +47,9 @@ class Its {
     real scale_su = 1.0;
     real* scale_su_d = NULL; // stores <pow(B/B0, alpha)>
     // Expanded ensemble
+    int* temp_index_d;
     int update_steps = 1e9; // update until system->run->step > update_steps
-    real wl_inc = 5; // initial wl update in kcal/mol
+    real wl_inc = 5; // initial wl update 
     real* wl_inc_d;
     real wl_ratio = 0.8; // flatness criteria
     real wl_alpha = 0.5; // increment scaling factor

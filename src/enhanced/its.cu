@@ -26,7 +26,10 @@ Its::~Its(){
     if(pBeta_d) cudaFree(pBeta_d);
     if(pBeta) cudaFree(pBeta);
     if(wl_hist_d) cudaFree(wl_hist_d);
-    if(wl_hist) cudaFree(wl_hist);
+    if(wl_hist) free(wl_hist);
+    if(wl_f_d) cudaFree(wl_f_d);
+    if(wl_f) free(wl_f_d);
+    if(temp_index_d) cudaFree(temp_index_d);
     if(U_prime_d) cudaFree(U_prime_d);
     if(g) free(g);
     if(g_d) cudaFree(g_d);
@@ -108,6 +111,7 @@ void Its::initialize(System* system){
       cudaMemcpy(wl_inc_d, &wl_inc, sizeof(real), cudaMemcpyDefault);
       cudaMalloc(&U_prime_d, sizeof(real_e));
       cudaMalloc(&U_d, sizeof(real_e));
+      cudaMalloc(&temp_index_d, sizeof(int));
     }
 
     N_temp_max = N_temp;
@@ -123,8 +127,8 @@ void Its::initialize(System* system){
 __global__ void ee_sample_betas_kernel(
   int low_idx, int N_temps, real_e sim_T, 
   real_e* U_tot, real_e* U_sele, real_e* U_int, 
-  real* temps, real* g, real alpha,
-  real_e rand_number,
+  real* temps, real* g, 
+  real_e rand_number, int* temp_index,
   // Output
   real* scale_ss, real* scale_su, 
   real* its_bias, real* pHist,
@@ -136,20 +140,37 @@ __global__ void ee_sample_betas_kernel(
   if(U_int){
     U_su = U_int[0];
   }
-  // Compute the max exponent
+  /*
+    Make 1 MCMC move to new bias/temperature (REST2), sample from stationary distribution of betas (independence gibbs)
+    U = U_ss + U_su + U_uu 
+    U_eff = U_uu + bk/b0*U_ss + sqrt(bk/b0)*U_su
+    prob(bk|X) = exp(-b0*(U_eff + gk/b0)) / sum_j [ exp(-b0*(U_eff + gj/b0)) ]
+    prob(bk|X) = exp(-b0*U_bk + gk) / sum_j [ exp(-b0*U_bj + gj) ]  // using exp(-b0*U_uu + b0*U_uu) = 1
+    -b0*U_bk = -bk*U_ss - sqrt(bk*b0)*U_su
+    g = -ln(int [ exp(-b0*U_eff) ]) = -ln(Z(bk)) // see later explanation in update_expectation_kernel
+
+    In practice I do: 
+      U_eff = U + Ub 
+    where 
+      Ub = (bk/b0-1)*U_ss + (sqrt(bk/b0)-1)*U_su 
+    to cancel existing forces/potential, but this doesn't change this above criteria
+  */
+
+  // Factor out a constant c which will cancel
   real_e beta_0 = 1.0/(kB*sim_T);
   real_e c = -1e9;
   for(int i = low_idx; i < N_temps; i++){
     real_e beta_k = 1.0/(kB*temps[i]);
-    real_e exp_arg = -(beta_k-beta_0)*U_ss - (beta_k*pow(beta_k/beta_0, (double)alpha-1.0) - beta_0)*U_su + g[i];
+    real_e exp_arg = -beta_k*U_ss - sqrt(beta_k*beta_0)*U_su + g[i];
     if(exp_arg > c){
       c = exp_arg;
     }
   }
+  // Compute weights (largest weight is 1)
   real_e exp_sum = 0;
   for(int i = low_idx; i < N_temps; i++){
     real_e beta_k = 1.0/(kB*temps[i]);
-    real_e exp_arg = -(beta_k-beta_0)*U_ss - (beta_k*pow(beta_k/beta_0, (double)alpha-1.0) - beta_0)*U_su + g[i];
+    real_e exp_arg = -beta_k*U_ss - sqrt(beta_k*beta_0)*U_su + g[i];
     exp_sum += exp(exp_arg-c);
   }
   // r < sum k ( p(beta_k) )
@@ -158,24 +179,26 @@ __global__ void ee_sample_betas_kernel(
   bool found = false;
   for(int i = low_idx; i < N_temps; i++){
     real_e beta_k = 1.0/(kB*temps[i]);
-    real_e exp_arg = -(beta_k-beta_0)*U_ss - (beta_k*pow(beta_k/beta_0, (double)alpha-1.0) - beta_0)*U_su + g[i];
+    real_e exp_arg = -beta_k*U_ss - sqrt(beta_k*beta_0)*U_su + g[i];
     p_sum += exp(exp_arg-c) / exp_sum;
     if (p_sum > rand_number && !found){
       new_beta=beta_k;
       pHist[i] = 1;
+      *temp_index = i;
       found = true;
-      //printf("New Temp %d: %f, p_range: [%f < rnd: %f < %f] \n", i, temps[i], p_sum-exp(exp_arg-c)/exp_sum, rand_number, p_sum);
     } else {
       pHist[i] = 0.0;
     }
   }
   scale_ss[0] = new_beta/beta_0;
-  scale_su[0] = pow(new_beta/beta_0, alpha);
+  scale_su[0] = sqrt(new_beta/beta_0);
 }
 
 __global__ void expanded_bias_kernel(
+  real_e sim_kT,
   real_e* U_tot, real_e* U_sele, real_e* U_int, 
   real* scale_ss, real* scale_su, 
+  real* g, int* temp_index,
   real_e* enhanced_energy, real_e* U_prime
 ){
   real_e U_ss=U_sele[0];
@@ -183,7 +206,7 @@ __global__ void expanded_bias_kernel(
   if(U_int){
     U_su = U_int[0];
   }
-  real_e U_extra = (scale_ss[0] - 1.0)*U_ss + (scale_su[0]-1.0)*U_su;
+  real_e U_extra = (scale_ss[0] - 1.0)*U_ss + (scale_su[0] - 1.0)*U_su;
   U_prime[0] = U_tot[0]+U_extra;
   atomicAdd(enhanced_energy, U_extra);
 }
@@ -206,9 +229,6 @@ __global__ void update_forces_kernel(
     }
     // Already contains dU_uu
     // Remove exising and replace with scaled versions of dU_ss & dU_su
-    //if(i < nL){ //&& abs(dU_ss - forceBuffer[i]) > 1e-3){
-    //  printf("diff: %f\n", dU_ss - forceBuffer[i]);
-    //}
     forceBuffer[i] += (scale_ss[0]-1)*dU_ss + (scale_su[0]-1)*dU_su;
   }
 }
@@ -237,8 +257,8 @@ void getforce_its(System* system, int step, bool calcEnergy){
       real_x rand_num = ((double)rand())/RAND_MAX;
       ee_sample_betas_kernel<<<1,1,shMem,stream>>>(
         it->low_idx, it->N_temp, system->run->T, it->U_d, it->U_ss_d, it->U_su_d, 
-        it->temperatures_d, it->g_d, it->alpha,
-        rand_num,
+        it->temperatures_d, it->g_d, 
+        rand_num, it->temp_index_d,
         it->scale_ss_d, it->scale_su_d,
         it->its_bias_d, it->pBeta_d,
         &(s->energy_d[eeenhanced]), it->U_prime_d);
@@ -246,8 +266,10 @@ void getforce_its(System* system, int step, bool calcEnergy){
     if(calcEnergy){
       // update bias due to expanded ensemble
       expanded_bias_kernel<<<1,1,0,stream>>>(
+        kB*system->run->T,
         it->U_d, it->U_ss_d, it->U_su_d,
         it->scale_ss_d, it->scale_su_d,
+        it->g_d, it->temp_index_d,
         &(s->energy_d[eeenhanced]), it->U_prime_d);
     }
   } 
@@ -271,6 +293,10 @@ __global__ void update_abf_wl_kernel(
 ){
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if(i >= low_idx && i < N_temps){
+    // g = -ln(int [ exp(-b0*U_eff) ]) = -ln(Z)
+    // dg/db = 1/Z * int [ (U_ss + .5*sqrt(b0/bk)*U_su)exp(-b0*U_eff) ]
+    // dg/db = < U_ss + .5*sqrt(b0/bk)*U_su > 
+
     // Update ABF <U>
     real_e U_ss=U_sele[0];
     real_e U_su=0;
@@ -279,7 +305,7 @@ __global__ void update_abf_wl_kernel(
     }
     real beta_0 = 1.0/sys_kT;
     real beta_k = 1.0/(kB*temps[i]);
-    real U = U_ss + alpha*pow((beta_k/beta_0), alpha-1)*U_su;
+    real U = U_ss + .5*sqrt(beta_0/beta_k)*U_su;
     weighted_U[i] += U * pHist[i];
     weights[i] += pHist[i];
     expected_U[i] = weighted_U[i] / weights[i];
@@ -289,7 +315,7 @@ __global__ void update_abf_wl_kernel(
   }
 }
 
-__global__ void wl_inc_kernel(int N_temps, real* wl_hist, real* wl_inc, real wl_ratio, real wl_alpha){
+__global__ void wl_inc_kernel(int N_temps, real* wl_f, real* wl_hist, real* wl_inc, real wl_ratio, real wl_alpha){
   int total = 0;
   for(int i = 0; i < N_temps; i++){
     total += wl_hist[i];
@@ -308,10 +334,10 @@ __global__ void wl_inc_kernel(int N_temps, real* wl_hist, real* wl_inc, real wl_
   }
 }
 
+// g[i]-g[0] = int_b0^bk (<U>_b) db + wl_f[i]
 __global__ void update_weights_kernel(int N_temps, real* temps, real* expected_U, real* wl_f, real* g){
   real kbi = 1/kB;
   g[0] = 0;
-
   if (N_temps < 2){
     return;
   } else if (N_temps == 2) {
@@ -383,7 +409,7 @@ void update_its(System* system){
     // if we are out of fixed temp sampling
     if(it->low_idx == 0 && it->N_temp == it->N_temp_max){
       wl_inc_kernel<<<1, 1, 0, stream>>>(
-        it->N_temp, it->wl_hist_d, it->wl_inc_d, it->wl_ratio, it->wl_alpha);
+        it->N_temp, it->wl_f_d, it->wl_hist_d, it->wl_inc_d, it->wl_ratio, it->wl_alpha);
     }
   
     update_weights_kernel<<<1,1,0,stream>>>(
