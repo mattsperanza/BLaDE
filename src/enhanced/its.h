@@ -42,15 +42,19 @@ class Its {
     real* temperatures_d = NULL; // [N_temp real] integrated temperature range
     real* g = NULL; // int_bl^bh (<U>_b) db + wl_g
     real* g_d = NULL;
-    real scale_ss;
+    real scale_ss = 1.0;
     real* scale_ss_d = NULL; // stores <B/B0>
-    real scale_su;
+    real scale_su = 1.0;
     real* scale_su_d = NULL; // stores <pow(B/B0, alpha)>
     real bias_mag = 0.05; // 0.05 = 1 kcal / (sample_freq*20)
     real* pHist_accum = NULL;
     real* pHist_accum_d = NULL; // [N_temp real] p(B)
     real* pHist = NULL;
     real* pHist_d = NULL; // p(B|X)
+
+    // Expanded ensemble
+    bool expanded_ensemble = false;
+    int temp_sample_freq = 1; // set higher to turn on expanded ensemble (faster dynamics)
 
     // OnTheFly Weight Updates
     int update_steps = 1e9; // update until system->run->step > update_steps
@@ -70,7 +74,7 @@ class Its {
     FILE* fp_potentials = NULL;
 };
     
-void getforce_its(System* system);
+void getforce_its(System* system, int step, bool calcEnergy);
 void update_its(System* system);
 void log_its(System* system);
 void write_small_its(System* system, std::string output_dir);

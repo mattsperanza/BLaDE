@@ -37,6 +37,6 @@ class Enhanced {
 };
 
 void parse_enhanced(char* line, System* system);
-void getforce_enhanced(System* system);
+void getforce_enhanced(System* system, int step, bool calcEnergy);
 
 #endif

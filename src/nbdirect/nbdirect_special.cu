@@ -663,6 +663,8 @@ void getforce_nbdirect_reduce_special(System *system,bool calcEnergy)
   int N=3*s->atomCount+2*s->lambdaCount;
 
   getforce_nbdirect_reduce_kernel_special<<<(N+BLNB-1)/BLNB,BLNB,0,r->updateStream>>>(N,system->idCount,s->forceBuffer_d);
+  getforce_nbdirect_reduce_kernel_special<<<(N+BLNB-1)/BLNB,BLNB,0,r->updateStream>>>(N,system->idCount,s->dU_ss_buffer_d);
+  getforce_nbdirect_reduce_kernel_special<<<(N+BLNB-1)/BLNB,BLNB,0,r->updateStream>>>(N,system->idCount,s->dU_su_buffer_d);
 
   if (calcEnergy) {
     N=eeend;

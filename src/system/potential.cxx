@@ -9,6 +9,7 @@
 #include "system/structure.h"
 #include "msld/msld.h"
 #include "enhanced/enhanced.h"
+#include "enhanced/its.h"
 #include "system/state.h"
 #include "run/run.h"
 #include "domdec/domdec.h"
@@ -1708,8 +1709,9 @@ void Potential::calc_force(int step,System *system)
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
-  if (system->enhanced && (system->enhanced->its || system->enhanced->ldyn_rest)){ 
-    calcEnergy=true; // Need to compute energy every step for ITS
+  if (system->enhanced && (system->enhanced->its || system->enhanced->ldyn_rest)){
+    calcEnergy=calcEnergy||(step%system->enhanced->its->temp_sample_freq==0); // Need to compute energy every step for ITS
+    calcEnergy=calcEnergy||system->enhanced->ldyn_rest;
   }
 #ifdef REPLICAEXCHANGE
   if (system->run->freqREx>0) {
@@ -1794,7 +1796,7 @@ void Potential::calc_force(int step,System *system)
     cudaStreamWaitEvent(r->enhancedStream, r->nbrecipComplete);
     cudaStreamWaitEvent(r->enhancedStream, r->nbdirectComplete);
     cudaStreamWaitEvent(r->enhancedStream, r->biaspotComplete);
-    getforce_enhanced(system);
+    getforce_enhanced(system, step, calcEnergy);
     cudaEventRecord(r->enhancedComplete, r->enhancedStream);
     cudaStreamWaitEvent(r->updateStream,r->enhancedComplete,0);
   }

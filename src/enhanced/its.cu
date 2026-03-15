@@ -90,7 +90,9 @@ void Its::initialize(System* system){
       }
       cudaMemcpy(offsets_d, offsets, N_temp*sizeof(real), cudaMemcpyDefault);
       cudaMalloc(&scale_ss_d, sizeof(real));
+      cudaMemcpy(scale_ss_d, &scale_ss, sizeof(real), cudaMemcpyDefault);
       cudaMalloc(&scale_su_d, sizeof(real));
+      cudaMemcpy(scale_su_d, &scale_su, sizeof(real), cudaMemcpyDefault);
       cudaMalloc(&pHist_d, N_temp*sizeof(real));
       cudaMemset(pHist_d, 0, N_temp*sizeof(real));
       pHist = (real*) calloc(N_temp, sizeof(real));
@@ -166,7 +168,76 @@ __global__ void its_logsumexp_kernel(
   }
 }
 
-__global__ void its_update_force_kernel(
+__global__ void ee_sample_betas_kernel(
+  int low_idx, int N_temps, real_e sim_T, 
+  real_e* U_tot, real_e* U_sele, real_e* U_int, 
+  real* temps, real* g, real alpha,
+  real_e rand_number,
+  // Output
+  real* scale_ss, real* scale_su, 
+  real* its_bias, real* pHist,
+  real_e* enhanced_energy, real_e* U_prime){
+
+  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  real_e U_ss=U_sele[0];
+  real_e U_su=0;
+  real_e U_uu=0;
+  if(U_int){
+    U_su = U_int[0];
+  }
+  // Compute the max exponent
+  real_e beta_0 = 1.0/(kB*sim_T);
+  real_e c = -1e9;
+  for(int i = low_idx; i < N_temps; i++){
+    real_e beta_k = 1.0/(kB*temps[i]);
+    real_e exp_arg = -(beta_k-beta_0)*U_ss - (beta_k*pow(beta_k/beta_0, (double)alpha-1.0) - beta_0)*U_su + g[i];
+    if(exp_arg > c){
+      c = exp_arg;
+    }
+  }
+  real_e exp_sum = 0;
+  for(int i = low_idx; i < N_temps; i++){
+    real_e beta_k = 1.0/(kB*temps[i]);
+    real_e exp_arg = -(beta_k-beta_0)*U_ss - (beta_k*pow(beta_k/beta_0, (double)alpha-1.0) - beta_0)*U_su + g[i];
+    exp_sum += exp(exp_arg-c);
+  }
+  // r < sum k ( p(beta_k) )
+  real_e p_sum = 0;
+  real_e new_beta = 0;
+  bool found = false;
+  for(int i = low_idx; i < N_temps; i++){
+    real_e beta_k = 1.0/(kB*temps[i]);
+    real_e exp_arg = -(beta_k-beta_0)*U_ss - (beta_k*pow(beta_k/beta_0, (double)alpha-1.0) - beta_0)*U_su + g[i];
+    p_sum += exp(exp_arg-c) / exp_sum;
+    if (p_sum > rand_number && !found){
+      new_beta=beta_k;
+      pHist[i] = 1;
+      found = true;
+      //printf("New Temp %d: %f, p_range: [%f < rnd: %f < %f] \n", i, temps[i], p_sum-exp(exp_arg-c)/exp_sum, rand_number, p_sum);
+    } else {
+      pHist[i] = 0.0;
+    }
+  }
+  scale_ss[0] = new_beta/beta_0;
+  scale_su[0] = pow(new_beta/beta_0, alpha);
+}
+
+__global__ void expanded_bias_kernel(
+  real_e* U_tot, real_e* U_sele, real_e* U_int, 
+  real* scale_ss, real* scale_su, 
+  real_e* enhanced_energy, real_e* U_prime
+){
+  real_e U_ss=U_sele[0];
+  real_e U_su=0;
+  if(U_int){
+    U_su = U_int[0];
+  }
+  real_e U_extra = (scale_ss[0] - 1.0)*U_ss + (scale_su[0]-1.0)*U_su;
+  U_prime[0] = U_tot[0]+U_extra;
+  atomicAdd(enhanced_energy, U_extra);
+}
+
+__global__ void update_forces_kernel(
   int DOF,  int nL, real alpha,
   real* scale_ss, real* scale_su,
   real_f* dU_sel, real_f* dU_int, real_f* dU_solv,
@@ -198,7 +269,7 @@ __global__ void reduce_total_energy_kernel(real_e* energy, real_e* U){
   }
 }
 
-void getforce_its(System* system){
+void getforce_its(System* system, int step, bool calcEnergy){
   cudaStream_t stream=0;
   State *s = system->state;
   Its* it = system->enhanced->its;
@@ -208,19 +279,42 @@ void getforce_its(System* system){
     stream = system->run->enhancedStream;
   }
 
-  // Calculate total potential prior to ITS
-  reduce_total_energy_kernel<<<1,1,0,stream>>>(s->energy_d, it->U_d);
-  // Compute bias and forces due to ITS bias with weights
-  // Compute <B>/B0 & <sqrt(B/B0)>
-  its_logsumexp_kernel<<<1,1,shMem,stream>>>(
-    it->low_idx, it->N_temp, system->run->T, it->U_d, it->U_ss_d, it->U_su_d, 
-    it->temperatures_d, it->g_d, it->alpha,
-    it->scale_ss_d, it->scale_su_d,
-    it->its_bias_d, it->pHist_d,
-    &(s->energy_d[eeenhanced]), it->U_prime_d);
+  if (it->expanded_ensemble){
+    // Calculate total potential prior to ITS
+    reduce_total_energy_kernel<<<1,1,0,stream>>>(s->energy_d, it->U_d);
+    if(step != 0 && step % it->temp_sample_freq == 0){
+      real_x rand_num = ((double)rand())/RAND_MAX;
+      ee_sample_betas_kernel<<<1,1,shMem,stream>>>(
+        it->low_idx, it->N_temp, system->run->T, it->U_d, it->U_ss_d, it->U_su_d, 
+        it->temperatures_d, it->g_d, it->alpha,
+        rand_num,
+        it->scale_ss_d, it->scale_su_d,
+        it->its_bias_d, it->pHist_d,
+        &(s->energy_d[eeenhanced]), it->U_prime_d);
+    }
+    if(calcEnergy){
+      // update bias due to expanded ensemble
+      expanded_bias_kernel<<<1,1,0,stream>>>(
+        it->U_d, it->U_ss_d, it->U_su_d,
+        it->scale_ss_d, it->scale_su_d,
+        &(s->energy_d[eeenhanced]), it->U_prime_d);
+    }
+  } else {
+    // Calculate total potential prior to ITS
+    reduce_total_energy_kernel<<<1,1,0,stream>>>(s->energy_d, it->U_d);
+    // Compute bias and forces due to ITS bias with weights
+    // Compute <B>/B0 & <sqrt(B/B0)>
+    its_logsumexp_kernel<<<1,1,shMem,stream>>>(
+      it->low_idx, it->N_temp, system->run->T, it->U_d, it->U_ss_d, it->U_su_d, 
+      it->temperatures_d, it->g_d, it->alpha,
+      it->scale_ss_d, it->scale_su_d,
+      it->its_bias_d, it->pHist_d,
+      &(s->energy_d[eeenhanced]), it->U_prime_d);
+  }
+
   // dU'/dX = dU/dX + (<B>/B0-1)*dU_ss/dX + (<sqrt(B/B0)>-1)*dU_su/dX
   int dof = 3*s->atomCount + s->lambdaCount;
-  its_update_force_kernel<<<(dof+BLMS-1)/BLMS,BLMS, 0,stream>>>(
+  update_forces_kernel<<<(dof+BLMS-1)/BLMS,BLMS, 0,stream>>>(
     dof, s->lambdaCount, it->alpha,
     it->scale_ss_d, it->scale_su_d,
     it->dU_ss_d, it->dU_su_d, it->dU_uu_d,
@@ -315,6 +409,7 @@ void update_its(System* system){
     stream = system->run->enhancedStream;
   }
 
+  // Only update until update_steps
   if (system->run->step-system->run->step0 > it->update_steps){
     return;
   }
@@ -339,8 +434,7 @@ void update_its(System* system){
   }
 
   // This needs to go after the update (since its_bias/pHist was not filled)
-  if(system->run->step0 != system->run->step && 
-       (system->run->step-system->run->step0) % it->steps_per_temp == 0 && it->N_temp <= it->N_temp_max){
+  if((system->run->step-system->run->step0) % it->steps_per_temp == 0 && it->N_temp <= it->N_temp_max){
     if(it->N_temp == it->N_temp_max){
       it->low_idx = 0;
     } else {
@@ -377,6 +471,9 @@ void log_its(System* system){
   real root_beta = it->scale_su*sqrt(1.0/(kB*system->run->T));
   printf("Step: %d, U: %.2f, U_ss: %.2f, U_su: %.2f, U': %.2f, U'-U: %.2f\n", 
     system->run->step, it->U, it->U_ss, it->U_su, it->U_prime, it->U_prime-it->U);
+  if(it->expanded_ensemble){
+    printf("Expanded Ensemble! ");
+  }
   printf("Force Scale ss: %.2f, Force Scale su: %.2f, <beta>: %.2f, <T>: %.2f\n", 
     it->scale_ss, it->scale_su, eff_beta, eff_temp);
   printf("Accessible Temperatures: %d / %d\n", it->N_temp, it->N_temp_max);
@@ -516,8 +613,6 @@ void write_small_its(System* system, std::string output_dir){
   fprintf(it->fp_potentials, "%d ", system->run->step);
   fprintf(it->fp_potentials, "%f %f %f %f\n", it->U, it->U_ss, it->U_su, it->U_prime);
   fflush(it->fp_potentials);
-
 }
-
 
 void write_big_its(System* system, std::string output_dir){};

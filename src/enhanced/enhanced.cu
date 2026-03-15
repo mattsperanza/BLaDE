@@ -181,6 +181,13 @@ void parse_enhanced(char* line, System* system){
       exit(1);
     }
     system->enhanced->its->alpha=io_nextf(line);
+  } else if (strcmp(token, "its_temp_sample_freq")==0){
+    if(!system->enhanced->its){
+      printf("ITS not defined yet!"); 
+      exit(1);
+    }
+    system->enhanced->its->temp_sample_freq=io_nexti(line);
+    system->enhanced->its->expanded_ensemble=true;
   }
 };
 
@@ -196,7 +203,7 @@ void Enhanced::initialize(System* system){
   init = true;
 }
 
-void getforce_enhanced(System* system){
+void getforce_enhanced(System* system, int step, bool calcEnergy){
   Enhanced* es = system->enhanced;
   if (system->run->calcTermFlag[eeenhanced]==false) return;
 
@@ -211,12 +218,12 @@ void getforce_enhanced(System* system){
 
   // ITS should be last (capture to capture other bias in scaling)
   if(es->its){
-    getforce_its(system); 
-    if(es->updating){
+    getforce_its(system, step, calcEnergy); 
+    if(es->updating && step != 0){ // not on pressure coupling steps
       update_its(system); // internal update timing logic
-      if (system->run->step % es->log_freq == 0) log_its(system);
-      if (system->run->step % es->write_small_freq == 0) write_small_its(system, es->output_dir); 
-      if (system->run->step % es->write_big_freq == 0) write_big_its(system, es->output_dir); 
+      if (step % es->log_freq == 0) log_its(system);
+      if (step % es->write_small_freq == 0) write_small_its(system, es->output_dir); 
+      if (step % es->write_big_freq == 0) write_big_its(system, es->output_dir); 
     }
   }
 }
