@@ -49,12 +49,13 @@ class Its {
     // Expanded ensemble
     int* temp_index_d;
     int update_steps = 1e9; // update until system->run->step > update_steps
-    real wl_inc = 5; // initial wl update 
+    real wl_inc = 1.0; // initial wl update 
     real* wl_inc_d;
     real wl_ratio = 0.8; // flatness criteria
     real wl_alpha = 0.5; // increment scaling factor
     bool expanded_ensemble = true;
-    int sample_freq = 10; // update WL and <U> with new sample every x steps, default matches lambda sampling
+    int sample_freq = 10; // update <U> with new sample every x steps 
+    int temp_sample_freq = 50; // EE step & W.L. inc
 
     real* wl_hist = NULL;
     real* wl_hist_d = NULL; // wang-landau histogram
@@ -68,7 +69,8 @@ class Its {
     real* expected_U = NULL; // <U> = weighted_U / weights 
     real* expected_U_d = NULL; // <U> = weighted_U / weights 
     real* weighted_U_d = NULL; // sum U*exp(B*U_bias)
-    real* weights_d = NULL; // sum exp(B*U_bias)
+    real* weights = NULL; // 
+    real* weights_d = NULL; // 
     real* offsets_d = NULL;
 
     FILE* fp_beta = NULL;

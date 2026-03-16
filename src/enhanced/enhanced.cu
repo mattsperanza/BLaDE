@@ -140,7 +140,6 @@ void parse_enhanced(char* line, System* system){
     for(int i = 0; i < num_temps; i++){
       // Optimal Exp spacing
       temps[i] = temp_low*pow(temp_high/temp_low, ((real)(i))/(num_temps-1));
-      temps[i] = round(temps[i]); // round temperatures
       // Linear Spacing
       //temps[i] = temp_low + ((real) (i-1))*(temp_high - temp_low)/(num_temps-2.0);
     }
@@ -157,7 +156,7 @@ void parse_enhanced(char* line, System* system){
       exit(1);
     }
     system->enhanced->its->steps_per_temp = io_nexti(line);
-  } else if (strcmp(token, "its_bias_mag") == 0){
+  } else if (strcmp(token, "its_wl_inc") == 0){
     if(!system->enhanced->its) {
       printf("ITS not defined yet!\n"); 
       exit(1);
@@ -169,6 +168,12 @@ void parse_enhanced(char* line, System* system){
       exit(1);
     }
     system->enhanced->its->sample_freq = io_nexti(line);
+  } else if (strcmp(token, "its_temp_sample_freq") == 0){
+    if(!system->enhanced->its) {
+      printf("ITS not defined yet!"); 
+      exit(1);
+    }
+    system->enhanced->its->temp_sample_freq = io_nexti(line);
   } else if (strcmp(token, "its_update_steps")==0){
     if(!system->enhanced->its) {
       printf("ITS not defined yet!"); 
@@ -212,8 +217,9 @@ void getforce_enhanced(System* system, int step, bool calcEnergy){
   // ITS should be last (capture to capture other bias in scaling)
   if(es->its){
     getforce_its(system, step, calcEnergy); 
-    if(es->updating && step != 0){ // not on pressure coupling steps
-      update_its(system); // internal update timing logic
+    // Don't update/log/write on pressure coupling moves
+    if(es->updating && (step != 0 || step == system->run->step0) ){ 
+      update_its(system); // other internal update timing logic
       if (step % es->log_freq == 0) log_its(system);
       if (step % es->write_small_freq == 0) write_small_its(system, es->output_dir); 
       if (step % es->write_big_freq == 0) write_big_its(system, es->output_dir); 

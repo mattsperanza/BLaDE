@@ -22,6 +22,7 @@ Its::~Its(){
     if(expected_U) free(expected_U);
     if(weighted_U_d) cudaFree(weighted_U_d);
     if(weights_d) cudaFree(weights_d);
+    if(weights) free(weights);
     if(offsets_d) cudaFree(offsets_d);
     if(pBeta_d) cudaFree(pBeta_d);
     if(pBeta) cudaFree(pBeta);
@@ -85,6 +86,7 @@ void Its::initialize(System* system){
       cudaMemset(weighted_U_d, 0, N_temp*sizeof(real));
       cudaMalloc(&weights_d, N_temp*sizeof(real));
       cudaMemset(weights_d, 0, N_temp*sizeof(real));
+      weights = (real*) calloc(N_temp, sizeof(real));
       cudaMalloc(&offsets_d, N_temp*sizeof(real));
       cudaMemset(offsets_d, 0, N_temp*sizeof(real));
       real offsets[N_temp];
@@ -195,10 +197,8 @@ __global__ void ee_sample_betas_kernel(
 }
 
 __global__ void expanded_bias_kernel(
-  real_e sim_kT,
   real_e* U_tot, real_e* U_sele, real_e* U_int, 
   real* scale_ss, real* scale_su, 
-  real* g, int* temp_index,
   real_e* enhanced_energy, real_e* U_prime
 ){
   real_e U_ss=U_sele[0];
@@ -228,7 +228,7 @@ __global__ void update_forces_kernel(
       dU_su = dU_int[i];
     }
     // Already contains dU_uu
-    // Remove exising and replace with scaled versions of dU_ss & dU_su
+    // Remove exising forces and replace with scaled versions of dU_ss & dU_su
     forceBuffer[i] += (scale_ss[0]-1)*dU_ss + (scale_su[0]-1)*dU_su;
   }
 }
@@ -250,29 +250,25 @@ void getforce_its(System* system, int step, bool calcEnergy){
     stream = system->run->enhancedStream;
   }
 
-  if (it->expanded_ensemble){ // always true for now
-    // Calculate total potential prior to ITS
-    reduce_total_energy_kernel<<<1,1,0,stream>>>(s->energy_d, it->U_d);
-    if((step != 0 && step % it->sample_freq == 0) || system->run->step == system->run->step0){
-      real_x rand_num = ((double)rand())/RAND_MAX;
-      ee_sample_betas_kernel<<<1,1,shMem,stream>>>(
-        it->low_idx, it->N_temp, system->run->T, it->U_d, it->U_ss_d, it->U_su_d, 
-        it->temperatures_d, it->g_d, 
-        rand_num, it->temp_index_d,
-        it->scale_ss_d, it->scale_su_d,
-        it->its_bias_d, it->pBeta_d,
-        &(s->energy_d[eeenhanced]), it->U_prime_d);
-    }
-    if(calcEnergy){
-      // update bias due to expanded ensemble
-      expanded_bias_kernel<<<1,1,0,stream>>>(
-        kB*system->run->T,
-        it->U_d, it->U_ss_d, it->U_su_d,
-        it->scale_ss_d, it->scale_su_d,
-        it->g_d, it->temp_index_d,
-        &(s->energy_d[eeenhanced]), it->U_prime_d);
-    }
-  } 
+  reduce_total_energy_kernel<<<1,1,0,stream>>>(s->energy_d, it->U_d);
+  // Not on pressure coupling steps unless it is the first step
+  if((step != 0 && step % it->temp_sample_freq == 0) || system->run->step == system->run->step0){
+    real_x rand_num = ((double)rand())/RAND_MAX;
+    ee_sample_betas_kernel<<<1,1,shMem,stream>>>(
+      it->low_idx, it->N_temp, system->run->T, it->U_d, it->U_ss_d, it->U_su_d, 
+      it->temperatures_d, it->g_d, 
+      rand_num, it->temp_index_d,
+      it->scale_ss_d, it->scale_su_d,
+      it->its_bias_d, it->pBeta_d,
+      &(s->energy_d[eeenhanced]), it->U_prime_d);
+  }
+  if(calcEnergy){
+    // update bias due to expanded ensemble
+    expanded_bias_kernel<<<1,1,0,stream>>>(
+      it->U_d, it->U_ss_d, it->U_su_d,
+      it->scale_ss_d, it->scale_su_d,
+      &(s->energy_d[eeenhanced]), it->U_prime_d);
+  }
 
   // dU'/dX = dU/dX + (<B>/B0-1)*dU_ss/dX + (<sqrt(B/B0)>-1)*dU_su/dX
   int dof = 3*s->atomCount + s->lambdaCount;
@@ -283,21 +279,18 @@ void getforce_its(System* system, int step, bool calcEnergy){
     s->forceBuffer_d);
 }
 
-__global__ void update_abf_wl_kernel(
-  int low_idx, int N_temps, real sys_kT,
-  real* temps, real alpha,
+__global__ void update_abf_kernel(
+  int low_idx, int N_temps, real sys_kT, real* temps, 
   real_e* U_sele, real_e* U_int, 
-  real* pHist, real* wl_hist, real* wl_f, real* wl_inc,
-  real* expected_U, real* weighted_U,
-  real* weights
+  real* pHist, 
+  real* expected_U, real* weighted_U, real* weights
 ){
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if(i >= low_idx && i < N_temps){
+    // Update ABF <U>
     // g = -ln(int [ exp(-b0*U_eff) ]) = -ln(Z)
     // dg/db = 1/Z * int [ (U_ss + .5*sqrt(b0/bk)*U_su)exp(-b0*U_eff) ]
     // dg/db = < U_ss + .5*sqrt(b0/bk)*U_su > 
-
-    // Update ABF <U>
     real_e U_ss=U_sele[0];
     real_e U_su=0;
     if(U_int){
@@ -309,13 +302,17 @@ __global__ void update_abf_wl_kernel(
     weighted_U[i] += U * pHist[i];
     weights[i] += pHist[i];
     expected_U[i] = weighted_U[i] / weights[i];
-    // Update Wang-Landau
-    wl_hist[i] += pHist[i];
-    wl_f[i] -= (*wl_inc)*pHist[i];
   }
 }
 
-__global__ void wl_inc_kernel(int N_temps, real* wl_f, real* wl_hist, real* wl_inc, real wl_ratio, real wl_alpha){
+__global__ void wl_kernel(int N_temps, real* pBeta, real* wl_f, real* wl_hist, real* wl_inc, real wl_ratio, real wl_alpha){
+  // Update weights
+  for(int i = 0; i < N_temps; i++){
+    wl_hist[i] += pBeta[i];
+    wl_f[i] -= wl_inc[0]*pBeta[i];
+  }
+
+  // Check flattness & potentially reset
   int total = 0;
   for(int i = 0; i < N_temps; i++){
     total += wl_hist[i];
@@ -327,7 +324,7 @@ __global__ void wl_inc_kernel(int N_temps, real* wl_f, real* wl_hist, real* wl_i
     reset = reset && ratio > wl_ratio;
   }
   if (reset){
-    *wl_inc *= wl_alpha;
+    wl_inc[0] *= wl_alpha;
     for(int i = 0; i < N_temps; i++){
       wl_hist[i] = 0;
     }
@@ -394,22 +391,24 @@ void update_its(System* system){
     return;
   }
 
-  if(system->run->step % it->sample_freq == 0){
-    // Compute bias and forces due to ITS bias with weights
-    real kT = kB*system->run->T;
-    update_abf_wl_kernel<<<(it->N_temp+BLMS-1)/BLMS,BLMS,0,stream>>>(
-      it->low_idx, it->N_temp, kT,
-      it->temperatures_d, it->alpha,
-      it->U_ss_d, it->U_su_d, 
-      it->pBeta_d, 
-      it->wl_hist_d, it->wl_f_d, it->wl_inc_d,
-      it->expected_U_d, it->weighted_U_d,
-      it->weights_d);
+  if(system->run->step % it->sample_freq == 0 || system->run->step % it->temp_sample_freq == 0){
+    // Compute <U> for weights
+    if(system->run->step % it->sample_freq == 0){
+      real kT = kB*system->run->T;
+      update_abf_kernel<<<(it->N_temp+BLMS-1)/BLMS,BLMS,0,stream>>>(
+        it->low_idx, it->N_temp, kT, it->temperatures_d, 
+        it->U_ss_d, it->U_su_d, 
+        it->pBeta_d, 
+        it->expected_U_d, it->weighted_U_d, it->weights_d);
+    }
 
-    // if we are out of fixed temp sampling
-    if(it->low_idx == 0 && it->N_temp == it->N_temp_max){
-      wl_inc_kernel<<<1, 1, 0, stream>>>(
-        it->N_temp, it->wl_f_d, it->wl_hist_d, it->wl_inc_d, it->wl_ratio, it->wl_alpha);
+    // If we are done with fixed temp sampling
+    if(system->run->step % it->temp_sample_freq == 0 
+      && it->low_idx == 0 && it->N_temp == it->N_temp_max){
+      wl_kernel<<<1, 1, 0, stream>>>(
+        it->N_temp, it->pBeta_d,
+        it->wl_f_d, it->wl_hist_d, 
+        it->wl_inc_d, it->wl_ratio, it->wl_alpha);
     }
   
     update_weights_kernel<<<1,1,0,stream>>>(
@@ -419,8 +418,9 @@ void update_its(System* system){
       it->g_d);
   }
 
-  // This needs to go after the update (since its_bias/pHist was not filled)
-  if(system->run->step % it->steps_per_temp == 0 && it->N_temp <= it->N_temp_max){
+  // This needs to go after the update 
+  if((system->run->step - system->run->step0) % it->steps_per_temp == 0 
+      && system->run->step != system->run->step0 && it->N_temp <= it->N_temp_max){
     if(it->N_temp == it->N_temp_max){
       it->low_idx = 0;
     } else {
@@ -441,6 +441,7 @@ void Its::recv_its(){
   cudaMemcpy(&scale_su, scale_su_d, sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(pBeta, pBeta_d, size, cudaMemcpyDefault);
   cudaMemcpy(expected_U, expected_U_d, size, cudaMemcpyDefault);
+  cudaMemcpy(weights, weights_d, size, cudaMemcpyDefault);
   cudaMemcpy(g, g_d, size, cudaMemcpyDefault);
   cudaMemcpy(its_bias, its_bias_d, size, cudaMemcpyDefault);
   cudaMemcpy(wl_hist, wl_hist_d, size, cudaMemcpyDefault);
@@ -466,20 +467,25 @@ void log_its(System* system){
     printf("%.2f, ", it->temperatures[i]);
   }
   printf("]\n");
+  printf("U Samples Per Temp: [ ");
+  for(int i = 0; i < it->N_temp; i++){
+    printf("%.2f, ", it->weights[i]);
+  }
+  printf("]\n");
   printf("Wang-Landau Delta: %.3e\n", it->wl_inc);
   real ave = 0;
   for(int i = 0; i < it->N_temp; i++){
     ave+=it->wl_hist[i];
   }
   ave /= it->N_temp;
-  printf("Wang-Landau Ratios (eta > %.2f): [ ", it->wl_ratio);
+  printf("Wang-Landau Ratios (<h>: %.2f, eta > %.2f): [ ", ave, it->wl_ratio);
   for(int i = 0; i < it->N_temp; i++){
     printf("%.2f, ", it->wl_hist[i]/ave);
   }
   printf("]\n");
-  printf("Wang-Landau FE - g0: [ ");
+  printf("Wang-Landau FE: [ ");
   for(int i = 0; i < it->N_temp; i++){
-    printf("%.2f, ", it->wl_f[i]-it->wl_f[0]);
+    printf("%.2f, ", it->wl_f[i]);
   }
   printf("]\n");
   printf("<U>_k: [ ");
