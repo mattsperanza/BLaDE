@@ -335,6 +335,7 @@ void print_lmd(int step,System *system)
       fprintf(fp," %8.6f",(real)l[i]);
     }
     fprintf(fp,"\n");
+    fflush(fp);
   } else {
     XDRFILE *fp=system->run->fpXLMD;
     xdrfile_write_int(&system->state->lambdaCount-1,1,fp);

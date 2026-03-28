@@ -7,6 +7,7 @@
 #include "system/potential.h"
 #include "main/gpu_check.h"
 #include "main/real3.h"
+#include <unistd.h> // for ftruncate
 
 SimulatedTempering::SimulatedTempering(std::string potential){
     this->potential = potential;
@@ -57,6 +58,12 @@ void SimulatedTempering::initialize(System* system, std::string output_dir){
     dU_uu_d = system->state->dU_uu_buffer_d;
   }
 
+  std::string mbar_rst = output_dir + "/" + fnm_mbar;
+  if(mbar_rst == fnm_mbar_iter){
+    printf("MBAR restart file name: %s is reserved. Please rename st_mbar_file.\n", mbar_rst.c_str());
+    exit(1);
+  }
+
   if(system->enhanced->init){ return; } // don't overallocate or reset mem
   // Everything below should not be updated each dynamics call
 
@@ -98,6 +105,7 @@ void SimulatedTempering::initialize(System* system, std::string output_dir){
   // Check for and read from restarts, only if do_restart is true
   current_iter = read_restart(system, output_dir);
   printf("Starting at iter: %d\n", current_iter);
+  cudaMemcpy(g_d, g, N_temp*sizeof(real), cudaMemcpyDefault);
 
   // Slowly add additional temperatures if no restarts exist
   if (current_iter == 0){
@@ -105,7 +113,7 @@ void SimulatedTempering::initialize(System* system, std::string output_dir){
     low_idx=0;
     high_idx=1; 
   } else {
-    printf("Skipping fixed temp sampling!");
+    printf("Skipping fixed temp sampling!\n");
     low_idx=0;
     high_idx=N_temp;
   }
@@ -203,6 +211,9 @@ __global__ void update_forces_kernel(
     if(dU_int){
       dU_su = dU_int[i];
     }
+    //if(i < nL){
+      //printf("i: %d, force_buff: %f, dU_ss: %f\n", i, forceBuffer[i], dU_ss);
+    //}
     // Remove exising forces and replace with scaled versions of dU_ss & dU_su
     forceBuffer[i] += (scale_ss[0]-1)*dU_ss + (sqrt(scale_ss[0])-1)*dU_su;
   }
@@ -259,8 +270,6 @@ void getforce_st(System* system, int step, bool calcEnergy){
     // Output
     s->forceBuffer_d);
 }
-
-void write_g_update(System* system, std::string output_dir){}
 
 bool iterate_mbar(int N_temp, real* nk, real* uk, real* g){
   int N_samples = 0;
@@ -435,7 +444,8 @@ void update_st(System* system){
     stream = system->run->enhancedStream;
   }
 
-  if(system->run->step % st->sample_freq == 0 && st->current_iter != st->total_iters){
+  if(system->run->step % st->sample_freq == 0 
+      && st->current_iter < st->total_iters){ // don't collect samples in equilibrium sampling stage (mbar_data not large enough)
     // load sample data into mbar_data
     int effective_iter = st->current_iter % st->iter_history;
     int idx = st->sample_data_length*(effective_iter*st->iteration_samples + st->collected_iter_samples);
@@ -451,9 +461,11 @@ void update_st(System* system){
       // write update to weights
       cudaMemcpy(st->g_d, st->g, st->N_temp*sizeof(real), cudaMemcpyDefault);
       // write update to weights file
+      st->write_g_iter(system , system->enhanced->output_dir);
       // TODO
       st->collected_iter_samples=0;
       st->current_iter++;
+      st->just_iterated = true;
     }
   }
 
@@ -484,29 +496,27 @@ void SimulatedTempering::recv_st(){
   cudaMemcpy(g, g_d, size, cudaMemcpyDefault);
 }
 
-void log_st(System* system){
-  State *s = system->state;
-  SimulatedTempering* st = system->enhanced->simulatedTempering;
+void log_st(System* system){}
 
-  real beta0= 1.0/(kB*system->run->T);
-  real eff_beta = st->scale_ss*(1.0/(kB*system->run->T));
-  real eff_temp = 1.0/(kB*eff_beta);
-  real root_beta = sqrt(eff_beta);
-  printf("Step: %d, U: %.2f, U_ss: %.2f, U_su: %.2f, U': %.2f, U'-U: %.2f\n", 
-    system->run->step, st->U, st->U_ss, st->U_su, st->U_prime, st->U_prime - st->U);
-  printf("Force Scale ss: %.2f, Force Scale su: %.2f, <beta>: %.2f, <T>: %.2f\n", 
-    st->scale_ss, sqrt(st->scale_ss), eff_beta, eff_temp);
-  printf("Temps: [ ");
-  for(int i = 0; i < st->N_temp; i++){
-    printf("%.2f, ", st->temperatures[i]);
+void SimulatedTempering::write_g_iter(System* system, std::string output_dir){
+  SimulatedTempering* st = system->enhanced->simulatedTempering;
+  const char* mode = st->do_restart ? "a" : "w";
+  if(!st->fp_g){
+     std::string fnm = output_dir + "/" + st->fnm_g;
+     st->fp_g = fopen(fnm.c_str(), mode);
+     if(!st->fp_g){
+       printf("Error opening %s. Please make directory!\n", fnm.c_str());
+       exit(1);
+     }
   }
-  printf("]\n");
-  printf("g_k: [ ");
+  // 0 iteration g is all zeros, not included in file
+  // write next iteration weights
+  fprintf(st->fp_g, "%d ", st->current_iter+1);
   for(int i = 0; i < st->N_temp; i++){
-    printf("%.2f, ", st->g[i]);
+    fprintf(st->fp_g, "%f ", st->g[i]);
   }
-  printf("]\n");
-  printf("\n");
+  fprintf(st->fp_g, "\n");
+  fflush(st->fp_g);
 }
 
 void write_small_st(System* system, std::string output_dir){
@@ -514,11 +524,25 @@ void write_small_st(System* system, std::string output_dir){
   int size = st->N_temp*sizeof(real);
 
   // Temps
+  if(!st->fp_temps){ // only do this once
+    std::string fnm = output_dir + "/" + st->fnm_temps;
+    st->fp_temps= fopen(fnm.c_str(), "w");
+    if(!st->fp_temps){
+      printf("Error opening %s. Please make directory!\n", fnm.c_str());
+      exit(1);
+    }
+    for(int i = 0; i < st->N_temp; i++){
+      fprintf(st->fp_temps, "%f ", st->temperatures[i]);
+    }
+    fprintf(st->fp_temps, "\n");
+    fflush(st->fp_temps);
+  }
+  // Betas
   if(!st->fp_betas){ // only do this once
-    std::string fnm_temps      = output_dir + "/betas.dat";
-    st->fp_betas = fopen(fnm_temps.c_str(), "w");
+    std::string fnm = output_dir + "/" + st->fnm_betas;
+    st->fp_betas = fopen(fnm.c_str(), "w");
     if(!st->fp_betas){
-      printf("Error opening %s. Please make directory!\n", fnm_temps.c_str());
+      printf("Error opening %s. Please make directory!\n", fnm.c_str());
       exit(1);
     }
     for(int i = 0; i < st->N_temp; i++){
@@ -528,27 +552,13 @@ void write_small_st(System* system, std::string output_dir){
     fprintf(st->fp_betas, "\n");
     fflush(st->fp_betas);
   }
-  // g_k
-  if(!st->fp_g){
-    std::string fnm_g_k        = output_dir + "/g.dat";
-    st->fp_g = fopen(fnm_g_k.c_str(), "w");
-    if(!st->fp_g){
-      printf("Error opening %s. Please make directory!\n", fnm_g_k.c_str());
-      exit(1);
-    }
-  }
-  fprintf(st->fp_g, "%d ", system->run->step);
-  for(int i = 0; i < st->N_temp; i++){
-    fprintf(st->fp_g, "%f ", st->g[i]);
-  }
-  fprintf(st->fp_g, "\n");
-  fflush(st->fp_g);
-  // <T>
+  const char* mode = st->do_restart ? "a" : "w";
+  // Current T
   if(!st->fp_current_T){
-     std::string fnm_T   = output_dir + "/T.dat";
-     st->fp_current_T = fopen(fnm_T.c_str(), "w");
+     std::string fnm = output_dir + "/" + st->fnm_current_T;
+     st->fp_current_T = fopen(fnm.c_str(), mode); // when restarting, this fp_current_T will have extra lines
      if(!st->fp_current_T){
-       printf("Error opening %s. Please make directory!\n", fnm_T.c_str());
+       printf("Error opening %s. Please make directory!\n", fnm.c_str());
        exit(1);
      }
   }
@@ -558,22 +568,177 @@ void write_small_st(System* system, std::string output_dir){
   fprintf(st->fp_current_T, "%f ", eff_temp);
   fprintf(st->fp_current_T, "\n");
   fflush(st->fp_current_T);
-  // Potentials
+  // MBAR restart File 
   if(!st->fp_mbar){
-     std::string fnm_pot   = output_dir + "/potentials.dat";
-     st->fp_mbar = fopen(fnm_pot.c_str(), "w");
+     std::string fnm = output_dir + "/" + st->fnm_mbar;
+     st->fp_mbar = fopen(fnm.c_str(), mode);
      if(!st->fp_mbar){
-       printf("Error opening %s. Please make directory!\n", fnm_pot.c_str());
+       printf("Error opening %s. Please make directory!\n", fnm.c_str());
+       exit(1);
+     }
+     if(mode == "a"){fprintf(st->fp_mbar, "\n");}
+  }
+  int correction = st->just_iterated ? 1 : 0;
+  fprintf(st->fp_mbar, "%d %d %f %f %f %f\n", st->current_iter - correction, st->temp_curr_idx, 1.0/(kB*system->run->T), st->betas[st->temp_curr_idx], st->U_ss, st->U_su);
+  fflush(st->fp_mbar);
+  // g.dat written separately as iterations complete
+  // MBAR reweighting file(s)
+  if(!st->fp_mbar_iter){
+     std::string fnm = st->fnm_mbar_iter;
+     st->fp_mbar_iter = fopen(fnm.c_str(), "w"); // always write
+     if(!st->fp_mbar_iter){
+       printf("Error opening %s. Please make directory!\n", fnm.c_str());
        exit(1);
      }
   }
-  fprintf(st->fp_mbar, "%d ", system->run->step);
-  fprintf(st->fp_mbar, "%f %f %f %f\n", st->U, st->U_ss, st->U_su, st->U_prime);
-  fflush(st->fp_mbar);
+  correction = st->just_iterated ? 1 : 0;
+  fprintf(st->fp_mbar_iter, "%d %d %f %f %f %f\n", st->current_iter - correction, st->temp_curr_idx, 1.0/(kB*system->run->T), st->betas[st->temp_curr_idx], st->U_ss, st->U_su);
+  fflush(st->fp_mbar_iter);
+  st->just_iterated = false;
 }
 
-int SimulatedTempering::read_restart(System* system, std::string output_dir){
-  return 0;
-};
+// written by Claude, then checked that it gave correct behavior 
+int SimulatedTempering::read_restart(System* system, std::string output_dir) {
+  if (!do_restart) return 0;
+
+  std::string g_path    = output_dir + "/" + fnm_g;
+  std::string mbar_path = output_dir + "/" + fnm_mbar;
+  std::string T_path    = output_dir + "/" + fnm_current_T;
+
+  // --- Check for inconsistent state: mbar.dat exists but g.dat does not ---
+  FILE* fp_mbar_check = fopen(mbar_path.c_str(), "r");
+  FILE* fp_g_check    = fopen(g_path.c_str(), "r");
+  if (fp_mbar_check && !fp_g_check) {
+    printf("Error: %s exists but %s does not. Cannot restart safely. Starting fresh!\n",
+           mbar_path.c_str(), g_path.c_str());
+    if (fp_mbar_check) fclose(fp_mbar_check);
+    do_restart = false;
+    return 0;
+  }//13.7470
+  if (fp_mbar_check) fclose(fp_mbar_check);
+  if (!fp_g_check) {
+    printf("No %s found, starting from scratch.\n", g_path.c_str());
+    return 0;
+  }
+  fclose(fp_g_check);
+
+  // --- Step 1: Read g.dat ---
+  FILE* fp_g_r = fopen(g_path.c_str(), "r");
+  int restart_iter = 0;
+  int lines_read = 0;
+  while (true) {
+    int iter_num;
+    if (fscanf(fp_g_r, "%d", &iter_num) != 1) break;
+    bool ok = true;
+    for (int k = 0; k < N_temp; k++) {
+      double val;
+      if (fscanf(fp_g_r, "%lf", &val) != 1) { ok = false; break; }
+      g_data[(iter_num % iter_history) * N_temp + k] = (real)val;
+    }
+    if (!ok) break;
+    restart_iter = iter_num;
+    lines_read++;
+  }
+  fclose(fp_g_r);
+
+  if (lines_read == 0) return 0;
+
+  memcpy(g, &g_data[(restart_iter % iter_history) * N_temp], N_temp * sizeof(real));
+  printf("Restarting from iteration %d, g: [", restart_iter);
+  for (int k = 0; k < N_temp; k++) printf("%f ", g[k]);
+  printf("]\n");
+
+  if (restart_iter >= total_iters) {
+    printf("Iterations complete (%d/%d), skipping mbar.dat read.\n",
+           restart_iter, total_iters);
+    return restart_iter;
+  }
+
+  // --- Step 2: Read mbar.dat ---
+  FILE* fp_mbar_r = fopen(mbar_path.c_str(), "r");
+  if (!fp_mbar_r) {
+    printf("No %s found, starting fresh mbar data.\n", mbar_path.c_str());
+    return restart_iter;
+  }
+
+  int* sample_counts   = (int*)calloc(iter_history, sizeof(int));
+  long last_valid_pos  = 0;
+  int  valid_mbar_samples = 0;
+
+  while (true) {
+    int iter_mbar, k_idx;
+    double beta0_val, betak_val, U_ss_val, U_su_val;
+    if (fscanf(fp_mbar_r, "%d %d %lf %lf %lf %lf",
+               &iter_mbar, &k_idx,
+               &beta0_val, &betak_val,
+               &U_ss_val, &U_su_val) != 6) break;
+    if (iter_mbar >= restart_iter) break;
+
+    int eff_i = iter_mbar % iter_history;
+    int s = sample_counts[eff_i];
+    if (s < iteration_samples) {
+      int idx = sample_data_length * (eff_i * iteration_samples + s);
+      mbar_data[idx + mbar_k]     = (real)k_idx;
+      mbar_data[idx + mbar_beta0] = (real)beta0_val;
+      mbar_data[idx + mbar_betak] = (real)betak_val;
+      mbar_data[idx + mbar_Uss]   = (real)U_ss_val;
+      mbar_data[idx + mbar_Usu]   = (real)U_su_val;
+      sample_counts[eff_i]++;
+    }
+    valid_mbar_samples++;
+    last_valid_pos = ftell(fp_mbar_r);
+  }
+  fclose(fp_mbar_r);
+
+  for (int i = 0; i < iter_history; i++) {
+    if (sample_counts[i] > 0 && sample_counts[i] != iteration_samples) {
+      printf("Warning: slot %d has %d samples, expected %d\n",
+             i, sample_counts[i], iteration_samples);
+    }
+  }
+  free(sample_counts);
+
+  // --- Step 3: Truncate mbar.dat and current_T.dat if iterations incomplete ---
+  if (restart_iter < total_iters) {
+    // Truncate mbar.dat
+    FILE* ft = fopen(mbar_path.c_str(), "r+");
+    if (ft) {
+      ftruncate(fileno(ft), last_valid_pos);
+      fclose(ft);
+      printf("Truncated %s to %ld bytes (%d samples)\n",
+             mbar_path.c_str(), last_valid_pos, valid_mbar_samples);
+    }
+
+    // Truncate current_T.dat to same number of lines
+    FILE* fp_T = fopen(T_path.c_str(), "r");
+    if (fp_T) {
+      long T_valid_pos = 0;
+      int lines = 0;
+      int c;
+      while (lines < valid_mbar_samples && (c = fgetc(fp_T)) != EOF) {
+        if (c == '\n') {
+          lines++;
+          T_valid_pos = ftell(fp_T);
+        }
+      }
+      fclose(fp_T);
+      if (lines == valid_mbar_samples) {
+        FILE* ft_T = fopen(T_path.c_str(), "r+");
+        if (ft_T) {
+          ftruncate(fileno(ft_T), T_valid_pos);
+          fclose(ft_T);
+          printf("Truncated %s to %ld bytes (%d samples)\n",
+                 T_path.c_str(), T_valid_pos, valid_mbar_samples);
+        }
+      } else {
+        printf("Warning: %s has fewer lines (%d) than valid mbar samples (%d)\n",
+               T_path.c_str(), lines, valid_mbar_samples);
+      }
+    }
+  } 
+
+  return restart_iter;
+}
+
 
 void write_big_st(System* system, std::string output_dir){};

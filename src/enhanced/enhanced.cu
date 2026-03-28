@@ -61,6 +61,13 @@ void parse_enhanced(char* line, System* system){
     printf("Dumping enhanced selections! Will segfault if no selection is defined.\n");
     printf("Primary Selection Name: %s\n", system->enhanced->primary_sele.c_str());
     system->selections->dump();
+  } else if (strcmp(token, "nbrecip_mode")==0){
+    int sel = io_nexti(line);
+    if(sel < 0 || sel > 2){
+      printf("Only 0-2 nbrecip_mode supported {correct, on, off}!\n");
+      exit(1);
+    }
+    system->enhanced->nbrecip_mode=sel;
   // ST Reading
   } else if (strcmp(token,"simulated_tempering")==0) {
     if(system->enhanced->simulatedTempering){
@@ -127,6 +134,8 @@ void parse_enhanced(char* line, System* system){
     system->enhanced->simulatedTempering->temp_sample_freq = io_nexti(line);
   } else if (strcmp(token, "st_do_restart")==0){
     system->enhanced->simulatedTempering->do_restart = io_nextb(line);
+  } else if (strcmp(token, "st_mbar_file")==0){
+    system->enhanced->simulatedTempering->fnm_mbar_iter = io_nexts(line);
   }
 };
 

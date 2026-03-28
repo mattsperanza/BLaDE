@@ -1077,7 +1077,24 @@ void Potential::initialize(System *system)
         nbex.idx[0]=i;
         nbex.idx[1]=*jj;
         bool nb_pair = msld->nbex_scaling(nbex.idx,nbex.siteBlock);
-        nbex.selection=2; // all recip go into selected or don't include pair exclusions?
+        nbex.selection=0; // nbrecip_mode=2
+        if(system->enhanced && system->enhanced->atom_selection_primary 
+            && system->enhanced->nbrecip_mode==0){
+          for(j=0; j<2; j++){
+            int id = nbex.idx[j];
+            // siteblock not filled
+            int alchem = 0xFFFF & nbex.siteBlock[j];
+            bool selected = system->enhanced->atom_selection_primary[id] == 1;
+            if(alchem){
+              nbex.selection+=2; // alchemical interactions = ss
+            } else if (selected) {
+              nbex.selection+=1;
+            }
+          }
+        } else if (system->enhanced && system->enhanced->atom_selection_primary 
+          && system->enhanced->nbrecip_mode==1){
+          nbex.selection=2;
+        }
         // Get their MSLD scaling
         if (nb_pair) {
           // Get their parameters
@@ -1743,6 +1760,9 @@ void Potential::calc_force(int step,System *system)
     cudaStreamWaitEvent(r->nbrecipStream,r->forceBegin,0);
     getforce_ewaldself(system,calcEnergy);
     getforce_ewald(system,calcEnergy);
+    if(system->enhanced && system->enhanced->nbrecip_mode==0){
+      getforce_ewald_select(system,calcEnergy);
+    }
     system->rngGPU->rand_normal(s->leapState->N,s->leapState->random,r->nbrecipStream);
     cudaEventRecord(r->nbrecipComplete,r->nbrecipStream);
     cudaStreamWaitEvent(r->updateStream,r->nbrecipComplete,0);

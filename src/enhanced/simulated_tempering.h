@@ -6,7 +6,7 @@
 
 class System;
 
-typedef enum mbarTerm {
+enum mbarTerm {
   mbar_k,
   mbar_beta0,
   mbar_betak,
@@ -21,6 +21,7 @@ class SimulatedTempering {
     ~SimulatedTempering();
     void initialize(System* system, std::string output_dir); // output="nhcd"
     void recv_st();
+    void write_g_iter(System* system, std::string output_dir);
     int read_restart(System* system, std::string output_dir); // output="nhcd/g_updates"
     bool solve_mbar(System* system);
 
@@ -70,6 +71,7 @@ class SimulatedTempering {
        All info stored in g.dat and mbar.dat
     */
     int current_iter = 0;
+    bool just_iterated = false;
     int total_iters = 20; // 2ns 
     int iter_history = 10; // look at last 10 mbar files (1ns)
     int iteration_length = 50000; // 100ps iterations
@@ -115,8 +117,10 @@ class SimulatedTempering {
     bool do_restart = true;
     std::string fnm_g = "g.dat";
     FILE* fp_g = NULL;
-    std::string fnm_mbar = "mbar.dat";
+    std::string fnm_mbar = "mbar_rst.dat";
     FILE* fp_mbar = NULL;
+    std::string fnm_mbar_iter = "mbar_prod0.dat"; // used to reweight 
+    FILE* fp_mbar_iter = NULL;
 };
     
 void getforce_st(System* system, int step, bool calcEnergy);

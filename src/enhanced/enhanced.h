@@ -26,6 +26,7 @@ class Enhanced {
 
     bool separate_interactions = false;
     bool special_nbdirect = false;
+    int nbrecip_mode = 0; // enum {correct, all, none}
 
     std::string primary_sele = "";
     int* atom_selection_primary = NULL;
