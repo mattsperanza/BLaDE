@@ -70,7 +70,7 @@ class State {
   real_f *forceBackup_d; // For NPT
   real_f *forceBuffer_omp;
 
-  // Buffers used for ITS sampling
+  // Buffers used for solute tempering sampling
   real_e U_ss; // selection-selection
   real_e* U_ss_d;
   real_f *dU_ss_buffer;

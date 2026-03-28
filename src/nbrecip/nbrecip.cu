@@ -75,7 +75,7 @@ void getforce_ewaldself(System *system,bool calcEnergy)
     pEnergy=s->energy_d+eenbrecipself;
   }
   int* selections = NULL;
-  if(system->enhanced && system->enhanced->special_elec){
+  if(system->enhanced && system->enhanced->special_nbdirect){
     selections=system->enhanced->atom_selection_primary_d;
   }
 

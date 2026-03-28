@@ -4,7 +4,7 @@
 #include "main/defines.h"
 
 class System;
-class Its;
+class SimulatedTempering;
 class Ldyn_rest;
 
 class Enhanced {
@@ -17,8 +17,7 @@ class Enhanced {
     bool init = false;
     bool active = false;
     bool updating = true; // don't collect samples (ex. during pressure coupling)
-    Ldyn_rest* ldyn_rest = NULL;
-    Its* its = NULL;
+    SimulatedTempering* simulatedTempering = NULL;
 
     int log_freq = 100000; // 200ps
     int write_big_freq = 1000; // 20ps
@@ -26,14 +25,11 @@ class Enhanced {
     std::string output_dir = "nhcd";
 
     bool separate_interactions = false;
-    bool special_elec = false;
-    bool osrw = false;
+    bool special_nbdirect = false;
 
     std::string primary_sele = "";
     int* atom_selection_primary = NULL;
     int* atom_selection_primary_d = NULL;
-    std::string secondary_sele = "";
-    int* atom_selection_secondary = NULL;
 };
 
 void parse_enhanced(char* line, System* system);

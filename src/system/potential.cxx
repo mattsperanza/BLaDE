@@ -9,7 +9,7 @@
 #include "system/structure.h"
 #include "msld/msld.h"
 #include "enhanced/enhanced.h"
-#include "enhanced/its.h"
+#include "enhanced/simulated_tempering.h"
 #include "system/state.h"
 #include "run/run.h"
 #include "domdec/domdec.h"
@@ -1042,7 +1042,7 @@ void Potential::initialize(System *system)
           }
         }
         nb14.selection=0;
-        if (system->enhanced && system->enhanced->special_elec && !system->enhanced->osrw){
+        if (system->enhanced && system->enhanced->special_nbdirect){
           if(!system->enhanced->atom_selection_primary){
             printf("Enhanced primary selection not defined!! This shouldn't happen.\n");
             exit(1);
@@ -1690,7 +1690,7 @@ void Potential::reset_force(System *system,bool calcEnergy)
   if (calcEnergy) {
     cudaMemset(system->state->energy_d,0,eeend*sizeof(real_e));
   }
-  // Clear ITS memory
+  // Clear solute tempering memory
   cudaMemset(system->state->U_ss_d, 0, sizeof(real_e));
   cudaMemset(system->state->dU_ss_buffer_d, 0, (2*system->state->lambdaCount+3*system->state->atomCount)*sizeof(real));
   cudaMemset(system->domdec->localdU_ss_d,0,32*system->domdec->maxBlocks*sizeof(real3_f));
@@ -1709,10 +1709,9 @@ void Potential::calc_force(int step,System *system)
   if (system->run->freqNPT>0) {
     calcEnergy=(calcEnergy||(step%system->run->freqNPT==0));
   }
-  if (system->enhanced && (system->enhanced->its || system->enhanced->ldyn_rest)){
-    calcEnergy=calcEnergy||(system->run->step%system->enhanced->its->temp_sample_freq==0); // EE temp step
-    calcEnergy=calcEnergy||(system->run->step%system->enhanced->its->sample_freq==0); // <U> sample step
-    calcEnergy=calcEnergy||system->enhanced->ldyn_rest;
+  if (system->enhanced && system->enhanced->simulatedTempering){
+    calcEnergy=calcEnergy||(system->run->step%system->enhanced->simulatedTempering->temp_sample_freq==0); // EE temp step
+    calcEnergy=calcEnergy||(system->run->step%system->enhanced->simulatedTempering->sample_freq==0); // <U> sample step
   }
 #ifdef REPLICAEXCHANGE
   if (system->run->freqREx>0) {
@@ -1767,7 +1766,7 @@ void Potential::calc_force(int step,System *system)
 
   if (system->domdec->id>=0) {
     cudaStreamWaitEvent(r->nbdirectStream,r->forceBegin,0);
-    if(system->enhanced && system->enhanced->special_elec){
+    if(system->enhanced && system->enhanced->special_nbdirect){
       getforce_nbdirect_special(system,calcEnergy);
     } else {
       getforce_nbdirect(system,calcEnergy);
@@ -1779,7 +1778,7 @@ void Potential::calc_force(int step,System *system)
   if (system->idCount>1) {
     system->state->gather_force(system,calcEnergy);
     if (system->id==0) {
-      if(system->enhanced && system->enhanced->special_elec){
+      if(system->enhanced && system->enhanced->special_nbdirect){
         getforce_nbdirect_reduce_special(system,calcEnergy);
       } else {
         getforce_nbdirect_reduce(system,calcEnergy);

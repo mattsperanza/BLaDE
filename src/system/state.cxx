@@ -44,7 +44,7 @@ State::State(System *system) {
   cudaMalloc(&(forceBuffer_d),rootFactor*(2*nL+3*n)*sizeof(real_f));
   cudaMalloc(&(forceBackup_d),(2*nL+3*n)*sizeof(real_f));
 
-  // ITS buffer initialization
+  // Solute Tempering buffer initialization
   U_ss=0;
   cudaMalloc(&U_ss_d, rootFactor*sizeof(real_e));
   dU_ss_buffer=(real*)calloc(rootFactor*(2*nL+3*n),sizeof(real_f));
