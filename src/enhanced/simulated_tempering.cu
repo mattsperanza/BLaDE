@@ -137,10 +137,11 @@ __global__ void ee_sample_betas_kernel(
     Make 1 MCMC move to new bias/temperature (REST2), sample from stationary distribution of betas (independence gibbs)
     U = U_ss + U_su + U_uu 
     U_eff = U_uu + bk/b0*U_ss + sqrt(bk/b0)*U_su
-    prob(bk|X) = exp(-b0*(U_eff + gk/b0)) / sum_j [ exp(-b0*(U_eff + gj/b0)) ]
+    prob(bk|X) = exp(-b0*U_eff + gk) / sum_j [ exp(-b0*U_eff + gj) ]
     prob(bk|X) = exp(-b0*U_bk + gk) / sum_j [ exp(-b0*U_bj + gj) ]  // using exp(-b0*U_uu + b0*U_uu) = 1
     -b0*U_bk = -bk*U_ss - sqrt(bk*b0)*U_su
-    g = -ln(int [ exp(-b0*U_eff) ]) = -ln(Z(bk)) // see later explanation in update_expectation_kernel
+    gk = -ln(int [ exp(-b0*U_eff) ]) = -ln(Z(bk)) 
+    g = f = -bk^-1*ln(Z(bk))  // dimensionless relative free energy estimates from MBAR
 
     In practice I do: 
       U_eff = U + Ub 
@@ -277,8 +278,8 @@ bool iterate_mbar(int N_temp, real* nk, real* uk, real* g){
     N_samples += nk[i];
   }
 
-  int max_iter = 500;
-  real tol = 1e-3; // max_k |gi,k - gi-1,k|
+  int max_iter = 10000;
+  real tol = 1e-4; // max_k |gi,k - gi-1,k|
 
   /* iterate eq. 11 from shirts and chodera
     fi = -ln[ sum_n( exp(-u_ni)/sum_l{ N_l*exp(fl-u_nl) } ) ]
@@ -288,7 +289,8 @@ bool iterate_mbar(int N_temp, real* nk, real* uk, real* g){
   */
   real* args = (real*) calloc(N_temp*N_samples, sizeof(real));
   bool converged = false;
-  for(int iter = 0; iter < max_iter; iter++){
+  int iter;
+  for(iter = 0; iter < max_iter; iter++){
     // Compute arg_ni elements and respective maxes
     real max_n[N_temp];
     for(int k = 0; k < N_temp; k++){
@@ -331,7 +333,7 @@ bool iterate_mbar(int N_temp, real* nk, real* uk, real* g){
     for(int k = 0; k < N_temp; k++){
       f[k] -= tmp;
       real abs_delta = abs(f[k] - g[k]); 
-      real omega = 1.0; // SOR
+      real omega = 1.0; // SOR?
       g[k] = omega*f[k] + (1.0-omega)*g[k];
       if(abs_delta > max_delta){
         max_delta = abs_delta;
@@ -346,6 +348,7 @@ bool iterate_mbar(int N_temp, real* nk, real* uk, real* g){
     }
   }
   free(args);
+  printf("MBAR ITER: %d, converged: %d\n", iter, converged);
   printf("N_k: [");
   for(int i = 0; i < N_temp; i++){
     printf(" %f, ", nk[i]);
@@ -390,21 +393,22 @@ bool SimulatedTempering::solve_mbar(System* system){
       }
     }
     // Initialize weights to <-reduced_pot>
-    real rel = g_tmp[0]/nk_tmp[0];
+    real rel = g_tmp[0]/sample_count;
     for(int i = 0; i < N_temp; i++){
-      g_tmp[i] /= nk_tmp[i];
+      g_tmp[i] /= sample_count;
       g_tmp[i] -= rel;
     }
     if (sample_count != n_samples){
       printf("Something wrong 0!!\n");
     }
   } else {
-    int iter_of_data = min(current_iter+1, iter_history);
+    int iter_of_data = min(current_iter, iter_history);
     int n_samples_per_iter = (iteration_samples - equilibration_samples);
     int uk_len = n_samples_per_iter*N_temp*iter_of_data;
     uk_tmp = (real*)malloc(uk_len * sizeof(real));
-    for(int i = current_iter; i >= max(current_iter-(iter_history-1), 0); i--){
+    for(int i = current_iter; i >= max(current_iter-(iter_history-1), 1); i--){
       int eff_i = i % iter_history;
+      //printf("i: %d, eff_i: %d\n", i, eff_i);
       int skip = eff_i*iteration_samples + equilibration_samples;
       for(int j = 0; j < n_samples_per_iter; j++){
         int idx_mbar = (skip + j) * sample_data_length;
@@ -455,6 +459,12 @@ void update_st(System* system){
     st->mbar_data[idx+mbar_Uss] = st->U_ss;
     st->mbar_data[idx+mbar_Usu] = st->U_su;
     st->collected_iter_samples++;
+    // Timed WL after fixed temp phase
+    if(system->run->step % st->temp_sample_freq == 0 && st->high_idx == st->N_temp && st->low_idx == 0){ 
+      double inc = st->wl_inc_start*pow(st->wl_alpha, st->current_iter-1);
+      st->g[st->temp_curr_idx] -= inc;
+      cudaMemcpy(st->g_d, st->g, st->N_temp*sizeof(real), cudaMemcpyDefault);
+    }
     if (st->collected_iter_samples == st->iteration_samples){
       // run MBAR on data
       st->solve_mbar(system); // fills g and g_data with updated free energies

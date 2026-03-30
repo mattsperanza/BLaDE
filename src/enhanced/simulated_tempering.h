@@ -65,6 +65,10 @@ class SimulatedTempering {
     int temp_curr_idx; // current K index
     int* temp_curr_idx_d; // current K index
 
+    //
+    double wl_inc_start = 0.05;
+    double wl_alpha = .25;
+
     /* MBAR weight updates:
        Initial starts with a fixed temp sweep,
        Followed by equilibrium iterations using fixed weights
