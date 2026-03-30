@@ -852,7 +852,7 @@ void Msld::init_lambda_from_theta(cudaStream_t stream,System *system)
 
 __global__ void calc_thetaForce_from_lambdaForce_kernel(
   real *lambda,real *theta,
-  real_f *lambdaForce,real_f *thetaForce,
+  real_f *lambdaForce,real_f *thetaForce, real_f* thetaForce_write,
   int blockCount,int *lambdaSite,int *siteBound,real fnex,
   bool new_implicit, real_x* theta0, real* dcdt 
 )
@@ -880,6 +880,7 @@ __global__ void calc_thetaForce_from_lambdaForce_kernel(
         dot += lambdaForce[j]*dcdt[j];
       }
       atomicAdd(&thetaForce[i], dcdt[i]*(lambdaForce[i]-dot/norm));
+      atomicAdd(&thetaForce_write[i], dcdt[i]*(lambdaForce[i]-dot/norm));
     }
   }
 }
@@ -890,7 +891,7 @@ void Msld::calc_thetaForce_from_lambdaForce(cudaStream_t stream,System *system)
   if (!fix) { // ffix
     calc_thetaForce_from_lambdaForce_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
       s->lambda_fd,s->theta_fd,
-      s->lambdaForce_d,s->thetaForce_d,
+      s->lambdaForce_d,s->thetaForce_d,s->thetaForce_extra_d,
       blockCount,lambdaSite_d,siteBound_d,fnex,
       new_implicit, theta0_d, dcdt_d);
   }

@@ -69,6 +69,8 @@ class State {
   real_f *forceBuffer_d;
   real_f *forceBackup_d; // For NPT
   real_f *forceBuffer_omp;
+  real_f *thetaForce_extra;
+  real_f *thetaForce_extra_d;
 
   // Other buffers
   real_e *energy;

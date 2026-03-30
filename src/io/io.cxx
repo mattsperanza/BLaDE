@@ -328,6 +328,7 @@ void print_lmd(int step,System *system)
   real_x *l=system->state->lambda;
   int i;
 
+  FILE *fp;
   if (system->run->hrLMD) {
     FILE *fp=system->run->fpLMD;
     fprintf(fp,"%10d",step);
@@ -347,6 +348,23 @@ void print_lmd(int step,System *system)
     xdrfile_write_float(&l[1],system->state->lambdaCount-1,fp);
 #endif
   }
+
+  real_x *t=system->state->theta;
+  fp=system->run->fpTHETA;
+  fprintf(fp,"%10d",step);
+  for (i=1; i<system->state->lambdaCount; i++) {
+    fprintf(fp," %8.6f",(real)t[i]);
+  }
+  fprintf(fp,"\n");
+
+  real_f *tf=system->state->thetaForce;
+  fp=system->run->fpTHETA_FRC;
+  fprintf(fp,"%10d",step);
+  for (i=1; i<system->state->lambdaCount; i++) {
+    fprintf(fp," %8.6f",(real)tf[i]);
+  }
+  fprintf(fp,"\n");
+  
 }
 
 void print_nrg(int step,System *system)

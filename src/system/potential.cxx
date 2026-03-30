@@ -1608,6 +1608,7 @@ void Potential::reset_force(System *system,bool calcEnergy)
   if (calcEnergy) {
     cudaMemset(system->state->energy_d,0,eeend*sizeof(real_e));
   }
+  cudaMemset(system->state->thetaForce_extra_d, 0, system->state->lambdaCount*sizeof(real_f));
 }
 
 void Potential::calc_force(int step,System *system)

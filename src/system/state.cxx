@@ -44,6 +44,9 @@ State::State(System *system) {
   cudaMalloc(&(forceBuffer_d),rootFactor*(2*nL+3*n)*sizeof(real_f));
   cudaMalloc(&(forceBackup_d),(2*nL+3*n)*sizeof(real_f));
 
+  thetaForce_extra = (real_f*) calloc(nL, sizeof(real_f));
+  cudaMalloc(&(thetaForce_extra_d),nL*sizeof(real_f));
+
   if (system->idCount>0) { // OMP
 #pragma omp barrier // OMP
     if (system->id==0) { // OMP
@@ -157,6 +160,8 @@ State::~State() {
   if (forceBuffer) free(forceBuffer);
   if (forceBuffer_d) cudaFree(forceBuffer_d);
   if (forceBackup_d) cudaFree(forceBackup_d);
+  if (thetaForce_extra) free(thetaForce_extra);
+  if (thetaForce_extra_d) free(thetaForce_extra_d);
   // Other buffers
   if (energy) free(energy);
   if (energy_d) cudaFree(energy_d);
@@ -312,6 +317,8 @@ void State::recv_position()
 void State::recv_lambda()
 {
   cudaMemcpy(lambda,lambda_d,lambdaCount*sizeof(real_x),cudaMemcpyDeviceToHost);
+  cudaMemcpy(theta,theta_d,lambdaCount*sizeof(real_x),cudaMemcpyDeviceToHost);
+  cudaMemcpy(thetaForce_extra,thetaForce_extra_d,lambdaCount*sizeof(real_x),cudaMemcpyDeviceToDevice);
 }
 
 void State::recv_energy()

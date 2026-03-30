@@ -33,9 +33,13 @@ class Run {
   std::string fnmNRG;
   std::string fnmCPI;
   std::string fnmCPO;
+  std::string fnmTHETA;
+  std::string fnmTHETA_FORCE;
   XDRFILE *fpXTC;
   XDRFILE *fpXLMD;
   FILE *fpLMD;
+  FILE *fpTHETA;
+  FILE *fpTHETA_FRC;
   FILE *fpNRG;
   int freqXTC;
   int freqLMD;

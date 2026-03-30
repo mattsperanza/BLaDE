@@ -33,6 +33,8 @@ Run::Run(System *system)
   fnmXTC="default.xtc";
   fnmLMD="default.lmd";
   fnmNRG="default.nrg";
+  fnmTHETA="default.theta";
+  fnmTHETA_FORCE="default.thetaF";
   fnmCPI="";
   fnmCPO="default.cpt";
   fpXTC=NULL;
@@ -156,6 +158,8 @@ Run::~Run()
   if (fpXLMD) xdrfile_close(fpXLMD);
   if (fpLMD) fclose(fpLMD);
   if (fpNRG) fclose(fpNRG);
+  if (fpTHETA) fclose(fpTHETA);
+  if (fpTHETA_FRC) fclose(fpTHETA_FRC);
 #ifndef PROFILESERIAL
   cudaStreamDestroy(updateStream);
 #endif
@@ -307,6 +311,10 @@ void Run::set_variable(char *line,char *token,System *system)
     fnmCPI=io_nexts(line);
   } else if (strcmp(token,"fnmcpo")==0) {
     fnmCPO=io_nexts(line);
+  } else if (strcmp(token,"fnmtheta")==0){
+    fnmTHETA=io_nexts(line);
+  } else if (strcmp(token,"fnmthetaF")==0){
+    fnmTHETA_FORCE = io_nexts(line);
   } else if (strcmp(token,"freqxtc")==0) {
     freqXTC=io_nexti(line);
   } else if (strcmp(token,"freqlmd")==0) {
@@ -520,9 +528,9 @@ void Run::dynamics(char *line,char *token,System *system)
     }
     system->domdec->update_domdec(system,(step%system->domdec->freqDomdec)==0);
     system->potential->calc_force(step,system);
+    print_dynamics_output(step,system);
     system->state->update(step,system);
 #warning "Need to copy coordinates before update"
-    print_dynamics_output(step,system);
     gpuCheck(cudaPeekAtLastError());
   }
   t2=clock();
@@ -547,6 +555,8 @@ void Run::dynamics_initialize(System *system)
     if (!fpXLMD) fpXLMD=xdrfile_open(fnmLMD.c_str(),"w");
     if (!fpXLMD) fatal(__FILE__,__LINE__,"Failed to open LMD file %s\n",fnmLMD.c_str());
   }
+  if (!fpTHETA) fpTHETA=fpopen(fnmTHETA.c_str(),"w");
+  if (!fpTHETA_FRC) fpTHETA_FRC=fpopen(fnmTHETA_FORCE.c_str(),"w");
   if (!fpNRG) fpNRG=fpopen(fnmNRG.c_str(),"w");
 #ifdef REPLICAEXCHANGE
   if (!fpREx && freqREx>0) fpREx=fpopen(fnmREx.c_str(),"w");
