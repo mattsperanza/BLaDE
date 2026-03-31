@@ -28,6 +28,7 @@ SimulatedTempering::~SimulatedTempering(){
   if(temp_curr_idx_d) cudaFree(temp_curr_idx_d);
   if(mbar_data) free(mbar_data);
   if(g_data) free(g_data);
+  if(pBeta_d) cudaFree(pBeta_d);
 
   // Files
   if(fp_betas) fclose(fp_betas);
@@ -83,6 +84,7 @@ void SimulatedTempering::initialize(System* system, std::string output_dir){
   cudaMalloc(&scale_ss_d, sizeof(real));
   cudaMemcpy(scale_ss_d, &scale_ss, sizeof(real), cudaMemcpyDefault);
   cudaMalloc(&temp_curr_idx_d, sizeof(int));
+  cudaMalloc(&pBeta_d, N_temp*sizeof(real));
 
   // Init timing and MBAR iteration stuff
   steps_per_temp = iteration_length/N_temp; // only for iter=0
@@ -122,7 +124,7 @@ void SimulatedTempering::initialize(System* system, std::string output_dir){
 __global__ void ee_sample_betas_kernel(
   int low_idx, int high_idx, real_e sim_T, 
   real_e* U_tot, real_e* U_sele, real_e* U_int, 
-  real* temps, real* g, 
+  real* temps, real* g, real* pBeta,
   real_e rand_number, 
   // Output
   int* temp_index, 
@@ -170,14 +172,16 @@ __global__ void ee_sample_betas_kernel(
   // r < sum k ( p(beta_k) )
   real_e p_sum = 0;
   real_e new_beta = 0;
+  bool found = false;
   for(int i = low_idx; i < high_idx; i++){
     real_e beta_k = 1.0/(kB*temps[i]);
     real_e exp_arg = -beta_k*U_ss - sqrt(beta_k*beta_0)*U_su + g[i];
     p_sum += exp(exp_arg-c) / exp_sum;
-    if (p_sum > rand_number){
+    pBeta[i] = exp(exp_arg-c) / exp_sum;
+    if (p_sum > rand_number && !found){
       new_beta=beta_k;
       *temp_index = i;
-      break;
+      found = true;
     }
   }
   scale_ss[0] = new_beta/beta_0;
@@ -220,6 +224,7 @@ __global__ void update_forces_kernel(
   }
 }
 
+
 __global__ void reduce_total_energy_kernel(real_e* energy, real_e* U){
   *U=0;
   for(int i = 0; i < eepotential; i++){
@@ -246,7 +251,7 @@ void getforce_st(System* system, int step, bool calcEnergy){
       // Input
       st->low_idx, st->high_idx, system->run->T, 
       st->U_d, st->U_ss_d, st->U_su_d, 
-      st->temperatures_d, st->g_d, 
+      st->temperatures_d, st->g_d, st->pBeta_d,
       rand_num, 
       // Output
       st->temp_curr_idx_d, 
@@ -438,6 +443,19 @@ bool SimulatedTempering::solve_mbar(System* system){
   return success;
 }
 
+__global__ void wl_inc_kernel(
+  int N_temp, bool spread, real* g, int* temp_idx, real* pBeta, real inc){ 
+    int i=blockIdx.x*blockDim.x+threadIdx.x;
+    if(i < N_temp){
+      if (!spread && i == *temp_idx){
+        g[*temp_idx] -= inc;
+      }
+      if (spread) {
+        g[i] -= pBeta[i]*inc;
+      }
+    }
+}
+
 void update_st(System* system){
   cudaStream_t stream=0;
   State *s = system->state;
@@ -462,8 +480,7 @@ void update_st(System* system){
     // Timed WL after fixed temp phase
     if(system->run->step % st->temp_sample_freq == 0 && st->high_idx == st->N_temp && st->low_idx == 0){ 
       double inc = st->wl_inc_start*pow(st->wl_alpha, st->current_iter-1);
-      st->g[st->temp_curr_idx] -= inc;
-      cudaMemcpy(st->g_d, st->g, st->N_temp*sizeof(real), cudaMemcpyDefault);
+      wl_inc_kernel<<<(st->N_temp+BLMS-1)/BLMS,BLMS, 0,stream>>>(st->N_temp, st->wl_spread, st->g_d, st->temp_curr_idx_d, st->pBeta_d, inc);
     }
     if (st->collected_iter_samples == st->iteration_samples){
       // run MBAR on data
@@ -749,6 +766,5 @@ int SimulatedTempering::read_restart(System* system, std::string output_dir) {
 
   return restart_iter;
 }
-
 
 void write_big_st(System* system, std::string output_dir){};

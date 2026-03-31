@@ -136,6 +136,12 @@ void parse_enhanced(char* line, System* system){
     system->enhanced->simulatedTempering->do_restart = io_nextb(line);
   } else if (strcmp(token, "st_mbar_file")==0){
     system->enhanced->simulatedTempering->fnm_mbar_iter = io_nexts(line);
+  } else if (strcmp(token, "st_wl_inc")==0){
+    system->enhanced->simulatedTempering->wl_inc_start=io_nextf(line);
+  } else if (strcmp(token, "st_wl_alpha")==0){
+    system->enhanced->simulatedTempering->wl_alpha=io_nextf(line);
+  } else if (strcmp(token, "st_wl_spread")==0){
+    system->enhanced->simulatedTempering->wl_spread=io_nextb(line);
   }
 };
 

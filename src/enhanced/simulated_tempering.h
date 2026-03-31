@@ -66,6 +66,8 @@ class SimulatedTempering {
     int* temp_curr_idx_d; // current K index
 
     //
+    bool wl_spread = true;
+    real* pBeta_d;
     double wl_inc_start = 0.05;
     double wl_alpha = .25;
 
