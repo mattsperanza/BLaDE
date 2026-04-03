@@ -336,6 +336,7 @@ void print_lmd(int step,System *system)
       fprintf(fp," %8.6f",(real)l[i]);
     }
     fprintf(fp,"\n");
+    fflush(fp);
   } else {
     XDRFILE *fp=system->run->fpXLMD;
     xdrfile_write_int(&system->state->lambdaCount-1,1,fp);
@@ -356,14 +357,16 @@ void print_lmd(int step,System *system)
     fprintf(fp," %8.6f",(real)t[i]);
   }
   fprintf(fp,"\n");
+  fflush(fp);
 
-  real_f *tf=system->state->thetaForce;
+  real_f *tf=system->state->thetaForce_extra;
   fp=system->run->fpTHETA_FRC;
   fprintf(fp,"%10d",step);
   for (i=1; i<system->state->lambdaCount; i++) {
-    fprintf(fp," %8.6f",(real)tf[i]);
+    fprintf(fp," %8.6f",tf[i]);
   }
   fprintf(fp,"\n");
+  fflush(fp);
   
 }
 
@@ -400,6 +403,8 @@ void print_dynamics_output(int step,System *system)
       print_xtc(step,system);
     }
     if (step % system->run->freqLMD == 0) {
+      // Need to calculate forces since this is called before "update"
+      system->msld->calc_thetaForce_from_lambdaForce(system->run->updateStream,system, system->state->thetaForce_extra_d);
       system->state->recv_lambda();
       print_lmd(step,system);
     }

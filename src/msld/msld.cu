@@ -747,13 +747,14 @@ __device__ real d_constraint(real_x* thetas, real_x theta0, real* dUdT, int subs
   return sum;
 }
 
-__device__ real d_constraintf(real* thetas, real theta0, real* dUdT, int subs){
+// Still want to work in double precision as much as possible
+__device__ real d_constraintf(real* thetas, real_x theta0, real* dUdT, int subs){
   // pointers should be at first element in site
-  real sum = 0;
-  real p = 3.0; // power of fn
+  real_x sum = 0;
+  real_x p = 3.0; // power of fn
   for(int i = 0; i < subs; i++){
-    real dist = thetas[i] - theta0;
-    real dcdti = dist > 0 ? p*pow(dist, p-1.0) : 0;
+    real_x dist = thetas[i] - theta0;
+    real_x dcdti = dist > 0 ? p*pow(dist, p-1.0) : 0;
     sum += dcdti;
     if(dUdT){
       dUdT[i] = dcdti;
@@ -852,7 +853,7 @@ void Msld::init_lambda_from_theta(cudaStream_t stream,System *system)
 
 __global__ void calc_thetaForce_from_lambdaForce_kernel(
   real *lambda,real *theta,
-  real_f *lambdaForce,real_f *thetaForce, real_f* thetaForce_write,
+  real_f *lambdaForce,real_f *thetaForce, 
   int blockCount,int *lambdaSite,int *siteBound,real fnex,
   bool new_implicit, real_x* theta0, real* dcdt 
 )
@@ -874,24 +875,25 @@ __global__ void calc_thetaForce_from_lambdaForce_kernel(
       atomicAdd(&thetaForce[i],fi);
     } else { // newton solved constraint
       int subs = jf - ji;
-      real norm = d_constraintf(&theta[ji], theta0[lambdaSite[i]], &dcdt[ji], subs); // loops over subs 1x
-      real dot = 0;
+      // Double precision required to see zero forces in end-states, otherwise just very close to zero
+      real_x norm = d_constraintf(&theta[ji], theta0[lambdaSite[i]], &dcdt[ji], subs); // loops over subs 1x
+      real_x dot = 0;
       for(j = ji; j < jf; j++){
         dot += lambdaForce[j]*dcdt[j];
       }
-      atomicAdd(&thetaForce[i], dcdt[i]*(lambdaForce[i]-dot/norm));
-      atomicAdd(&thetaForce_write[i], dcdt[i]*(lambdaForce[i]-dot/norm));
+      // Factoring the multiplication by dcdt makes this less numerically stable
+      atomicAdd(&thetaForce[i], dcdt[i]*lambdaForce[i]-dcdt[i]*dot/norm);
     }
   }
 }
 
-void Msld::calc_thetaForce_from_lambdaForce(cudaStream_t stream,System *system)
+void Msld::calc_thetaForce_from_lambdaForce(cudaStream_t stream,System *system, real_f* thetaForce)
 {
   State *s=system->state;
   if (!fix) { // ffix
     calc_thetaForce_from_lambdaForce_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
       s->lambda_fd,s->theta_fd,
-      s->lambdaForce_d,s->thetaForce_d,s->thetaForce_extra_d,
+      s->lambdaForce_d,thetaForce,
       blockCount,lambdaSite_d,siteBound_d,fnex,
       new_implicit, theta0_d, dcdt_d);
   }

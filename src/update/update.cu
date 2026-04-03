@@ -230,7 +230,7 @@ void State::update(int step,System *system)
   // More detailed citation
 
   // Resolve lambda forces
-  system->msld->calc_thetaForce_from_lambdaForce(r->updateStream,system);
+  system->msld->calc_thetaForce_from_lambdaForce(r->updateStream,system, system->state->thetaForce_d);
 
   if ((system->run->step%system->run->freqNRG)==0) {
     // Update V from previous step

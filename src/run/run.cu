@@ -41,6 +41,8 @@ Run::Run(System *system)
   fpXLMD=NULL;
   fpLMD=NULL;
   fpNRG=NULL;
+  fpTHETA=NULL;
+  fpTHETA_FRC=NULL;
   freqXTC=1000;
   freqLMD=10;
   freqNRG=10;
@@ -431,7 +433,7 @@ void Run::test(char *line,char *token,System *system)
 
   // Calculate forces
   system->potential->calc_force(0,system);
-  system->msld->calc_thetaForce_from_lambdaForce(system->run->updateStream, system);
+  system->msld->calc_thetaForce_from_lambdaForce(system->run->updateStream, system, system->state->thetaForce_d);
   // Save position and forces
   system->state->backup_position();
 
@@ -474,7 +476,7 @@ void Run::test(char *line,char *token,System *system)
           // Calculate energy
           system->domdec->update_domdec(system,0);
           system->potential->calc_force(0,system);
-          system->msld->calc_thetaForce_from_lambdaForce(system->run->updateStream, system);
+          system->msld->calc_thetaForce_from_lambdaForce(system->run->updateStream, system, system->state->thetaForce_d);
 
           // Save relevant data
           if (system->id==0) {
@@ -556,6 +558,7 @@ void Run::dynamics_initialize(System *system)
     if (!fpXLMD) fatal(__FILE__,__LINE__,"Failed to open LMD file %s\n",fnmLMD.c_str());
   }
   if (!fpTHETA) fpTHETA=fpopen(fnmTHETA.c_str(),"w");
+  if (!fpTHETA) fatal(__FILE__,__LINE__,"Failed to open THETA file %s\n",fnmTHETA.c_str());
   if (!fpTHETA_FRC) fpTHETA_FRC=fpopen(fnmTHETA_FORCE.c_str(),"w");
   if (!fpNRG) fpNRG=fpopen(fnmNRG.c_str(),"w");
 #ifdef REPLICAEXCHANGE
