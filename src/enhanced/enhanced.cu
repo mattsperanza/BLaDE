@@ -135,7 +135,10 @@ void parse_enhanced(char* line, System* system){
   } else if (strcmp(token, "st_do_restart")==0){
     system->enhanced->simulatedTempering->do_restart = io_nextb(line);
   } else if (strcmp(token, "st_mbar_file")==0){
+    // TODO: Check if file exists and open immediately, since file open only happens when fp doesn't exist
+    if(system->enhanced->simulatedTempering->fp_mbar_iter) { fclose(system->enhanced->simulatedTempering->fp_mbar_iter); }
     system->enhanced->simulatedTempering->fnm_mbar_iter = io_nexts(line);
+    system->enhanced->simulatedTempering->fp_mbar_iter = fopen(system->enhanced->simulatedTempering->fnm_mbar_iter.c_str(), "w");
   } else if (strcmp(token, "st_wl_inc")==0){
     system->enhanced->simulatedTempering->wl_inc_start=io_nextf(line);
   } else if (strcmp(token, "st_wl_alpha")==0){
