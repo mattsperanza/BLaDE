@@ -430,7 +430,8 @@ void Run::test(char *line,char *token,System *system)
   real dx;
   int i,j,ij,s;
   int ij0,imax,jmax;
-  real_e F,E[2];
+  real F;
+  real_x X,E[2];
 
   // Initialize data structures
   dynamics_initialize(system);
@@ -493,7 +494,9 @@ void Run::test(char *line,char *token,System *system)
         }
         if (system->id==0) {
           cudaMemcpy(&F,&system->state->forceBuffer_d[ij],sizeof(real),cudaMemcpyDeviceToHost);
-          fprintf(stdout,"ij=%7d, Emin=%20.16g, Emax=%20.16g, (Emax-Emin)/dx=%20.16g, force=%20.16g\n",ij,E[0],E[1],(E[1]-E[0])/dx,F);
+          cudaMemcpy(&X,&system->state->positionBuffer_d[ij],sizeof(real_e),cudaMemcpyDeviceToHost);
+          real_x numeric = (E[1]-E[0])/dx;
+          fprintf(stdout,"ij=%7d, x: %20.16g, Emin=%20.16g, Emax=%20.16g, (Emax-Emin)/dx=%20.16g, force=%20.16g, err (numeric - F)=%20.16g\n",ij,X,E[0],E[1],numeric,F,numeric-F);
         }
       }
     }

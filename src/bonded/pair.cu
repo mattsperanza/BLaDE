@@ -58,11 +58,12 @@ static __forceinline__ __device__ float fasterfc(float a)
 // r*fpair=6*c6*r^-6*(rc^3-r^3)/(rc^3-rs^3) - 12*c12*r^-12*(rc^6-r^6)/(rc^6-rs^6)   rs<r<rc
 // lE=integral(fpair)
 // Use charmm shortcuts to calculate those
-__device__ void function_pair(Nb14Potential pp,Cutoffs rc,real r,real *fpair,real *lE,bool calcEnergy,bool usevdWSwitch,bool usePME)
+__device__ void function_pair(Nb14Potential pp,Cutoffs rc,real rEff_vdw,real rEff_elec,real *fpair,real *lE,bool calcEnergy,bool usevdWSwitch,bool usePME)
 {
-  real rinv=1/r;
+  real rinv_vdw=1/rEff_vdw;
+  real rinv_elec=1/rEff_elec;
 
-  if (r<rc.rCut) {
+  if (rinv_vdw<rc.rCut) {
     real rCut3=rc.rCut*rc.rCut*rc.rCut;
     real rCut6=rCut3*rCut3;
     real rSwitch3=rc.rSwitch*rc.rSwitch*rc.rSwitch;
@@ -71,7 +72,7 @@ __device__ void function_pair(Nb14Potential pp,Cutoffs rc,real r,real *fpair,rea
     real k6=rCut3/(rCut3-rSwitch3);
     real k12=rCut6/(rCut6-rSwitch6);
     
-    real rinv3=rinv*rinv*rinv;
+    real rinv3=rinv_vdw*rinv_vdw*rinv_vdw;
     real rinv6=rinv3*rinv3;
 
     if(usevdWSwitch){
@@ -79,26 +80,26 @@ __device__ void function_pair(Nb14Potential pp,Cutoffs rc,real r,real *fpair,rea
       real c2onnb=rc.rSwitch*rc.rSwitch;
       real rul3=(c2ofnb-c2onnb)*(c2ofnb-c2onnb)*(c2ofnb-c2onnb);
       real rul12=12/rul3;
-      real rijl=c2onnb - r * r;
-      real riju=c2ofnb - r * r;
-      real fsw=(r<rc.rSwitch?1:riju*riju*(riju-3*rijl)/rul3);
-      real dfsw=(r<rc.rSwitch?0:rijl*riju*rul12);
-      fpair[0]=fsw*(6*pp.c6-12*pp.c12*rinv6)*rinv6*rinv	\
+      real rijl=c2onnb - rEff_vdw * rEff_vdw;
+      real riju=c2ofnb - rEff_vdw * rEff_vdw;
+      real fsw=(rEff_vdw<rc.rSwitch?1:riju*riju*(riju-3*rijl)/rul3);
+      real dfsw=(rEff_vdw<rc.rSwitch?0:rijl*riju*rul12);
+      fpair[1]=fsw*(6*pp.c6-12*pp.c12*rinv6)*rinv6*rinv_vdw	\
         +dfsw*(pp.c12*rinv6-pp.c6)*rinv6;
       if (calcEnergy){lE[0]=fsw*(pp.c12*rinv6-pp.c6)*rinv6;}
     } else {
-      real A6=(r<rc.rSwitch?1:k6);
-      real A12=(r<rc.rSwitch?1:k12);
-      real B6=(r<rc.rSwitch?0:1/rCut3);
-      real B12=(r<rc.rSwitch?0:1/rCut6);
+      real A6=(rEff_vdw<rc.rSwitch?1:k6);
+      real A12=(rEff_vdw<rc.rSwitch?1:k12);
+      real B6=(rEff_vdw<rc.rSwitch?0:1/rCut3);
+      real B12=(rEff_vdw<rc.rSwitch?0:1/rCut6);
 
-      fpair[0]=6*pp.c6*A6*(rinv3-B6)*rinv3*rinv-12*pp.c12*A12*(rinv6-B12)*rinv6*rinv;
+      fpair[1]=6*pp.c6*A6*(rinv3-B6)*rinv3*rinv_vdw-12*pp.c12*A12*(rinv6-B12)*rinv6*rinv_vdw;
       if (calcEnergy) {
         real dv6=-1/rCut6;
         real dv12=-1/(rCut6*rCut6);
 
-        real CC6=(r<rc.rSwitch?dv6:0);
-        real CC12=(r<rc.rSwitch?dv12:0);
+        real CC6=(rEff_vdw<rc.rSwitch?dv6:0);
+        real CC12=(rEff_vdw<rc.rSwitch?dv12:0);
         real rinv3_B6_sq=(rinv3-B6)*(rinv3-B6);
         real rinv6_B12_sq=(rinv6-B12)*(rinv6-B12);
 
@@ -108,11 +109,11 @@ __device__ void function_pair(Nb14Potential pp,Cutoffs rc,real r,real *fpair,rea
     
     real kqq=kELECTRIC*pp.qxq;
     if (usePME) {
-      real br=rc.betaEwald*r;
+      real br=rc.betaEwald*rEff_elec;
 
-      real erfcrinv=(fasterfc(br)+pp.e14fac-1)*rinv;
+      real erfcrinv=(fasterfc(br)+pp.e14fac-1)*rinv_elec;
       // fpair[0]+=kqq*(-erfcf(br)*rinv-(2/sqrt(M_PI))*rc.betaEwald*expf(-br*br))*rinv;
-      fpair[0]+=kqq*(-erfcrinv-((real)1.128379167095513)*rc.betaEwald*expf(-br*br))*rinv;
+      fpair[0]=kqq*(-erfcrinv-((real)1.128379167095513)*rc.betaEwald*expf(-br*br))*rinv_elec;
       if (calcEnergy) {
         lE[0]+=kqq*erfcrinv;
       }
@@ -126,26 +127,26 @@ __device__ void function_pair(Nb14Potential pp,Cutoffs rc,real r,real *fpair,rea
       real Cconst=-(ron2+roff2)*ginv;
       real Dconst=2*ginv/5;
       real dvc=8*(ron2*roff2*(rc.rCut-rc.rSwitch)-(roff2*roff2*rc.rCut-ron2*ron2*rc.rSwitch)/5)*ginv;
-      real r2=r*r;
-      real r3=r2*r;
+      real r2=rEff_elec*rEff_elec;
+      real r3=r2*rEff_elec;
       real r5=r3*r2;
-      fpair[0]+=(r<=rc.rSwitch)?
-        -kqqe14*rinv*rinv:
-        -kqqe14*rinv*(Aconst*rinv+Bconst*r+3*Cconst*r3+5*Dconst*r5);
+      fpair[0]=(rEff_elec<=rc.rSwitch)?
+        -kqqe14*rinv_elec*rinv_elec:
+        -kqqe14*rinv_elec*(Aconst*rinv_elec+Bconst*rEff_elec+3*Cconst*r3+5*Dconst*r5);
       if (calcEnergy) {
-        lE[0]+=(r<=rc.rSwitch)?
-          kqqe14*(rinv+dvc):
-          kqqe14*(Aconst*(rinv-1/rc.rCut)+Bconst*(rc.rCut-r)+Cconst*(roff2*rc.rCut-r3)+Dconst*(roff2*roff2*rc.rCut-r5));
+        lE[0]+=(rEff_elec<=rc.rSwitch)?
+          kqqe14*(rinv_elec+dvc):
+          kqqe14*(Aconst*(rinv_elec-1/rc.rCut)+Bconst*(rc.rCut-rEff_elec)+Cconst*(roff2*rc.rCut-r3)+Dconst*(roff2*roff2*rc.rCut-r5));
       }
     }
   }
 }
   
 
-__device__ void function_pair(NbExPotential pp,Cutoffs rc,real r,real *fpair,real *lE,bool calcEnergy,bool usevdWSwitch,bool usePME)
+__device__ void function_pair(NbExPotential pp,Cutoffs rc,real rEff_vdw, real rEff_elec,real *fpair,real *lE,bool calcEnergy,bool usevdWSwitch,bool usePME)
 {
-  real rinv=1/r;
-  real br=rc.betaEwald*r;
+  real rinv=1/rEff_elec;
+  real br=rc.betaEwald*rEff_elec;
   real kqq=kELECTRIC*pp.qxq;
 
 #warning "No nan guard"
@@ -162,16 +163,17 @@ __global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs 
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   int ii,jj;
-  real r;
+  real r,r_orig,rinv_elec,rinv_vdw;
   real3 dr;
   PairPotential pp;
-  real fpair;
+  real fpair[2]={0,0};
   real lEnergy=0;
   extern __shared__ real sEnergy[];
   real3 xi,xj;
   int b[2];
   real l[2]={1,1};
-  real rEff,dredr,dredll; // Soft core stuff
+  real rEff_elec,dredr_elec,dredll_elec; // Soft core stuff
+  real rEff_vdw,dredr_vdw,dredll_vdw; // Soft core stuff
 
   if (i<pairCount) {
     // Geometry
@@ -193,35 +195,52 @@ __global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs 
       }
     }
 
-    rEff=r;
+    rEff_elec=r;
+    rEff_vdw=r; 
     if (useSoftCore) {
-      dredr=1; // d(rEff) / d(r)
-      dredll=0; // d(rEff) / d(lixljtmp)
+      dredr_elec=1; // d(rEff) / d(r)
+      dredll_elec=0; // d(rEff) / d(lixljtmp)
+      dredr_vdw=1;
+      dredll_vdw=0;
       if (b[0]) {
-        real rSoft=SOFTCORERADIUS*(1-l[0]*l[1]);
-        if (r<rSoft) {
-          real rdivrs=r/rSoft;
-          rEff=1-((real)0.5)*rdivrs;
-          rEff=rEff*rdivrs*rdivrs*rdivrs+((real)0.5);
-          dredr=3-2*rdivrs;
-          dredr*=rdivrs*rdivrs;
-          dredll=rEff-dredr*rdivrs;
-          dredll*=-SOFTCORERADIUS;
-          rEff*=rSoft;
+        // Elec softcore
+        real rSoft_elec = SOFTCORERADIUS_ELEC*(1-l[0]*l[1]);
+        if (r<rSoft_elec) {
+          real rdivrs=r/rSoft_elec;
+          rEff_elec=1-((real)0.5)*rdivrs;
+          rEff_elec=rEff_elec*rdivrs*rdivrs*rdivrs+((real)0.5);
+          dredr_elec=3-2*rdivrs;
+          dredr_elec*=rdivrs*rdivrs;
+          dredll_elec=rEff_elec-dredr_elec*rdivrs;
+          dredll_elec*=-SOFTCORERADIUS_ELEC;
+          rEff_elec*=rSoft_elec;
+        }
+        // VdW softcore
+        real rSoft_vdw = SOFTCORERADIUS_VDW*(1-l[0]*l[1]);
+        if (r<rSoft_vdw){
+          real rdivrs=r/rSoft_vdw;
+          rEff_vdw=1-((real)0.5)*rdivrs;
+          rEff_vdw=rEff_vdw*rdivrs*rdivrs*rdivrs+((real)0.5);
+          dredr_vdw=3-2*rdivrs;
+          dredr_vdw*=rdivrs*rdivrs;
+          dredll_vdw=rEff_vdw-dredr_vdw*rdivrs;
+          dredll_vdw*=-SOFTCORERADIUS_VDW;
+          rEff_vdw*=rSoft_vdw;
         }
       }
     }
 
     // Interaction
-    function_pair(pp,cutoffs,rEff,&fpair,&lEnergy, b[0] || energy,usevdWSwitch,usePME);
-    fpair*=l[0]*l[1];
+    function_pair(pp,cutoffs,rEff_vdw,rEff_elec,fpair,&lEnergy, b[0] || energy,usevdWSwitch,usePME);
+    fpair[0]*=l[0]*l[1];
+    fpair[1]*=l[0]*l[1];
 
     // Lambda force
     if (useSoftCore) {
       if (b[0]) {
-        atomicAdd(&lambdaForce[b[0]],l[1]*(lEnergy+fpair*dredll));
+        atomicAdd(&lambdaForce[b[0]],l[1]*(lEnergy+fpair[1]*dredll_vdw+fpair[0]*dredll_elec));
         if (b[1]) {
-          atomicAdd(&lambdaForce[b[1]],l[0]*(lEnergy+fpair*dredll));
+          atomicAdd(&lambdaForce[b[1]],l[0]*(lEnergy+fpair[1]*dredll_vdw+fpair[0]*dredll_elec));
         }
       }
     } else {
@@ -235,10 +254,11 @@ __global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs 
 
     // Spatial force
     if (useSoftCore) {
-      fpair*=dredr;
+      fpair[0]*=dredr_elec;
+      fpair[1]*=dredr_vdw;
     }
-    at_real3_scaleinc(&force[ii], fpair/r,dr);
-    at_real3_scaleinc(&force[jj],-fpair/r,dr);
+    at_real3_scaleinc(&force[ii], (fpair[0]+fpair[1])/r,dr);
+    at_real3_scaleinc(&force[jj],-(fpair[0]+fpair[1])/r,dr);
   }
 
   // Energy, if requested

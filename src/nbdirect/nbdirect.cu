@@ -116,13 +116,13 @@ __global__ void getforce_nbdirect_kernel(
   int ii,jj;
   int j,jmax;
   int jtmp;
-  real r,rinv;
+  real r,rinv_orig,rinv_elec,rinv_vdw;
   char4 shift;
   real3 dr;
   NbondPotential inp,jnp;
   real jtmpnp_q;
   int jtmpnp_typeIdx;
-  real fij,eij;
+  real fij_elec, fij_vdw,eij;
   real lEnergy=0;
   // extern __shared__ real sEnergy[];
   real3 xi,xj,xjtmp;
@@ -130,7 +130,8 @@ __global__ void getforce_nbdirect_kernel(
   real fli,flj,fljtmp;
   int bi,bj,bjtmp;
   real li,lj,ljtmp,lixljtmp;
-  real rEff,dredr,dredll; // Soft core stuff
+  real rEff_elec,dredr_elec,dredll_elec; // Soft core stuff
+  real rEff_vdw,dredr_vdw,dredll_vdw; // Soft core stuff
   int exclAddress, exclMask;
 
   if (iBlock<endBlock && threadIdx.x==0) iBlockVolume=blockVolume[iBlock];
@@ -249,27 +250,44 @@ __global__ void getforce_nbdirect_kernel(
               }
               }
 
-              rEff=r;
+              rEff_elec=r;
+              rEff_vdw=r;
               if (calcAlch && useSoftCore) {
-                dredr=1; // d(rEff) / d(r)
-                dredll=0; // d(rEff) / d(lixljtmp)
+                dredr_elec=1; // d(rEff) / d(r)
+                dredll_elec=0; // d(rEff) / d(lixljtmp)
+                dredr_vdw=1;
+                dredll_vdw=0;
                 if (bi || bjtmp) {
                   // real rSoft=(2.0*ANGSTROM*sqrt(4.0))*(1.0-lixljtmp);
-                  real rSoft=SOFTCORERADIUS*(1-lixljtmp);
-                  if (r<rSoft) {
-                    real rdivrs=r/rSoft;
-                    rEff=1-((real)0.5)*rdivrs;
-                    rEff=rEff*rdivrs*rdivrs*rdivrs+((real)0.5);
-                    dredr=3-2*rdivrs;
-                    dredr*=rdivrs*rdivrs;
-                    dredll=rEff-dredr*rdivrs;
-                    // dredll*=-(2.0*ANGSTROM*sqrt(4.0));
-                    dredll*=-SOFTCORERADIUS;
-                    rEff*=rSoft;
+                  // Elec softcore
+                  real rSoft_elec = SOFTCORERADIUS_ELEC*(1-lixljtmp);
+                  if (r<rSoft_elec) {
+                    real rdivrs=r/rSoft_elec;
+                    rEff_elec=1-((real)0.5)*rdivrs;
+                    rEff_elec=rEff_elec*rdivrs*rdivrs*rdivrs+((real)0.5);
+                    dredr_elec=3-2*rdivrs;
+                    dredr_elec*=rdivrs*rdivrs;
+                    dredll_elec=rEff_elec-dredr_elec*rdivrs;
+                    dredll_elec*=-SOFTCORERADIUS_ELEC;
+                    rEff_elec*=rSoft_elec;
+                  }
+                  // VdW softcore
+                  real rSoft_vdw = SOFTCORERADIUS_VDW*(1-lixljtmp);
+                  if (r<rSoft_vdw){
+                    real rdivrs=r/rSoft_vdw;
+                    rEff_vdw=1-((real)0.5)*rdivrs;
+                    rEff_vdw=rEff_vdw*rdivrs*rdivrs*rdivrs+((real)0.5);
+                    dredr_vdw=3-2*rdivrs;
+                    dredr_vdw*=rdivrs*rdivrs;
+                    dredll_vdw=rEff_vdw-dredr_vdw*rdivrs;
+                    dredll_vdw*=-SOFTCORERADIUS_VDW;
+                    rEff_vdw*=rSoft_vdw;
                   }
                 }
               }
-              rinv=1/rEff;
+              rinv_orig=1/r;
+              rinv_elec=1/rEff_elec;
+              rinv_vdw=1/rEff_vdw;
 
               // interaction
                 // Electrostatics
@@ -278,13 +296,13 @@ __global__ void getforce_nbdirect_kernel(
                 eij=kELECTRIC*inp.q*jtmpnp_q*rinv;
               }*/
               if (usePME) {
-                real br=cutoffs.betaEwald*rEff;
+                real br=cutoffs.betaEwald*rEff_elec;
                 // real erfcrinv=erfcf(br)*rinv;
-                real erfcrinv=fasterfc(br)*rinv;
+                real erfcrinv=fasterfc(br)*rinv_elec;
                 // fij=-kELECTRIC*inp.q*jtmpnp_q*(erfcrinv+(2/sqrt(M_PI))*cutoffs.betaEwald*expf(-br*br))*rinv;
                 // fij=-kELECTRIC*inp.q*jtmpnp_q*(erfcrinv+1.128379167095513f*cutoffs.betaEwald*expf(-br*br))*rinv;
                 // fij=-kELECTRIC*inp.q*jtmpnp_q*(erfcrinv+((real)(2/sqrt(M_PI)))*cutoffs.betaEwald*expf(-br*br))*rinv;
-                fij=-kELECTRIC*inp.q*jtmpnp_q*(erfcrinv+((real)1.128379167095513)*cutoffs.betaEwald*expf(-br*br))*rinv;
+                fij_elec=-kELECTRIC*inp.q*jtmpnp_q*(erfcrinv+((real)1.128379167095513)*cutoffs.betaEwald*expf(-br*br))*rinv_elec;
                 if (calcEnergy || (calcAlch && (bi || bjtmp))) {
                   eij=kELECTRIC*inp.q*jtmpnp_q*erfcrinv;
                 }
@@ -297,20 +315,20 @@ __global__ void getforce_nbdirect_kernel(
                 real Cconst=-(ron2+roff2)*ginv;
                 real Dconst=2*ginv/5;
                 real dvc=8*(ron2*roff2*(cutoffs.rCut-cutoffs.rSwitch)-(roff2*roff2*cutoffs.rCut-ron2*ron2*cutoffs.rSwitch)/5)*ginv;
-                real r2=rEff*rEff;
-                real r3=r2*rEff;
+                real r2=rEff_elec*rEff_elec;
+                real r3=r2*rEff_elec;
                 real r5=r3*r2;
-                fij=(rEff<=cutoffs.rSwitch)?
-                  -kELECTRIC*inp.q*jtmpnp_q*rinv*rinv:
-                  -kELECTRIC*inp.q*jtmpnp_q*rinv*(Aconst*rinv+Bconst*rEff+3*Cconst*r3+5*Dconst*r5);
+                fij_elec=(rEff_vdw<=cutoffs.rSwitch)?
+                  -kELECTRIC*inp.q*jtmpnp_q*rinv_elec*rinv_elec:
+                  -kELECTRIC*inp.q*jtmpnp_q*rinv_elec*(Aconst*rinv_elec+Bconst*rEff_elec+3*Cconst*r3+5*Dconst*r5);
                 if (calcEnergy || (calcAlch && (bi || bjtmp))) {
-                  eij=(rEff<=cutoffs.rSwitch)?
-                    kELECTRIC*inp.q*jtmpnp_q*(rinv+dvc):
-                    kELECTRIC*inp.q*jtmpnp_q*(Aconst*(rinv-1/cutoffs.rCut)+Bconst*(cutoffs.rCut-rEff)+Cconst*(roff2*cutoffs.rCut-r3)+Dconst*(roff2*roff2*cutoffs.rCut-r5));
+                  eij=(rEff_elec<=cutoffs.rSwitch)?
+                    kELECTRIC*inp.q*jtmpnp_q*(rinv_elec+dvc):
+                    kELECTRIC*inp.q*jtmpnp_q*(Aconst*(rinv_elec-1/cutoffs.rCut)+Bconst*(cutoffs.rCut-rEff_elec)+Cconst*(roff2*cutoffs.rCut-r3)+Dconst*(roff2*roff2*cutoffs.rCut-r5));
                 }
               }
                 // Van der Waals
-              real rinv3=rinv*rinv*rinv;
+              real rinv3=rinv_vdw*rinv_vdw*rinv_vdw;
               real rinv6=rinv3*rinv3;
               /*fij+=-(12*(vdwp.c12*rinv6)-6*(vdwp.c6))*rinv6*rinv;
               if (bi || bjtmp || energy) {
@@ -320,8 +338,8 @@ __global__ void getforce_nbdirect_kernel(
               real rCut3=cutoffs.rCut*cutoffs.rCut*cutoffs.rCut;
               real rSwitch3=cutoffs.rSwitch*cutoffs.rSwitch*cutoffs.rSwitch;
 
-              if (rEff<cutoffs.rSwitch) {
-                fij+=(6*vdwp.c6-12*vdwp.c12*rinv6)*rinv6*rinv;
+              if (rEff_vdw<cutoffs.rSwitch) {
+                fij_vdw=(6*vdwp.c6-12*vdwp.c12*rinv6)*rinv6*rinv_vdw;
                 if (calcEnergy || (calcAlch && (bi || bjtmp))) {
                   real dv6=(usevdWSwitch?0:1/(rCut3*rSwitch3));
                   eij+=vdwp.c12*(rinv6*rinv6-dv6*dv6)-vdwp.c6*(rinv6-dv6);
@@ -331,7 +349,7 @@ __global__ void getforce_nbdirect_kernel(
                   real k6=rCut3/(rCut3-rSwitch3);
                   real k12=rCut3*rCut3/(rCut3*rCut3-rSwitch3*rSwitch3);
                   real rCutinv3=1/rCut3;
-                  fij+=(6*vdwp.c6*k6*(rinv3-rCutinv3)*rinv3-12*vdwp.c12*k12*(rinv6-rCutinv3*rCutinv3)*rinv6)*rinv;
+                  fij_vdw=(6*vdwp.c6*k6*(rinv3-rCutinv3)*rinv3-12*vdwp.c12*k12*(rinv6-rCutinv3*rCutinv3)*rinv6)*rinv_vdw;
                   if (calcEnergy || (calcAlch && (bi || bjtmp))) {
                     eij+=vdwp.c12*k12*(rinv6-rCutinv3*rCutinv3)*(rinv6-rCutinv3*rCutinv3)-vdwp.c6*k6*(rinv3-rCutinv3)*(rinv3-rCutinv3);
                   }
@@ -340,23 +358,26 @@ __global__ void getforce_nbdirect_kernel(
                   real c2onnb=cutoffs.rSwitch*cutoffs.rSwitch;
                   real rul3=(c2ofnb-c2onnb)*(c2ofnb-c2onnb)*(c2ofnb-c2onnb);
                   real rul12 = 12/rul3;
-                  real rijl = c2onnb - rEff * rEff;
-                  real riju = c2ofnb - rEff * rEff;
+                  real rijl = c2onnb - rEff_vdw * rEff_vdw;
+                  real riju = c2ofnb - rEff_vdw * rEff_vdw;
                   real fsw = riju*riju*(riju-3*rijl)/rul3;
                   real dfsw = rijl*riju*rul12;
-                  fij+=fsw*(6*vdwp.c6-12*vdwp.c12*rinv6)*rinv6*rinv\
+                  fij_vdw=fsw*(6*vdwp.c6-12*vdwp.c12*rinv6)*rinv6*rinv_vdw\
                     +dfsw*(vdwp.c12*rinv6-vdwp.c6)*rinv6;
                   if (calcEnergy || (calcAlch && (bi || bjtmp))) {
                     eij+=fsw*(vdwp.c12*rinv6-vdwp.c6)*rinv6;
                   }
                 }
               }
-              if (calcAlch) fij*=lixljtmp;
+              if (calcAlch) {
+                fij_elec*=lixljtmp;
+                fij_vdw*=lixljtmp;
+              }
 
               // Lambda force
               if (calcAlch && (bi || bjtmp)) {
                 if (useSoftCore) {
-                  fljtmp=eij+fij*dredll;
+                  fljtmp=eij+fij_elec*dredll_elec+fij_vdw*dredll_vdw;
                 } else {
                   fljtmp=eij;
                 }
@@ -373,11 +394,12 @@ __global__ void getforce_nbdirect_kernel(
 
               // Spatial force
               if (calcAlch && useSoftCore) {
-                rinv=1/r;
-                fij*=dredr;
+                fij_elec*=dredr_elec;
+                fij_vdw*=dredr_vdw;
               }
-              real3_scaleinc(&fi, fij*rinv,dr);
-              fjtmp=real3_scale<real3>(-fij*rinv,dr);
+              real fij = fij_elec + fij_vdw;
+              real3_scaleinc(&fi, fij*rinv_orig,dr);
+              fjtmp=real3_scale<real3>(-fij*rinv_orig,dr);
 
               // Energy, if requested
               if (calcEnergy) {
