@@ -10,6 +10,7 @@
 #include "system/structure.h"
 #include "system/selections.h"
 #include "msld/msld.h"
+#include "enhanced/enhanced.h"
 #include "system/coordinates.h"
 #include "run/run.h"
 #include "rng/rng_cpu.h"
@@ -31,6 +32,7 @@ System::System() {
   selections=NULL;
   msld=NULL;
   coordinates=NULL;
+  enhanced=NULL;
   run=NULL;
   rngCPU=new RngCPU;
   // rngGPU=new RngGPU; // Have to be careful to allocate and free for correct GPU
@@ -55,6 +57,7 @@ System::~System() {
   if (potential) delete(potential);
   if (state) delete(state);
   if (domdec) delete(domdec);
+  if (enhanced) delete(enhanced);
 }
 
 
@@ -89,6 +92,8 @@ void System::setup_parse_system()
   helpSystem["selection"]="?selection> Sets selections of atoms for use in various other commands, including structure (you may want to delete a selection of atoms) and msld (you need to indicate which atoms are in which groups).\n";
   parseSystem["msld"]=&System::parse_system_msld;
   helpSystem["msld"]="?msld> Set up MSLD data structures. Determines which atoms are in which groups, how to scale their interactions, and so on. Should be done after calls of structure, because if the indices of atoms change after calls to msld, an error will occur.\n";
+  parseSystem["enhanced"]=&System::parse_system_enhanced;
+  helpSystem["enhanced"]="?enhanced> Set up enhanced sampling. Options include: simulated tempering and metadynamics";
   parseSystem["coordinates"]=&System::parse_system_coordinates;
   helpSystem["coordinates"]="?coordinates> Sets the initial conditions of the system, including starting spatial coordinates. Must be called after structure is complete, must be called before run.\n";
   parseSystem["run"]=&System::parse_system_run;
@@ -139,6 +144,10 @@ void System::parse_system_selection(char *line,char *token,System *system)
 void System::parse_system_msld(char *line,char *token,System *system)
 {
   parse_msld(line,system);
+}
+
+void System::parse_system_enhanced(char *line, char *token, System *system){
+  parse_enhanced(line, system);
 }
 
 void System::parse_system_coordinates(char *line,char *token,System *system)

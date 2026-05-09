@@ -97,6 +97,7 @@ class Run {
   cudaStream_t nbdirectStream;
   cudaStream_t nbrecipStream;
   cudaStream_t mlpotStream; // eemlp
+  cudaStream_t enhancedStream;
 
   cudaEvent_t forceBegin;
   cudaEvent_t bondedComplete;
@@ -104,6 +105,7 @@ class Run {
   cudaEvent_t nbdirectComplete;
   cudaEvent_t nbrecipComplete;
   cudaEvent_t mlpotComplete; // eemlp
+  cudaEvent_t enhancedComplete;
   // cudaEvent_t forceComplete;
   cudaEvent_t communicate;
   cudaEvent_t *communicate_omp;

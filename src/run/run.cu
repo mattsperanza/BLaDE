@@ -6,6 +6,7 @@
 #include "system/system.h"
 #include "io/io.h"
 #include "msld/msld.h"
+#include "enhanced/enhanced.h"
 #include "system/state.h"
 #include "system/potential.h"
 #include "system/selections.h"
@@ -117,6 +118,7 @@ Run::Run(System *system)
   nbdirectStream=0;
   nbrecipStream=0;
   mlpotStream=0; // eemlp
+  enhancedStream=0;
 #else
   cudaStreamCreate(&updateStream);
   cudaStreamCreate(&bondedStream);
@@ -124,6 +126,7 @@ Run::Run(System *system)
   cudaStreamCreate(&nbdirectStream);
   cudaStreamCreate(&nbrecipStream);
   cudaStreamCreate(&mlpotStream); // eemlp
+  cudaStreamCreate(&enhancedStream);
   // Set priorities if desired:
   // int low,high;
   // cudaDeviceGetStreamPriorityRange(&low,&high);
@@ -136,6 +139,7 @@ Run::Run(System *system)
   cudaEventCreate(&nbdirectComplete);
   cudaEventCreate(&nbrecipComplete);
   cudaEventCreate(&mlpotComplete); // eemlp
+  cudaEventCreate(&enhancedComplete);
   // cudaEventCreate(&forceComplete);
   cudaEventCreate(&communicate);
 
@@ -578,6 +582,8 @@ void Run::dynamics_initialize(System *system)
   if (system->potential) delete system->potential;
   system->potential=new Potential();
   system->potential->initialize(system);
+
+  if (system->enhanced) system->enhanced->initialize(system);
 
   // Rectify bond constraints
   holonomic_rectify(system);
