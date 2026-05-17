@@ -32,6 +32,7 @@ Run::Run(System *system)
   gamma=1.0/PICOSECOND; // ps^-1
   fnmXTC="default.xtc";
   fnmLMD="default.lmd";
+  fnmLMD_FORCE="default.lmd";
   fnmNRG="default.nrg";
   fnmTHETA="default.theta";
   fnmTHETA_FORCE="default.thetaF";
@@ -40,6 +41,7 @@ Run::Run(System *system)
   fpXTC=NULL;
   fpXLMD=NULL;
   fpLMD=NULL;
+  fpLMD_FRC=NULL;
   fpNRG=NULL;
   fpTHETA=NULL;
   fpTHETA_FRC=NULL;
@@ -305,6 +307,8 @@ void Run::set_variable(char *line,char *token,System *system)
     if (fpLMD) fclose(fpLMD);
     fpLMD=NULL;
     fnmLMD=io_nexts(line);
+  } else if (strcmp(token, "fnmlmdF")==0){
+    fnmLMD_FORCE=io_nexts(line);
   } else if (strcmp(token,"fnmnrg")==0) {
     if (fpNRG) fclose(fpNRG);
     fpNRG=NULL;
@@ -557,6 +561,7 @@ void Run::dynamics_initialize(System *system)
     if (!fpXLMD) fpXLMD=xdrfile_open(fnmLMD.c_str(),"w");
     if (!fpXLMD) fatal(__FILE__,__LINE__,"Failed to open LMD file %s\n",fnmLMD.c_str());
   }
+  if (!fpLMD_FRC) fpLMD_FRC=fpopen(fnmLMD_FORCE.c_str(), "w");
   if (!fpTHETA) fpTHETA=fpopen(fnmTHETA.c_str(),"w");
   if (!fpTHETA) fatal(__FILE__,__LINE__,"Failed to open THETA file %s\n",fnmTHETA.c_str());
   if (!fpTHETA_FRC) fpTHETA_FRC=fpopen(fnmTHETA_FORCE.c_str(),"w");

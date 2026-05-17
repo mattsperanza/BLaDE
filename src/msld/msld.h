@@ -50,7 +50,9 @@ class Msld {
 
   // New Implicit Constraint
   bool new_implicit = false;
+  real_x* theta0;
   real_x* theta0_d; // [nSite] newton solved variable in new implicit model
+  real_f* dcdt;
   real_f* dcdt_d; // [nBlock] derivative of constraint w.r.t. theta.i -> -'ve der w.r.t. theta0
   real well_width = 1.0; // flat bottom harmonic starting outside of [-w, w]
   real well_k = 100.0; // strength of fb harmonic

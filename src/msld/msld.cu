@@ -44,7 +44,9 @@ Msld::Msld() {
   gamma=1.0/PICOSECOND; // ps^-1
   fnex=5.5;
 
+  theta0=NULL;
   theta0_d=NULL;
+  dcdt=NULL;
   dcdt_d=NULL;
 
   for (int i=0; i<6; i++) {
@@ -108,7 +110,9 @@ Msld::~Msld() {
   if (nThetaCollBias_d) cudaFree(nThetaCollBias_d);
   if (kThetaIndeBias_d) cudaFree(kThetaIndeBias_d);
 
+  if (theta0) free(theta0);
   if (theta0_d) cudaFree(theta0_d);
+  if (dcdt) free(dcdt);
   if (dcdt_d) cudaFree(dcdt_d);
 
   if (blocksPerSite) free(blocksPerSite);
@@ -686,7 +690,9 @@ void Msld::initialize(System *system)
   cudaMemcpy(lambdaSite_d,lambdaSite,blockCount*sizeof(int),cudaMemcpyHostToDevice);
 
   // New newton constraint
+  theta0=(real_x*)calloc(siteCount,sizeof(real_x));
   cudaMalloc(&theta0_d, siteCount*sizeof(real_x));
+  dcdt=(real_f*)calloc(blockCount,sizeof(real_f));
   cudaMalloc(&dcdt_d, blockCount*sizeof(real_f));
 
   // Atom restraints

@@ -350,11 +350,21 @@ void print_lmd(int step,System *system)
 #endif
   }
 
+  real_f *lf=system->state->lambdaForce;
+  fp=system->run->fpLMD_FRC;
+  fprintf(fp,"%10d",step);
+  for (i=1; i<system->state->lambdaCount; i++) {
+    fprintf(fp," %8.6f",(real)(system->state->lambdaForce[i]));
+  }
+  fprintf(fp,"\n");
+  fflush(fp);
+
   real_x *t=system->state->theta;
   fp=system->run->fpTHETA;
   fprintf(fp,"%10d",step);
   for (i=1; i<system->state->lambdaCount; i++) {
-    fprintf(fp," %8.6f",(real)t[i]);
+    int site = system->msld->lambdaSite[i];
+    fprintf(fp," %8.6f",(real)(t[i]-system->msld->theta0[site]));
   }
   fprintf(fp,"\n");
   fflush(fp);
@@ -404,6 +414,7 @@ void print_dynamics_output(int step,System *system)
     }
     if (step % system->run->freqLMD == 0) {
       // Need to calculate forces since this is called before "update"
+      cudaMemcpy(system->msld->theta0, system->msld->theta0_d, system->msld->siteCount*sizeof(real_x), cudaMemcpyDefault);
       system->msld->calc_thetaForce_from_lambdaForce(system->run->updateStream,system, system->state->thetaForce_extra_d);
       system->state->recv_lambda();
       print_lmd(step,system);

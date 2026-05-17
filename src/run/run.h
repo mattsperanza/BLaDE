@@ -30,6 +30,7 @@ class Run {
 
   std::string fnmXTC;
   std::string fnmLMD;
+  std::string fnmLMD_FORCE;
   std::string fnmNRG;
   std::string fnmCPI;
   std::string fnmCPO;
@@ -38,6 +39,7 @@ class Run {
   XDRFILE *fpXTC;
   XDRFILE *fpXLMD;
   FILE *fpLMD;
+  FILE *fpLMD_FRC;
   FILE *fpTHETA;
   FILE *fpTHETA_FRC;
   FILE *fpNRG;
