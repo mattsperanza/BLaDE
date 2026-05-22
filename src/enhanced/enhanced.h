@@ -4,10 +4,11 @@
 #include "main/defines.h"
 
 class System;
+class MetaAdaptiveBiasingForce;
 
 class Enhanced {
   public:
-    Enhanced();
+    Enhanced(){};
     ~Enhanced();
 
     void initialize(System* system);
@@ -16,9 +17,6 @@ class Enhanced {
     bool active = false;
     bool updating = true; // don't collect samples (ex. during pressure coupling)
 
-    int log_freq = 100000; // 200ps
-    int write_big_freq = 1000; // 20ps
-    int write_small_freq = 10; // Same as lambda sampling
     std::string output_dir = "nhcd";
 
     bool separate_interactions = false;
@@ -28,6 +26,9 @@ class Enhanced {
     std::string primary_sele = "";
     int* atom_selection_primary = NULL;
     int* atom_selection_primary_d = NULL;
+
+    // Enhanced sampling pointers
+    MetaAdaptiveBiasingForce* meta_abf = NULL;
 };
 
 void parse_enhanced(char* line, System* system);

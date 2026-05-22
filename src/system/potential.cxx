@@ -1932,7 +1932,7 @@ void Potential::calc_force(int step,System *system)
     cudaStreamWaitEvent(r->enhancedStream, r->nbrecipComplete);
     cudaStreamWaitEvent(r->enhancedStream, r->nbdirectComplete);
     cudaStreamWaitEvent(r->enhancedStream, r->biaspotComplete);
-    getforce_enhanced(system, step, calcEnergy);
+    getforce_enhanced(system, step, calcEnergy); // calc force and samples
     cudaEventRecord(r->enhancedComplete, r->enhancedStream);
     cudaStreamWaitEvent(r->updateStream,r->enhancedComplete,0);
   }
