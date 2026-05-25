@@ -317,8 +317,13 @@ class Potential {
   myCufftReal *chargeGridPME_d;
   myCufftComplex *fourierGridPME_d;
   myCufftReal *potentialGridPME_d;
+
+  myCufftReal *ostGridPME_d;
+  myCufftComplex *ostFourierGridPME_d;
+  myCufftReal *ostPotentialGridPME_d;
 #ifdef USE_TEXTURE
   cudaTextureObject_t potentialGridPME_tex;
+  cudaTextureObject_t ostPotentialGridPME_tex;
 #endif
   real *bGridPME, *bGridPME_d;
   cufftHandle planFFTPME, planIFFTPME;

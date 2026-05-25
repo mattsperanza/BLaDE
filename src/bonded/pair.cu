@@ -53,6 +53,14 @@ static __forceinline__ __device__ float fasterfc(float a)
 }
 #endif
 
+__device__ void add_nbex_recip(Nb14Potential pp, real lForce, real* dUdL_recip){
+  // do nothing since lForce is not part of dUdL_recip
+}
+
+__device__ void add_nbex_recip(NbExPotential pp, real lForce, real* dUdL_recip){
+  atomicAdd(dUdL_recip, lForce);
+}
+
 // From charmm/source/domdec/enbfix14_kernel.inc:985, vfswitch code (not normal vfswitch??? 1-4s are different)
 // r*fpair=6*c6*r^-6 - 12*c12*r^-12                                                 r<rs
 // r*fpair=6*c6*r^-6*(rc^3-r^3)/(rc^3-rs^3) - 12*c12*r^-12*(rc^6-r^6)/(rc^6-rs^6)   rs<r<rc
@@ -158,7 +166,7 @@ __device__ void function_pair(NbExPotential pp,Cutoffs rc,real r,real *fpair,rea
 
 
 template <bool flagBox,class PairPotential,bool useSoftCore,bool usevdWSwitch,bool usePME,typename box_type>
-__global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs cutoffs,real3 *position,real3_f *force,box_type box,real *lambda,real_f *lambdaForce,real_e *energy)
+__global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs cutoffs,real3 *position,real3_f *force,box_type box,real *lambda,real_f *lambdaForce,real_f* dUdL_recip,real_e *energy)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   int ii,jj;
@@ -220,15 +228,19 @@ __global__ void getforce_pair_kernel(int pairCount,PairPotential *pairs,Cutoffs 
     if (useSoftCore) {
       if (b[0]) {
         atomicAdd(&lambdaForce[b[0]],l[1]*(lEnergy+fpair*dredll));
+        add_nbex_recip(pp, l[1]*(lEnergy+fpair*dredll), &dUdL_recip[b[0]]);
         if (b[1]) {
           atomicAdd(&lambdaForce[b[1]],l[0]*(lEnergy+fpair*dredll));
+          add_nbex_recip(pp, l[0]*(lEnergy+fpair*dredll), &dUdL_recip[b[1]]);
         }
       }
     } else {
       if (b[0]) {
         atomicAdd(&lambdaForce[b[0]],l[1]*lEnergy);
+        add_nbex_recip(pp, l[1]*lEnergy, &dUdL_recip[b[0]]);
         if (b[1]) {
           atomicAdd(&lambdaForce[b[1]],l[0]*lEnergy);
+          add_nbex_recip(pp, l[0]*lEnergy, &dUdL_recip[b[1]]);
         }
       }
     }
@@ -267,7 +279,7 @@ void getforce_nb14TTTT(System *system,box_type box,bool calcEnergy)
     pEnergy=s->energy_d+eenb14;
   }
 
-  getforce_pair_kernel <flagBox,Nb14Potential,useSoftCore,usevdWSwitch,usePME> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->nb14s_d,system->run->cutoffs,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,pEnergy);
+  getforce_pair_kernel <flagBox,Nb14Potential,useSoftCore,usevdWSwitch,usePME> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->nb14s_d,system->run->cutoffs,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,s->dUdL_recip_d,pEnergy);
 }
 
 template <bool flagBox,bool useSoftCore,bool usevdWSwitch,typename box_type>
@@ -332,7 +344,7 @@ void getforce_nbexT(System *system,box_type box,bool calcEnergy)
   }
 
   // Never use soft cores for nbex, they're already soft.
-  getforce_pair_kernel <flagBox,NbExPotential,false,false,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->nbexs_d,system->run->cutoffs,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,pEnergy);
+  getforce_pair_kernel <flagBox,NbExPotential,false,false,true> <<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->nbexs_d,system->run->cutoffs,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,s->dUdL_recip_d,pEnergy);
 }
 
 void getforce_nbex(System *system,bool calcEnergy)

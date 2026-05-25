@@ -11,13 +11,15 @@
 #include "run/run.h"
 
 #include "enhanced/enhanced.h"
-#include "enhanced/meta_abf.h"
+#include "enhanced/meta_abf/meta_abf.h"
+#include "enhanced/osrw/osrw.h"
 #include "main/gpu_check.h"
 
 Enhanced::~Enhanced(){
   if(atom_selection_primary) free(atom_selection_primary);
   if(atom_selection_primary_d) cudaFree(atom_selection_primary_d);
   if(meta_abf) delete meta_abf;
+  if(osrw) delete osrw;
 }
 
 void parse_enhanced(char* line, System* system){
@@ -66,6 +68,10 @@ void parse_enhanced(char* line, System* system){
     nhcd->meta_abf = new MetaAdaptiveBiasingForce();
   } else if (strcmp(token, "meta_abf_option") == 0){ // see meta_abf.cu for availible options
     parse_meta_abf(line, nhcd->meta_abf);
+  } else if (strcmp(token, "osrw") == 0){ // init class
+    nhcd->osrw = new OrthogonalSpaceRandomWalk();
+  } else if (strcmp(token, "osrw_option") == 0){ // see osrw.cu for availible options
+    parse_osrw(line, nhcd->osrw);
   } else {
     printf("Didn't recognize option %s\n", token);
   }
@@ -74,6 +80,11 @@ void parse_enhanced(char* line, System* system){
 // Gets called each time a new "run" function is called like "run dynamics" or "run minimize"
 void Enhanced::initialize(System* system){
   if(meta_abf && !meta_abf->init) meta_abf->initialize(system); 
+  if(osrw && !osrw->init) osrw->initialize(system);
+  if(osrw && meta_abf){
+    printf("Incompatible usage of osrw and meta_abf at the same time. You probably don't want to do that!\n");
+    exit(1);
+  }
   init = true; // don't initialize some things after the first time
 }
 
@@ -90,6 +101,17 @@ void getforce_enhanced(System* system, int step, bool calcEnergy){
     if (!pressure) {
       write_meta_abf(nhcd->output_dir, system, step); 
       log_meta_abf(system, step);
+    };
+  }
+  if(nhcd->osrw){
+    // internal sample/write/log frequency checks
+    if (!pressure) { // sampling needs to be first
+      sample_osrw(system, step);
+    }
+    getforce_osrw(system, step, calcEnergy);
+    if (!pressure) {
+      write_osrw(nhcd->output_dir, system, step);
+      log_osrw(system, step);
     };
   }
 }

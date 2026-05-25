@@ -7,6 +7,7 @@
 #include "io/io.h"
 #include "msld/msld.h"
 #include "enhanced/enhanced.h"
+#include "enhanced/osrw/osrw.h"
 #include "system/state.h"
 #include "system/potential.h"
 #include "system/selections.h"
@@ -427,6 +428,127 @@ void Run::energy(char *line,char *token,System *system)
   dynamics_finalize(system);
 }
 
+__global__ void shift_lambda(real* position, real dl, int index) {
+  int i=blockDim.x*blockIdx.x+threadIdx.x;
+  if (i==0) {
+    position[index] += dl;
+  }
+}
+
+void test_OST_force(System *system, real dl, real tol) {
+  if(!system->enhanced || !system->enhanced->osrw){
+    printf("OSRW not turned on. Cannot perform force testing! \n");
+    exit(1);
+  }
+  OrthogonalSpaceRandomWalk* osrw = system->enhanced->osrw;
+  osrw->force_test=true;
+  bool flags[eeend];
+  for (int i = 0; i < eeend; i++) {
+    flags[i] = system->run->calcTermFlag[i];
+    system->run->calcTermFlag[i] = false;
+  }
+  system->run->calcTermFlag[eeenhanced]=true; // so OSRW gets called
+
+  printf("Starting OSRW Force Test...\n");
+  int len = system->state->lambdaCount+3*system->state->atomCount; // theta forces at end
+  for (int i = 0; i < eeend; i++) {
+    printf("Term %d Numerical Test: \n", i);
+    system->run->calcTermFlag[i] = true;
+    // Calculate ref dU(X, L) to subtract from force w/ oss
+    real_f dU[len];
+    system->enhanced->active = false;
+    gpuCheck(cudaPeekAtLastError());
+    system->potential->calc_force(1, system);
+    cudaDeviceSynchronize();
+    system->enhanced->active = true;
+    cudaMemcpy(dU, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
+    double sum = 0;
+    double num_sum = 0;
+    for (int j = 1; j < system->state->lambdaCount; j++) { 
+      system->enhanced->active = false;
+      // Numerical Force = dU(X, L+dl) - dU(X, L-dl) / 2*dl
+      // L+dl
+      real_f tmp_high[len];
+      // lambda block at beginning of position buffer, everything else is index into this array
+      cudaDeviceSynchronize();
+      shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, dl, j);
+      cudaDeviceSynchronize();
+      gpuCheck(cudaPeekAtLastError());
+      system->potential->calc_force(1, system);
+      cudaDeviceSynchronize();
+      cudaMemcpy(tmp_high, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
+      // L-dl
+      real_f tmp_low[len];
+      cudaDeviceSynchronize();
+      shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, -2.0*dl, j);
+      cudaDeviceSynchronize();
+      system->potential->calc_force(1, system);
+      cudaDeviceSynchronize();
+      cudaMemcpy(tmp_low, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
+      // Reset and diff
+      real_f d2U_numeric[len];
+      cudaDeviceSynchronize();
+      shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, dl, j);
+      for (int k = 0; k < len; k++) {
+        d2U_numeric[k] = (tmp_high[k] - tmp_low[k]) / (2.0*dl);
+        num_sum += abs(d2U_numeric[k]);
+      }
+      // Analytic Force
+      // Set dGdF[:] = 0 and dGdF[j] = e * pi
+      real pi_e = M_E * M_PI;
+      memset(osrw->dGdF, 0, system->state->lambdaCount*sizeof(real));
+      osrw->dGdF[j] = pi_e;// need to comment out clearing of this array during force calculation
+      cudaMemcpy(osrw->dGdF_d, osrw->dGdF, system->state->lambdaCount*sizeof(real), cudaMemcpyDefault);
+      real_f d2U_analytic[len];
+      system->enhanced->active = true;
+      cudaDeviceSynchronize();
+      system->potential->calc_force(1, system);
+      cudaDeviceSynchronize();
+      cudaMemcpy(d2U_analytic, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
+      cudaDeviceSynchronize();
+      for (int k = 0; k < len; k++) {
+        d2U_analytic[k] = (d2U_analytic[k] - dU[k]) / pi_e;
+        sum += abs(d2U_analytic[k]);
+      }
+      // Check if they match
+      for (int k = 0; k < len; k++) {
+        real_f diff = abs(d2U_analytic[k] - d2U_numeric[k]);
+        if (diff > tol) { // floating point ops (like expf) can cause float errors
+          printf("Numerical derivatives test %d failed (tol = %f, dl = %f) at force array index %d for lambda %d! \n",
+            i, tol, dl, k, j);
+          printf("Num lambdas: %d \n", system->state->lambdaCount);
+          real l_sum = 0;
+          system->state->recv_lambda();
+          printf("Lambdas: [ ");
+          for (int l = 1; l < system->state->lambdaCount; l++) {
+            printf("%.3f, ", system->state->lambda[l]);
+            l_sum += system->state->lambda[l];
+          }
+          printf("] --> Sum: %.12f\n", l_sum);
+          real lmd = system->state->lambda[j];
+          system->state->recv_position();
+          real x = system->state->positionBuffer[k];
+          printf("Position[%d] = %f\n", k, x);
+          printf("Analytic dU(X,L+dl):          %15.8f\n", tmp_high[k]);
+          printf("Analytic dU(X,L=%.2f):        %15.8f\n", lmd, dU[k]);
+          printf("Analytic dU(X,L-dl):          %15.8f\n", tmp_low[k]);
+          printf("\n|Diff|:                       %15.8f\n", diff);
+          printf("Numeric d2U:                  %15.8f\n", d2U_numeric[k]);
+          printf("Analytic d2U:                 %15.8f\n", d2U_analytic[k]);
+          printf("Scaling num->analytic:        %15.8f\n", d2U_analytic[k]/d2U_numeric[k]);
+          printf("Scaling analytic->num:        %15.8f\n\n", d2U_numeric[k]/d2U_analytic[k]);
+          printf("Exiting...\n");
+          exit(1);
+        }
+      }
+    }
+    printf("Total Forces Calculated: %lf analytic, %lf numeric\n\n", sum, num_sum);
+    gpuCheck(cudaPeekAtLastError());
+    system->run->calcTermFlag[i] = false;
+  }
+  osrw->force_test=false;
+}
+
 void Run::test(char *line,char *token,System *system)
 {
   std::string testType=io_nexts(line);
@@ -457,6 +579,12 @@ void Run::test(char *line,char *token,System *system)
     imax=system->state->lambdaCount;
     jmax=1;
     theta_test=true;
+  } else if (testType=="osrw"){
+    dx=io_nextf(line);
+    real tol = io_nextf(line);
+    test_OST_force(system,dx,tol);
+    dynamics_finalize(system);
+    return;
   } else if (testType=="spatial") {
     name=io_nexts(line);
     if (system->selections->selectionMap.count(name)==0) {
@@ -584,7 +712,9 @@ void Run::dynamics_initialize(System *system)
   system->potential->initialize(system);
 
   // don't delete so options don't need to be reset
+  gpuCheck(cudaPeekAtLastError());
   if (system->enhanced) system->enhanced->initialize(system);
+  gpuCheck(cudaPeekAtLastError());
 
   // Rectify bond constraints
   holonomic_rectify(system);

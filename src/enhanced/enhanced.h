@@ -2,9 +2,11 @@
 #define ENHANCED_H
 
 #include "main/defines.h"
+#include <string>
 
 class System;
 class MetaAdaptiveBiasingForce;
+class OrthogonalSpaceRandomWalk;
 
 class Enhanced {
   public:
@@ -29,6 +31,7 @@ class Enhanced {
 
     // Enhanced sampling pointers
     MetaAdaptiveBiasingForce* meta_abf = NULL;
+    OrthogonalSpaceRandomWalk* osrw = NULL;
 };
 
 void parse_enhanced(char* line, System* system);

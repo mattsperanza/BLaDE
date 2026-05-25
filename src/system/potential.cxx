@@ -219,8 +219,12 @@ Potential::~Potential()
   if (chargeGridPME_d) cudaFree(chargeGridPME_d);
   if (fourierGridPME_d) cudaFree(fourierGridPME_d);
   if (potentialGridPME_d) cudaFree(potentialGridPME_d);
+  if (ostGridPME_d) cudaFree(ostGridPME_d);
+  if (ostFourierGridPME_d) cudaFree(ostFourierGridPME_d);
+  if (ostPotentialGridPME_d) cudaFree(ostPotentialGridPME_d);
 #ifdef USE_TEXTURE
   if (potentialGridPME_tex) cudaDestroyTextureObject(potentialGridPME_tex);
+  if (ostPotentialGridPME_tex) cudaDestroyTextureObject(ostPotentialGridPME_tex);
 #endif
 
   if (nbonds) free(nbonds);
@@ -1219,6 +1223,9 @@ void Potential::initialize(System *system)
   cudaMalloc(&chargeGridPME_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
   cudaMalloc(&fourierGridPME_d,gridDimPME[0]*gridDimPME[1]*(gridDimPME[2]/2+1)*sizeof(myCufftComplex));
   cudaMalloc(&potentialGridPME_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
+  cudaMalloc(&ostGridPME_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
+  cudaMalloc(&ostFourierGridPME_d,gridDimPME[0]*gridDimPME[1]*(gridDimPME[2]/2+1)*sizeof(myCufftComplex));
+  cudaMalloc(&ostPotentialGridPME_d,gridDimPME[0]*gridDimPME[1]*gridDimPME[2]*sizeof(myCufftReal));
 #ifdef USE_TEXTURE
   {
     cudaResourceDesc resDesc;
@@ -1231,6 +1238,8 @@ void Potential::initialize(System *system)
     memset(&texDesc,0,sizeof(texDesc));
     texDesc.readMode=cudaReadModeElementType;
     cudaCreateTextureObject(&potentialGridPME_tex,&resDesc,&texDesc,NULL);
+    resDesc.res.linear.devPtr=ostPotentialGridPME_d;
+    cudaCreateTextureObject(&ostPotentialGridPME_tex,&resDesc,&texDesc,NULL);
   }
 #endif
 
@@ -1835,6 +1844,9 @@ void Potential::reset_force(System *system,bool calcEnergy)
   if (calcEnergy) {
     cudaMemset(system->state->energy_d,0,eeend*sizeof(real_e));
   }
+  cudaMemset(system->state->dUdL_BAI_d, 0, system->state->lambdaCount*sizeof(real_f));
+  cudaMemset(system->state->dUdL_restrain_d, 0, system->state->lambdaCount*sizeof(real_f));
+  cudaMemset(system->state->dUdL_recip_d, 0, system->state->lambdaCount*sizeof(real_f));
 }
 
 void Potential::calc_force(int step,System *system)
