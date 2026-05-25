@@ -95,11 +95,13 @@ void parse_osrw(char* line, OrthogonalSpaceRandomWalk* osrw){
     osrw->log_freq = io_nexti(line);
   } else {
     printf("OSRW: didn't recognize option %s\n", token);
+    exit(1);
   }
 };
 
 // This only gets called the first time enhanced->initialize() gets called
 void OrthogonalSpaceRandomWalk::initialize(System* system){
+  printf("Initializing OSRW!\n");
   // ----- Derived grid parameters -----
   dUdL_min = -dUdL_max;
   n_L_bins = (int) round(1.0 / L_res) + 1; // bins on both edges of [0,1]
@@ -149,9 +151,9 @@ void OrthogonalSpaceRandomWalk::initialize(System* system){
   cudaMemcpy(ensemble_dUdL_d, ensemble_dUdL, n_L_bins*sizeof(real), cudaMemcpyDefault);
   cudaMalloc(&variance_dUdL_d, n_L_bins*sizeof(real));
   cudaMemset(variance_dUdL_d, 0, n_L_bins*sizeof(real));
-  dUdL_copy = (real*)calloc(system->state->lambdaCount, sizeof(real));
-  cudaMalloc(&dUdL_copy_d, system->state->lambdaCount*sizeof(real));
-  cudaMemcpy(dUdL_copy_d, dUdL_copy, system->state->lambdaCount*sizeof(real), cudaMemcpyDefault);
+  dUdL_copy = (real*)calloc(system->msld->blockCount, sizeof(real));
+  cudaMalloc(&dUdL_copy_d, system->msld->blockCount*sizeof(real));
+  cudaMemcpy(dUdL_copy_d, dUdL_copy, system->msld->blockCount*sizeof(real), cudaMemcpyDefault);
 
   real tmp[n_L_bins];
   for(int i = 0; i < n_L_bins; i++){ tmp[i] = n_dUdL_bins; }
@@ -459,7 +461,7 @@ void getforce_osrw(System* system, int step, bool calcEnergy){
   if(!osrw->force_test && osrw->do_meta){
     int blocks  = 2*osrw->half_search_bins_L + 1;
     int threads = 2*osrw->half_search_bins_dUdL + 1;
-    cudaMemsetAsync(osrw->dGdF_d, 0, state->lambdaCount*sizeof(real), r->enhancedStream); // reset dGdF memory
+    cudaMemsetAsync(osrw->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->enhancedStream); // reset dGdF memory
     getforce_osrw_meta_kernel<<<blocks, threads, shMem, r->enhancedStream>>>(
       osrw->n_L_bins, osrw->n_dUdL_bins, osrw->dUdL_min, osrw->dUdL_max,
       osrw->half_search_bins_L, osrw->half_search_bins_dUdL,
@@ -480,36 +482,38 @@ void getforce_osrw(System* system, int step, bool calcEnergy){
   }
 
   // Wait on enhancedStream complete then launch on respective kernel streams
-  cudaEventRecord(r->enhancedComplete, r->enhancedStream);
-  int helper=(system->idCount==2); // 0 unless there are 2 GPUs, then it's 1.
-  if (system->id == helper) {
-    cudaStreamWaitEvent(r->bondedStream, r->enhancedComplete, 0);
-    if(!osrw->remove_bonded){
-      getforce_bond_oss(system);
-      getforce_impr_oss(system);
-      getforce_angle_oss(system);
+  if (osrw->do_meta){
+    cudaEventRecord(r->enhancedComplete, r->enhancedStream);
+    int helper=(system->idCount==2); // 0 unless there are 2 GPUs, then it's 1.
+    if (system->id == helper) {
+      cudaStreamWaitEvent(r->bondedStream, r->enhancedComplete, 0);
+      if(!osrw->remove_bonded){
+        getforce_bond_oss(system);
+        getforce_impr_oss(system);
+        getforce_angle_oss(system);
+      }
+      getforce_dihe_oss(system);
+      getforce_cmap_oss(system);
+      getforce_nb14_oss(system);
+      if(!osrw->remove_recip){
+        getforce_nbex_oss(system);
+      }
+      cudaEventRecord(r->bondedComplete, r->bondedStream);
+      cudaStreamWaitEvent(r->updateStream, r->bondedComplete, 0);
     }
-    getforce_dihe_oss(system);
-    getforce_cmap_oss(system);
-    getforce_nb14_oss(system);
-    if(!osrw->remove_recip){
-      getforce_nbex_oss(system);
+    if (system->id>=0) {
+      cudaStreamWaitEvent(r->nbdirectStream, r->enhancedComplete, 0);
+      getforce_nbdirect_oss(system);
+      cudaEventRecord(r->nbdirectComplete, r->nbdirectStream);
+      cudaStreamWaitEvent(r->updateStream, r->nbdirectComplete, 0);
     }
-    cudaEventRecord(r->bondedComplete, r->bondedStream);
-    cudaStreamWaitEvent(r->updateStream, r->bondedComplete, 0);
-  }
-  if (system->id>=0) {
-    cudaStreamWaitEvent(r->nbdirectStream, r->enhancedComplete, 0);
-    getforce_nbdirect_oss(system);
-    cudaEventRecord(r->nbdirectComplete, r->nbdirectStream);
-    cudaStreamWaitEvent(r->updateStream, r->nbdirectComplete, 0);
-  }
-  if (system->id==0 && !osrw->remove_recip) {
-    cudaStreamWaitEvent(r->nbrecipStream, r->enhancedComplete, 0);
-    getforce_ewaldself_oss(system);
-    getforce_ewald_oss(system);
-    cudaEventRecord(r->nbrecipComplete, r->nbrecipStream);
-    cudaStreamWaitEvent(r->updateStream, r->nbrecipComplete, 0);
+    if (system->id==0 && !osrw->remove_recip) {
+      cudaStreamWaitEvent(r->nbrecipStream, r->enhancedComplete, 0);
+      getforce_ewaldself_oss(system);
+      getforce_ewald_oss(system);
+      cudaEventRecord(r->nbrecipComplete, r->nbrecipStream);
+      cudaStreamWaitEvent(r->updateStream, r->nbrecipComplete, 0);
+    }
   }
 };
 

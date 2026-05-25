@@ -67,13 +67,22 @@ void parse_enhanced(char* line, System* system){
   } else if (strcmp(token, "meta_abf") == 0){ // init class
     nhcd->meta_abf = new MetaAdaptiveBiasingForce();
   } else if (strcmp(token, "meta_abf_option") == 0){ // see meta_abf.cu for availible options
+    if(!nhcd->meta_abf){
+      printf("Meta_ABF not defined yet!\n");
+      exit(1);
+    }
     parse_meta_abf(line, nhcd->meta_abf);
   } else if (strcmp(token, "osrw") == 0){ // init class
     nhcd->osrw = new OrthogonalSpaceRandomWalk();
   } else if (strcmp(token, "osrw_option") == 0){ // see osrw.cu for availible options
+    if(!nhcd->osrw){
+      printf("OSRW not defined yet!\n");
+      exit(1);
+    }
     parse_osrw(line, nhcd->osrw);
   } else {
     printf("Didn't recognize option %s\n", token);
+    exit(1);
   }
 };
 
@@ -85,7 +94,7 @@ void Enhanced::initialize(System* system){
     printf("Incompatible usage of osrw and meta_abf at the same time. You probably don't want to do that!\n");
     exit(1);
   }
-  init = true; // don't initialize some things after the first time
+  init = true; 
 }
 
 void getforce_enhanced(System* system, int step, bool calcEnergy){

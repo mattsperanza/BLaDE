@@ -66,6 +66,9 @@ void parse_meta_abf(char* line, MetaAdaptiveBiasingForce* meta_abf){
     meta_abf->write_restart_freq=io_nexti(line);
   } else if (strcmp(token, "log_freq")==0){
     meta_abf->log_freq=io_nexti(line);
+  } else {
+    printf("Didn't recognize option: %s\n", token);
+    exit(1);
   }
 };
 
@@ -206,7 +209,6 @@ void getforce_meta_abf(System* system, int step, bool calcEnergy){
     );
   }
   if (m_abf->do_meta) {
-    // TODO: compute bin range
     int bins = 2*m_abf->half_search_bins + 1;
     getforce_meta_kernel<<<(bins+BLBO-1)/BLBO,BLBO,shMem,run->enhancedStream>>>(
       m_abf->n_bins, bins, &state->lambda_fd[id], m_abf->meta_std, m_abf->meta_weights_d, 
