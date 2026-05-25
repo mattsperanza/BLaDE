@@ -23,6 +23,7 @@ class OrthogonalSpaceRandomWalk {
     // Options - Settings
     int target_site=1; // must have two substitiuents at this site
     bool do_abf=true;
+    bool do_meta=true;
     bool do_sample=true; 
     bool do_restart=true;
 
@@ -59,8 +60,8 @@ class OrthogonalSpaceRandomWalk {
     int half_search_bins_dUdL;
 
     // Memory
-    real* dUdL_to_bias=NULL;
-    real* dUdL_to_bias_d=NULL;
+    real* dUdL_copy=NULL;
+    real* dUdL_copy_d=NULL;
     real* dGdF=NULL;   // OSRW chain rule multiplier due to gaussians, dGdF[i] * d2U/dLidX
     real* dGdF_d=NULL; // OSRW chain rule multiplier due to gaussians, dGdF[i] * d2U/dLidX
     // 2D, along (L, dU_sub/dL)
@@ -83,7 +84,8 @@ class OrthogonalSpaceRandomWalk {
     int* min_dUdL_id_d=NULL;
     int* max_dUdL_id_d=NULL;
     // Metadynamics min bias (for transition tempering)
-    real* min_bias_d=NULL;
+    real* max_along_dUdL_d=NULL;
+    real* min_along_L_d=NULL;
 
     // Restart 
     int write_restart_freq=10000;

@@ -104,6 +104,7 @@ void getforce_enhanced(System* system, int step, bool calcEnergy){
     };
   }
   if(nhcd->osrw){
+    cudaMemcpyAsync(nhcd->osrw->dUdL_copy_d, system->state->lambdaForce_d, system->state->lambdaCount*sizeof(real), cudaMemcpyDefault, system->run->enhancedStream); // reset dGdF memory
     // internal sample/write/log frequency checks
     if (!pressure) { // sampling needs to be first
       sample_osrw(system, step);

@@ -253,32 +253,26 @@ __global__ void getforce_nbdirect_oss_kernel(
               // Skip interactions that aren't alchemical (this is separate from the bi_any and bj_any block check
               if (r<cutoffs.rCut && (bi || bjtmp)) {
                 // Scaling
-                real dlixlj_dli, dlixlj_dlj, d2lixlj_dli_dlj, d2lixlj_dli2, d2lixlj_dlj2;
+                real dlixlj_dli, dlixlj_dlj, d2lixlj_dli_dlj;
                 // for l_{m,i} and l_{n,j}
                 if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) { // same site (m == n)
                   if (bi==bjtmp) { // intra-sub (i == j, alc-alc or env-env)
                     lixljtmp = li;
                     dlixlj_dli = bi ? 1 : 0;
-                    d2lixlj_dli2 = 0;
                     dlixlj_dlj = 0; // prevent over-count?
-                    d2lixlj_dlj2 = 0;
                     dGdFjtmp = 0;
                     d2lixlj_dli_dlj = 0;
                   } else { // intra-site (i != j, alc-alc or env-env)
                     lixljtmp = 0; // zero contribution from env-env anyway
                     dlixlj_dli = 0;
-                    d2lixlj_dli2 = 0;
                     dlixlj_dlj = 0;
-                    d2lixlj_dlj2 = 0;
                     d2lixlj_dli_dlj = 0;
                   }
                 } else { // inter-site (m != n)
                   lixljtmp = li*ljtmp;
                   dlixlj_dli = ljtmp;
                   dlixlj_dlj = li;
-                  d2lixlj_dli_dlj = 1;
-                  d2lixlj_dli2=0;
-                  d2lixlj_dlj2=0;
+                  d2lixlj_dli_dlj = bi && bjtmp ? 1 : 0;
                 }
 
                 rEff=r;
@@ -336,8 +330,6 @@ __global__ void getforce_nbdirect_oss_kernel(
                 real d2U_drijp_dlami = 0;
                 real d2U_drijp_dlamj = 0;
                 real d2Up_dlami_dlamj = 0; // The p in this term represents that it is a function of rijp not rij
-                real d2Up_dlami2 = 0;
-                real d2Up_dlamj2 = 0;
                 fij_ost=0;
                 // Electrostatics (define the above variables)
                 if (usePME) { // precision matters for test, exp vs expf
@@ -354,8 +346,6 @@ __global__ void getforce_nbdirect_oss_kernel(
                   d2U_drijp_dlami += dlixlj_dli * dU_drijp_tmp;
                   d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
                   d2Up_dlami_dlamj += d2lixlj_dli_dlj * U_dir;
-                  d2Up_dlami2 += d2lixlj_dli2 * U_dir;
-                  d2Up_dlamj2 += d2lixlj_dlj2 * U_dir;
                   // Accumulate later...
                 }
                 else {
@@ -385,8 +375,6 @@ __global__ void getforce_nbdirect_oss_kernel(
                   d2U_drijp_dlami += dlixlj_dli * dU_drijp_tmp;
                   d2U_drijp_dlamj += dlixlj_dlj * dU_drijp_tmp;
                   d2Up_dlami_dlamj += d2lixlj_dli_dlj * U_dir;
-                  d2Up_dlami2 += d2lixlj_dli2 * U_dir;
-                  d2Up_dlamj2 += d2lixlj_dlj2 * U_dir;
                   // Accumulate later...
                 }
                 else {
@@ -401,12 +389,10 @@ __global__ void getforce_nbdirect_oss_kernel(
                     real d2U_drij_dlami = dlixlj_dli * fij_tmp;
                     real d2U_drij_dlamj = dlixlj_dlj * fij_tmp;
                     real d2U_dlami_dlamj = d2lixlj_dli_dlj * eij_tmp;
-                    real d2U_dlami2 = d2lixlj_dli2 * eij_tmp;
-                    real d2U_dlamj2 = d2lixlj_dlj2 * eij_tmp;
                     // Accumulate ost forces into force variables directly since they aren't soft-cored
                     fij_ost += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
-                    fli_ost += dGdFi * d2U_dlami2 + dGdFjtmp * d2U_dlami_dlamj;
-                    fljtmp_ost += dGdFi * d2U_dlami_dlamj + dGdFjtmp * d2U_dlamj2;
+                    fli_ost += dGdFjtmp * d2U_dlami_dlamj;
+                    fljtmp_ost += dGdFi * d2U_dlami_dlamj;
                   }
                   else { // Potential Switch
                     real c2ofnb=cutoffs.rCut*cutoffs.rCut;
@@ -424,12 +410,10 @@ __global__ void getforce_nbdirect_oss_kernel(
                     real d2U_drij_dlami = dlixlj_dli * fij_tmp;
                     real d2U_drij_dlamj = dlixlj_dlj * fij_tmp;
                     real d2U_dlami_dlamj = d2lixlj_dli_dlj * eij_tmp;
-                    real d2U_dlami2 = d2lixlj_dli2 * eij_tmp;
-                    real d2U_dlamj2 = d2lixlj_dlj2 * eij_tmp;
                     // Accumulate ost forces into force variables directly since they aren't soft-cored and don't need chain rule terms
                     fij_ost += dGdFi * d2U_drij_dlami + dGdFjtmp * d2U_drij_dlamj;
-                    fli_ost += dGdFi * d2U_dlami2 + dGdFjtmp * d2U_dlami_dlamj;
-                    fljtmp_ost += dGdFi * d2U_dlami_dlamj + dGdFjtmp * d2U_dlamj2;
+                    fli_ost += dGdFjtmp * d2U_dlami_dlamj;
+                    fljtmp_ost += dGdFi * d2U_dlami_dlamj;
                   }
                 }
                 // Calculate chain rule derivatives due to soft-coring
@@ -437,10 +421,9 @@ __global__ void getforce_nbdirect_oss_kernel(
                 real d2U_drij_dlamj = dU_drijp*d2rijp_drij_dlamj + (d2U_drijp_dlamj + d2U_drijp2*drijp_dlamj) * drijp_drij;
 
                 // OST lambda force (only exists for alc-alc interactions)
-                real d2U_dlami_dlamj = d2Up_dlami_dlamj +
-                  d2U_drijp_dlamj*drijp_dlami + dU_drijp*d2rijp_dlami_dlamj + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami) * drijp_dlamj;
-                real d2U_dlami2 = d2Up_dlami2 + d2U_drijp_dlami*drijp_dlami + dU_drijp * d2rijp_dlami2 + (d2U_drijp_dlami + d2U_drijp2 * drijp_dlami)*drijp_dlami;
-                real d2U_dlamj2 = d2Up_dlamj2 + d2U_drijp_dlamj*drijp_dlamj + dU_drijp * d2rijp_dlamj2 + (d2U_drijp_dlamj + d2U_drijp2 * drijp_dlamj)*drijp_dlamj;
+                real d2U_dlami_dlamj = d2Up_dlami_dlamj + d2U_drijp_dlamj*drijp_dlami + dU_drijp*d2rijp_dlami_dlamj + (d2U_drijp_dlami + d2U_drijp2*drijp_dlami) * drijp_dlamj;
+                real d2U_dlami2 = d2U_drijp_dlami*drijp_dlami + dU_drijp * d2rijp_dlami2 + (d2U_drijp_dlami + d2U_drijp2 * drijp_dlami)*drijp_dlami;
+                real d2U_dlamj2 = d2U_drijp_dlamj*drijp_dlamj + dU_drijp * d2rijp_dlamj2 + (d2U_drijp_dlamj + d2U_drijp2 * drijp_dlamj)*drijp_dlamj;
 
                 // Soft Interaction
                 fij_ost += dGdFi*d2U_drij_dlami + dGdFjtmp*d2U_drij_dlamj;
