@@ -40,7 +40,7 @@ void upload_bonded_d(
 
 // getforce_bond_kernel<<<(N+BLBO-1)/BLBO,BLBO,0,p->bondedStream>>>(N,p->bonds,s->position_d,s->force_d,s->box,m->lambda_d,m->lambdaForce_d,NULL);
 template <bool flagBox,bool soft,typename box_type>
-__global__ void getforce_bond_kernel(int bond12Count,int bondCount,struct BondPotential *bonds,real3 *position,real3_f *force,box_type box,real *lambda,real_f *lambdaForce,real softAlpha,real softExp,real_e *energy)
+__global__ void getforce_bond_kernel(int bond12Count,int bondCount,struct BondPotential *bonds,real3 *position,real3_f *force,box_type box,real *lambda,real_f *lambdaForce,real_f* dUdL_BA, real softAlpha,real softExp,real_e *energy)
 {
 // NYI - maybe energy should be a double
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -95,8 +95,10 @@ __global__ void getforce_bond_kernel(int bond12Count,int bondCount,struct BondPo
       // Lambda force
       if (b[0]) {
         atomicAdd(&lambdaForce[b[0]],l[1]*flambda);
+        atomicAdd(&dUdL_BA[b[0]],l[1]*flambda);
         if (b[1]) {
           atomicAdd(&lambdaForce[b[1]],l[0]*flambda);
+          atomicAdd(&dUdL_BA[b[1]],l[0]*flambda);
         }
       }
 
@@ -115,8 +117,10 @@ __global__ void getforce_bond_kernel(int bond12Count,int bondCount,struct BondPo
       // Lambda force
       if (b[0]) {
         atomicAdd(&lambdaForce[b[0]],l[1]*lEnergy);
+        atomicAdd(&dUdL_BA[b[0]],l[1]*lEnergy);
         if (b[1]) {
           atomicAdd(&lambdaForce[b[1]],l[0]*lEnergy);
+          atomicAdd(&dUdL_BA[b[1]],l[0]*lEnergy);
         }
       }
 
@@ -163,12 +167,12 @@ void getforce_bondT(System *system,box_type box,bool calcEnergy)
   N12=(r->calcTermFlag[eebond]?p->bond12Count:0);
   N=N12+(r->calcTermFlag[eeurey]?p->bond13Count:0);
   bonds=p->bonds_d+(p->bond12Count-N12);
-  if (N>0) getforce_bond_kernel<flagBox,false><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N12,N,bonds,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,0,1,pEnergy);
+  if (N>0) getforce_bond_kernel<flagBox,false><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N12,N,bonds,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->dUdL_BA_d,s->lambdaForce_d,0,1,pEnergy);
   N=p->softBondCount;
   N12=(r->calcTermFlag[eebond]?p->softBond12Count:0);
   N=N12+(r->calcTermFlag[eeurey]?p->softBond13Count:0);
   bonds=p->softBonds_d+(p->softBond12Count-N12);
-  if (N>0) getforce_bond_kernel<flagBox,true><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N12,N,bonds,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,softAlpha,softExp,pEnergy);
+  if (N>0) getforce_bond_kernel<flagBox,true><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N12,N,bonds,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,s->dUdL_BA_d,softAlpha,softExp,pEnergy);
 }
 
 void getforce_bond(System *system,bool calcEnergy)
@@ -184,7 +188,7 @@ void getforce_bond(System *system,bool calcEnergy)
 
 // getforce_angle_kernel<<<(N+BLBO-1)/BLBO,BLBO,shMem,p->bondedStream>>>(N,p->angles_d,(real3*)s->position_d,(real3*)s->force_d,s->orthBox,m->lambda_d,m->lambdaForce_d,pEnergy);
 template <bool flagBox,bool soft,typename box_type>
-__global__ void getforce_angle_kernel(int angleCount,struct AnglePotential *angles,real3 *position,real3_f *force,box_type box,real *lambda,real_f *lambdaForce,real softExp,real_e *energy)
+__global__ void getforce_angle_kernel(int angleCount,struct AnglePotential *angles,real3 *position,real3_f *force,box_type box,real *lambda,real_f *lambdaForce,real_f* dUdL_BA,real softExp,real_e *energy)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   int ii,jj,kk;
@@ -245,8 +249,10 @@ __global__ void getforce_angle_kernel(int angleCount,struct AnglePotential *angl
     }
     if (b[0]) {
       atomicAdd(&lambdaForce[b[0]],l[1]*lEnergy);
+      atomicAdd(&dUdL_BA[b[0]],l[1]*lEnergy);
       if (b[1]) {
         atomicAdd(&lambdaForce[b[1]],l[0]*lEnergy);
+        atomicAdd(&dUdL_BA[b[1]],l[0]*lEnergy);
       }
     }
     if (soft) {
@@ -292,9 +298,9 @@ void getforce_angleT(System *system,box_type box,bool calcEnergy)
   }
 
   N=p->angleCount;
-  if (N>0) getforce_angle_kernel<flagBox,false><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->angles_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,1,pEnergy);
+  if (N>0) getforce_angle_kernel<flagBox,false><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->angles_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->dUdL_BA_d,s->lambdaForce_d,1,pEnergy);
   N=p->softAngleCount;
-  if (N>0) getforce_angle_kernel<flagBox,true><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->softAngles_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,softExp,pEnergy);
+  if (N>0) getforce_angle_kernel<flagBox,true><<<(N+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(N,p->softAngles_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,s->lambda_fd,s->lambdaForce_d,s->dUdL_BA_d,softExp,pEnergy);
 }
 
 void getforce_angle(System *system,bool calcEnergy)

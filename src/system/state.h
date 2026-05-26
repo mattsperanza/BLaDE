@@ -72,7 +72,7 @@ class State {
   real_f *forceBuffer_omp;
 
   real_f *dUdL_restrain_d; // alchemical forces from restraints
-  real_f *dUdL_BAI_d; // alchemical forces from bond, angle, improper terms
+  real_f *dUdL_BA_d; // alchemical forces from bonds and angles
   real_f *dUdL_recip_d; // alchemical forces recip, self, excl terms
 
   // Other buffers

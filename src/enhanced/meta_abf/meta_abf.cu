@@ -22,7 +22,7 @@ MetaAdaptiveBiasingForce::~MetaAdaptiveBiasingForce(){
   if(dUdL_avg_d) cudaFree(dUdL_avg_d);
   if(meta_weights) free(meta_weights);
   if(meta_weights_d) cudaFree(meta_weights_d);
-  if(meta_min_bias_d) cudaFree(meta_min_bias_d);
+  if(meta_current_bias_d) cudaFree(meta_current_bias_d);
 };
 
 void parse_meta_abf(char* line, MetaAdaptiveBiasingForce* meta_abf){
@@ -56,8 +56,10 @@ void parse_meta_abf(char* line, MetaAdaptiveBiasingForce* meta_abf){
     meta_abf->abf_warmup=io_nexti(line);
   } else if (strcmp(token, "temper_factor")==0){
     meta_abf->temper_factor=io_nextf(line);
-  } else if (strcmp(token, "temper_threshold")==0){
-    meta_abf->temper_threshold=io_nextf(line);
+    if(meta_abf->temper_factor < 1.0 || abs(meta_abf->temper_factor-1)< 1e-4){
+      printf("Temper factor too small!\n");
+      exit(1);
+    }
   } else if (strcmp(token, "meta_bias_mag") == 0){
     meta_abf->meta_bias_mag=io_nextf(line);
   } else if (strcmp(token, "meta_std")==0){
@@ -91,8 +93,8 @@ void MetaAdaptiveBiasingForce::initialize(System* system){
     meta_weights = (real*)calloc(n_bins, sizeof(real));
     cudaMalloc(&meta_weights_d, n_bins*sizeof(real));
     cudaMemcpy(meta_weights_d, meta_weights, n_bins*sizeof(real), cudaMemcpyDefault);
-    cudaMalloc(&meta_min_bias_d, sizeof(real));
-    cudaMemcpy(meta_min_bias_d, &meta_min_bias, sizeof(real), cudaMemcpyDefault);
+    cudaMalloc(&meta_current_bias_d, sizeof(real));
+    cudaMemcpy(meta_current_bias_d, &meta_current_bias, sizeof(real), cudaMemcpyDefault);
 
     // Read restart files
     if (do_restart) restart(system);
@@ -157,7 +159,7 @@ void __global__ getforce_abf_kernel(int n_bins,
 void __global__ getforce_meta_kernel(
   int n_bins, int n_search, real* lambda, 
   real meta_std, real* meta_weights, 
-  real* lambdaForce, real_e* energy){
+  real* lambdaForce, real* current_bias, real_e* energy){
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   extern __shared__ real sEnergy[];
   real lEnergy=0;
@@ -186,6 +188,7 @@ void __global__ getforce_meta_kernel(
   }
   if (energy){
     real_sum_reduce(lEnergy,sEnergy,energy);
+    real_sum_reduce(lEnergy,sEnergy,current_bias);
   }
 };
 
@@ -210,9 +213,10 @@ void getforce_meta_abf(System* system, int step, bool calcEnergy){
   }
   if (m_abf->do_meta) {
     int bins = 2*m_abf->half_search_bins + 1;
+    cudaMemsetAsync(m_abf->meta_current_bias_d, 0, sizeof(real), run->enhancedStream);
     getforce_meta_kernel<<<(bins+BLBO-1)/BLBO,BLBO,shMem,run->enhancedStream>>>(
       m_abf->n_bins, bins, &state->lambda_fd[id], m_abf->meta_std, m_abf->meta_weights_d, 
-      &state->lambdaForce_d[id], pEnergy 
+      &state->lambdaForce_d[id], m_abf->meta_current_bias_d, pEnergy 
     );
   }
 };
@@ -233,15 +237,11 @@ void __global__ add_sample_abf(
 }
 
 void __global__ add_sample_meta(int n_bins, real kT, bool do_temper,
-  real* lambda, real bias_mag, real* min_bias, real threshold, real temper_factor,
+  real* lambda, real bias_mag, real* current_bias, real temper_factor,
   real* meta_weights){
     real L = 1.0-lambda[0]; // lambda = reference state lambda, 1-L means binning means int_0^1 gives dG 0->1
     int bin = get_histogram_index(n_bins, L, 0.0, 1.0);
-    min_bias[0] = 1e9;
-    for(int i = 0; i < n_bins; i++){ // TODO: do this loop with GPU reduction
-      min_bias[0] = meta_weights[i] < min_bias[0] ? meta_weights[i] : min_bias[0];
-    }
-    real factor = do_temper ? exp(-max(0.0, min_bias[0] - threshold)/(temper_factor*kT)): 1.0;
+    real factor = do_temper ? exp(-current_bias[0]/((temper_factor-1.0)*kT)): 1.0;
     meta_weights[bin] += bias_mag*factor;
 }
 
@@ -264,8 +264,7 @@ void sample_meta_abf(System* system, int step){
       add_sample_meta<<<1, 1, 0, run->enhancedStream>>>(
         m_abf->n_bins, kB*run->T, m_abf->do_temper,
         &state->lambda_fd[id], 
-        m_abf->meta_bias_mag, m_abf->meta_min_bias_d, m_abf->temper_threshold, m_abf->temper_factor,
-        m_abf->meta_weights_d
+        m_abf->meta_bias_mag, m_abf->meta_current_bias_d, m_abf->temper_factor,m_abf->meta_weights_d
       );
     }
   }
@@ -278,7 +277,7 @@ void recv_meta_abf(System* system){
   cudaMemcpy(m_abf->dUdL_avg, m_abf->dUdL_avg_d, m_abf->n_bins*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(m_abf->dUdL_std, m_abf->dUdL_std_d, m_abf->n_bins*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(m_abf->meta_weights, m_abf->meta_weights_d, m_abf->n_bins*sizeof(real), cudaMemcpyDefault);
-  cudaMemcpy(&m_abf->meta_min_bias, m_abf->meta_min_bias_d, sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(&m_abf->meta_current_bias, m_abf->meta_current_bias_d, sizeof(real), cudaMemcpyDefault);
 };
 
 void print_real_array(real* arr, int len){
@@ -315,8 +314,8 @@ void log_meta_abf(System* system, int step){
     );
     if (m_abf->do_meta && m_abf->do_temper) {
       real kT = kB*system->run->T;
-      real factor = exp(-max(0.0, m_abf->meta_min_bias-m_abf->temper_threshold)/(kT*m_abf->temper_factor));
-      printf("Min Bias: %5.2f, Threshold: %5.2f, Temper Factor: %f,  Decay Factor: %5.2f\n", m_abf->meta_min_bias, m_abf->temper_threshold, m_abf->temper_factor, factor);
+      real factor = exp(-m_abf->meta_current_bias/(kT*(m_abf->temper_factor-1.0)));
+      printf("Current Bias: %5.2f, Temper Factor: %5.2f,  Decay Factor: %5.2f\n", m_abf->meta_current_bias, m_abf->temper_factor, factor);
     }
     if (m_abf->do_abf){
       printf("Counts: ");

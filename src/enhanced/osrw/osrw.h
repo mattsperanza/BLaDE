@@ -37,14 +37,13 @@ class OrthogonalSpaceRandomWalk {
 
     // Options - Grid/Meta
     real L_res = 0.005; // L in [0,1]
-    real dUdL_res = 1.0;
-    real dUdL_max = 2000;
+    real dUdL_res = 2.0;
+    real dUdL_max = 2500;
     real meta_bias_mag=0.005; 
     real meta_L_std=0.01;
     real meta_dUdL_std=4.00;
     bool do_temper=true;
-    real temper_factor=3; // units of kT
-    real temper_threshold=2; // units of kcal/mol 
+    real temper_factor=5; 
     int n_std_search = 6; 
 
     // Options - ABF
@@ -83,9 +82,8 @@ class OrthogonalSpaceRandomWalk {
     real* variance_dUdL_d=NULL;
     int* min_dUdL_id_d=NULL;
     int* max_dUdL_id_d=NULL;
-    // Metadynamics min bias (for transition tempering)
-    real* max_along_dUdL_d=NULL;
-    real* min_along_L_d=NULL;
+
+    real* current_temper_bias_d=NULL;
 
     // Restart 
     int write_restart_freq=10000;

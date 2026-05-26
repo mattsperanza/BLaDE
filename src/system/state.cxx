@@ -47,7 +47,7 @@ State::State(System *system) {
 
   // lambda force storage
   cudaMalloc(&dUdL_restrain_d, nL*sizeof(real_f));
-  cudaMalloc(&dUdL_BAI_d, nL*sizeof(real_f));
+  cudaMalloc(&dUdL_BA_d, nL*sizeof(real_f));
   cudaMalloc(&dUdL_recip_d, nL*sizeof(real_f));
 
   if (system->idCount>0) { // OMP
@@ -164,7 +164,7 @@ State::~State() {
   if (forceBuffer_d) cudaFree(forceBuffer_d);
   if (forceBufferX_d) cudaFree(forceBufferX_d);
   if (forceBackup_d) cudaFree(forceBackup_d);
-  if (dUdL_BAI_d) cudaFree(dUdL_BAI_d);
+  if (dUdL_BA_d) cudaFree(dUdL_BA_d);
   if (dUdL_restrain_d) cudaFree(dUdL_restrain_d);
   if (dUdL_recip_d) cudaFree(dUdL_recip_d);
   // Other buffers

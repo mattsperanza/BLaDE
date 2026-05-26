@@ -1844,7 +1844,7 @@ void Potential::reset_force(System *system,bool calcEnergy)
   if (calcEnergy) {
     cudaMemset(system->state->energy_d,0,eeend*sizeof(real_e));
   }
-  cudaMemset(system->state->dUdL_BAI_d, 0, system->state->lambdaCount*sizeof(real_f));
+  cudaMemset(system->state->dUdL_BA_d, 0, system->state->lambdaCount*sizeof(real_f));
   cudaMemset(system->state->dUdL_restrain_d, 0, system->state->lambdaCount*sizeof(real_f));
   cudaMemset(system->state->dUdL_recip_d, 0, system->state->lambdaCount*sizeof(real_f));
 }

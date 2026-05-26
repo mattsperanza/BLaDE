@@ -31,8 +31,7 @@ class MetaAdaptiveBiasingForce {
     int sample_freq=10; // 1/step
     real meta_bias_mag=0.005; 
     real meta_std=0.02;
-    real temper_factor=3; // units of kT
-    real temper_threshold=2; // units of kcal/mol 
+    real temper_factor=5; // units of kT
     // Not optional
     real search_std = 6; // look this many std for gaussians
     real bin_width = 1.0/(n_bins-1);
@@ -47,8 +46,8 @@ class MetaAdaptiveBiasingForce {
     real* dUdL_avg=NULL;
     real* dUdL_avg_d=NULL;
     // Metadynamics Memory
-    real meta_min_bias = 0;
-    real* meta_min_bias_d;
+    real meta_current_bias = 0;
+    real* meta_current_bias_d;
     real* meta_weights=NULL;
     real* meta_weights_d=NULL;
     // Restart 
