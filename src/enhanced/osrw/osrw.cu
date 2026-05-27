@@ -199,59 +199,65 @@ void __global__ getforce_osrw_meta_kernel(
   real bias_mag, real L_std, real dUdL_std,
   real* lambda, real* dUdL_tot, real* dUdL_bonded, real* dUdL_recip, real* dUdL_restrain,
   real* hist_weights_2D,
-  bool update_potential,
+  bool update_potential, 
+  real* current_bias, real kT, real temper_factor,
   // Outputs
   real* hist_potential_2D,
   real* lambdaForce, real* dGdF, real_e* energy)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
-  int len = 2*search_F+1;
-  int blx = i / len;
-  int thrx = i % len;
-  int iL = blx - search_L;   // L neighbor offset
-  int s  = thrx - search_F;  // dU/dL neighbor offset
   extern __shared__ real sEnergy[];
   real lEnergy = 0;
+  int len_y = 2*search_F+1; // column length
+  int len_x = 2*search_L+1; // row length
 
-  real L = lambda[1];
-  real F = dUdL_tot[1] - dUdL_tot[0];
-  if(dUdL_bonded){ F -= (dUdL_bonded[1] - dUdL_bonded[0]); }
-  if(dUdL_recip){ F -= (dUdL_recip[1] - dUdL_recip[0]); }
-  if(dUdL_restrain) {F -= dUdL_restrain[1] - dUdL_restrain[0];}
-
-  real bin_width_L = 1.0/(n_L-1.0);
-  real bin_width_F = (fmax-fmin)/(n_F-1.0);
-
-  int X = histogram_index(L, n_L, 0.0, 1.0);
-  int Y = histogram_index(F, n_F, fmin, fmax);
-
-  int jb = X + iL;
-  int k  = Y + s;
-
-  // reflecting boundary in L
-  real L_center = jb*bin_width_L;
-  real F_center = fmin + k*bin_width_F;
-  // Get weight from mirrored bin
-  real mirror_factor = 1.0;
-  if(jb < 0){ jb = -jb; }
-  if(jb >= n_L){ jb = (n_L-1) - (jb-(n_L-1)); }
-  if(jb == 0 || jb == n_L-1){ mirror_factor = 2.0; } // edge double counting 
-  if(k >= 0 && k < n_F && jb >= 0 && jb < n_L){ // don't index outside
-    real dL = (L - L_center)/L_std;
-    real dF = (F - F_center)/dUdL_std;
-    real gL = exp(-0.5*dL*dL);
-    real gF = exp(-0.5*dF*dF);
-    if (!update_potential) { // force call, compute force from grid of bins
-      real h  = hist_weights_2D[jb*n_F + k];
-      real bias = bias_mag*mirror_factor*h*gL*gF;
-      lEnergy = bias;
-      real dGdL = -(dL/L_std)*bias; // dV/dL
-      real dGdF_local = -(dF/dUdL_std)*bias; // dV/dF
-      atomicAdd(&lambdaForce[1], dGdL);
-      atomicAdd(&dGdF[1], dGdF_local);
-      atomicAdd(&dGdF[0], -dGdF_local);
-    } else { // update potential call, compute potential contribution of new sample at (L, F)
-      atomicAdd(&hist_potential_2D[jb*n_F + k], bias_mag*mirror_factor*gL*gF); // mirror makes this a race
+  if (i <= (len_x)*(len_y)){ 
+    int thr_x = i / len_y; // which column
+    int thr_y = i % len_y; // which row
+    int iL = thr_x - search_L; // L offset
+    int s  = thr_y - search_F; // dU/dL offset
+  
+    real L = lambda[1];
+    real F = dUdL_tot[1] - dUdL_tot[0];
+    if(dUdL_bonded){ F -= (dUdL_bonded[1] - dUdL_bonded[0]); }
+    if(dUdL_recip){ F -= (dUdL_recip[1] - dUdL_recip[0]); }
+    if(dUdL_restrain) {F -= dUdL_restrain[1] - dUdL_restrain[0];}
+  
+    real bin_width_L = 1.0/(n_L-1.0);
+    real bin_width_F = (fmax-fmin)/(n_F-1.0);
+  
+    int X = histogram_index(L, n_L, 0.0, 1.0);
+    int Y = histogram_index(F, n_F, fmin, fmax);
+  
+    int jb = X + iL;
+    int k  = Y + s;
+  
+    // reflecting boundary in L
+    real L_center = jb*bin_width_L;
+    real F_center = fmin + k*bin_width_F;
+    // Get weight from mirrored bin
+    real mirror_factor = 1.0;
+    if(jb < 0){ jb = -jb; }
+    if(jb >= n_L){ jb = (n_L-1) - (jb-(n_L-1)); }
+    if(jb == 0 || jb == n_L-1){ mirror_factor = 2.0; } // edge double counting 
+    if(k >= 0 && k < n_F && jb >= 0 && jb < n_L){ // don't index outside
+      real dL = (L - L_center)/L_std;
+      real dF = (F - F_center)/dUdL_std;
+      real gL = exp(-0.5*dL*dL);
+      real gF = exp(-0.5*dF*dF);
+      if (!update_potential) { // force call, compute force from grid of bins
+        real h  = hist_weights_2D[jb*n_F + k];
+        real bias = bias_mag*mirror_factor*h*gL*gF;
+        lEnergy = bias;
+        real dGdL = -(dL/L_std)*bias; // dV/dL
+        real dGdF_local = -(dF/dUdL_std)*bias; // dV/dF
+        atomicAdd(&lambdaForce[1], dGdL);
+        atomicAdd(&dGdF[1], dGdF_local);
+        atomicAdd(&dGdF[0], -dGdF_local);
+      } else { // update potential call, compute potential contribution of new sample at (L, F)
+        real factor = exp(-current_bias[0]/(temper_factor-1.0)*kT);
+        atomicAdd(&hist_potential_2D[jb*n_F + k], bias_mag*factor*mirror_factor*gL*gF); // mirror makes this a race
+      }
     }
   }
   if(energy){
@@ -327,6 +333,7 @@ void update_osrw_potential(System* system){
       &state->lambda_fd[id], &state->lambdaForce_d[id], bonded, recip, restrain,
       osrw->hist_weights_2D_d,
       true, // update potential
+      osrw->current_temper_bias_d, kB*system->run->T, osrw->temper_factor,
       // Outputs (lambda force at the site, and dGdF at the site)
       osrw->potential_2D_d,
       &state->lambdaForce_d[id], &osrw->dGdF_d[id], NULL);
@@ -480,6 +487,7 @@ void getforce_osrw(System* system, int step, bool calcEnergy){
       &state->lambda_fd[id], &osrw->dUdL_copy_d[id], bonded, recip, restrain,
       osrw->hist_weights_2D_d,
       false, // update potential
+      osrw->current_temper_bias_d, kB*system->run->T, osrw->temper_factor,
       // Outputs (lambda force at the site, and dGdF at the site)
       osrw->potential_2D_d,
       &state->lambdaForce_d[id], &osrw->dGdF_d[id], pEnergy);
