@@ -152,7 +152,8 @@ void __global__ getforce_abf_kernel(int n_bins,
     }
   }
   if (energy){
-    real_sum_reduce(lEnergy,sEnergy,energy);
+    // ABF adds -'ve F(L)
+    real_sum_reduce(-lEnergy,sEnergy,energy);
   }
 };
 
@@ -166,7 +167,7 @@ void __global__ getforce_meta_kernel(
 
   if (i < n_search){
     int half_search = (n_search-1)/2;
-    real L = 1-lambda[0];
+    real L = lambda[1];
     int bin = get_histogram_index(n_bins, L, 0, 1);
     real bin_width = 1.0/(n_bins-1.0);
     int my_bin = bin + (i-half_search);

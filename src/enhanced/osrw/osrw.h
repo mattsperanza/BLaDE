@@ -19,6 +19,7 @@ class OrthogonalSpaceRandomWalk {
 
     bool init=false;
     bool force_test=false;
+    bool random_samples=false;
 
     // Options - Settings
     int target_site=1; // must have two substitiuents at this site

@@ -89,6 +89,7 @@ Run::Run(System *system)
   termStringToInt["nbrecipself"]=eenbrecipself;
   termStringToInt["nbrecipexcl"]=eenbrecipexcl;
   termStringToInt["lambda"]=eelambda;
+  termStringToInt["enhanced"]=eeenhanced;
   termStringToInt["theta"]=eetheta;
   termStringToInt["cats"]=eecats;
   termStringToInt["eenoe"]=eenoe;
@@ -442,6 +443,7 @@ void test_OST_force(System *system, real dl, real tol) {
   }
   OrthogonalSpaceRandomWalk* osrw = system->enhanced->osrw;
   osrw->force_test=true;
+  osrw->do_sample=true;
   bool flags[eeend];
   for (int i = 0; i < eeend; i++) {
     flags[i] = system->run->calcTermFlag[i];
@@ -457,9 +459,7 @@ void test_OST_force(System *system, real dl, real tol) {
     // Calculate ref dU(X, L) to subtract from force w/ oss
     real_f dU[len];
     system->enhanced->active = false;
-    gpuCheck(cudaPeekAtLastError());
     system->potential->calc_force(1, system);
-    cudaDeviceSynchronize();
     system->enhanced->active = true;
     cudaMemcpy(dU, system->state->forceBuffer_d, len*sizeof(real), cudaMemcpyDeviceToHost);
     double sum = 0;
@@ -470,24 +470,16 @@ void test_OST_force(System *system, real dl, real tol) {
       // L+dl
       real_f tmp_high[len];
       // lambda block at beginning of position buffer, everything else is index into this array
-      cudaDeviceSynchronize();
       shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, dl, j);
-      cudaDeviceSynchronize();
-      gpuCheck(cudaPeekAtLastError());
       system->potential->calc_force(1, system);
-      cudaDeviceSynchronize();
       cudaMemcpy(tmp_high, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
       // L-dl
       real_f tmp_low[len];
-      cudaDeviceSynchronize();
       shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, -2.0*dl, j);
-      cudaDeviceSynchronize();
       system->potential->calc_force(1, system);
-      cudaDeviceSynchronize();
       cudaMemcpy(tmp_low, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
       // Reset and diff
       real_f d2U_numeric[len];
-      cudaDeviceSynchronize();
       shift_lambda<<<1, 1>>>(system->state->positionBuffer_fd, dl, j);
       for (int k = 0; k < len; k++) {
         d2U_numeric[k] = (tmp_high[k] - tmp_low[k]) / (2.0*dl);
@@ -501,11 +493,8 @@ void test_OST_force(System *system, real dl, real tol) {
       cudaMemcpy(osrw->dGdF_d, osrw->dGdF, system->state->lambdaCount*sizeof(real), cudaMemcpyDefault);
       real_f d2U_analytic[len];
       system->enhanced->active = true;
-      cudaDeviceSynchronize();
       system->potential->calc_force(1, system);
-      cudaDeviceSynchronize();
       cudaMemcpy(d2U_analytic, system->state->forceBuffer_d, len*sizeof(real_f), cudaMemcpyDefault);
-      cudaDeviceSynchronize();
       for (int k = 0; k < len; k++) {
         d2U_analytic[k] = (d2U_analytic[k] - dU[k]) / pi_e;
         sum += abs(d2U_analytic[k]);
@@ -547,6 +536,7 @@ void test_OST_force(System *system, real dl, real tol) {
     system->run->calcTermFlag[i] = false;
   }
   osrw->force_test=false;
+  osrw->do_sample=true;
 }
 
 void Run::test(char *line,char *token,System *system)
@@ -556,7 +546,8 @@ void Run::test(char *line,char *token,System *system)
   real dx;
   int i,j,ij,s;
   int ij0,imax,jmax;
-  real_e F,E[2];
+  real_e E[2];
+  real F;
 
   // Initialize data structures
   dynamics_initialize(system);
@@ -595,7 +586,7 @@ void Run::test(char *line,char *token,System *system)
     imax=system->state->atomCount;
     jmax=3;
   } else {
-    fatal(__FILE__,__LINE__,"Error: test type %s does not match alchemical, alchemical-theta, or spatial\n",testType.c_str());
+    fatal(__FILE__,__LINE__,"Error: test type %s does not match alchemical, alchemical-theta, osrw, or spatial\n",testType.c_str());
   }
 
   for (i=0; i<imax; i++) {

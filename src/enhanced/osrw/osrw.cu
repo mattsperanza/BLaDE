@@ -10,6 +10,7 @@
 #include "io/io.h"
 #include "main/gpu_check.h"
 #include <string>
+#include <stdlib.h>
 
 OrthogonalSpaceRandomWalk::~OrthogonalSpaceRandomWalk(){
   if(dUdL_copy) free(dUdL_copy);
@@ -156,7 +157,7 @@ void OrthogonalSpaceRandomWalk::initialize(System* system){
   cudaMalloc(&dUdL_copy_d, system->msld->blockCount*sizeof(real));
   cudaMemcpy(dUdL_copy_d, dUdL_copy, system->msld->blockCount*sizeof(real), cudaMemcpyDefault);
 
-  real tmp[n_L_bins];
+  int tmp[n_L_bins];
   for(int i = 0; i < n_L_bins; i++){ tmp[i] = n_dUdL_bins; }
   cudaMalloc(&min_dUdL_id_d, n_L_bins*sizeof(int));
   cudaMemcpy(min_dUdL_id_d, tmp, n_L_bins*sizeof(int), cudaMemcpyDefault);
@@ -203,21 +204,25 @@ void __global__ getforce_osrw_meta_kernel(
   real* hist_potential_2D,
   real* lambdaForce, real* dGdF, real_e* energy)
 {
-  int iL = blockIdx.x - search_L;   // L neighbor offset
-  int s  = threadIdx.x - search_F;  // dU/dL neighbor offset
+  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  int len = 2*search_F+1;
+  int blx = i / len;
+  int thrx = i % len;
+  int iL = blx - search_L;   // L neighbor offset
+  int s  = thrx - search_F;  // dU/dL neighbor offset
   extern __shared__ real sEnergy[];
   real lEnergy = 0;
 
-  real L = 1.0 - lambda[0];
+  real L = lambda[1];
   real F = dUdL_tot[1] - dUdL_tot[0];
   if(dUdL_bonded){ F -= (dUdL_bonded[1] - dUdL_bonded[0]); }
   if(dUdL_recip){ F -= (dUdL_recip[1] - dUdL_recip[0]); }
-  F -= dUdL_restrain[1] - dUdL_restrain[0];
+  if(dUdL_restrain) {F -= dUdL_restrain[1] - dUdL_restrain[0];}
 
   real bin_width_L = 1.0/(n_L-1.0);
   real bin_width_F = (fmax-fmin)/(n_F-1.0);
 
-  int X = histogram_index(L, n_L, 0, 1);
+  int X = histogram_index(L, n_L, 0.0, 1.0);
   int Y = histogram_index(F, n_F, fmin, fmax);
 
   int jb = X + iL;
@@ -230,16 +235,12 @@ void __global__ getforce_osrw_meta_kernel(
   real mirror_factor = 1.0;
   if(jb < 0){ jb = -jb; }
   if(jb >= n_L){ jb = (n_L-1) - (jb-(n_L-1)); }
-  if(jb == 0 || jb == n_L-1){ mirror_factor = 2.0; } // edge double counting (1D mirror analog)
-  if(k >= 0 && k < n_F){ // don't search outside vertical range
+  if(jb == 0 || jb == n_L-1){ mirror_factor = 2.0; } // edge double counting 
+  if(k >= 0 && k < n_F && jb >= 0 && jb < n_L){ // don't index outside
     real dL = (L - L_center)/L_std;
     real dF = (F - F_center)/dUdL_std;
     real gL = exp(-0.5*dL*dL);
     real gF = exp(-0.5*dF*dF);
-    if (s == 0){
-      //printf("X: %d, Y: %d, L: %f, F: %f, jb: %d, k: %d, L_c: %f, F_c: %f, gauss: %f\n",
-      //  X, Y, L, F, jb, k, L_center, F_center, gL*gF);
-    }
     if (!update_potential) { // force call, compute force from grid of bins
       real h  = hist_weights_2D[jb*n_F + k];
       real bias = bias_mag*mirror_factor*h*gL*gF;
@@ -259,7 +260,8 @@ void __global__ getforce_osrw_meta_kernel(
 }
 
 void __global__ reweight_dUdL_kernel(
-  int n_L, int n_F, real kT, real temper_correction, 
+  int n_L, int n_F, int L_search, real* lambdas, 
+  real kT, real temper_correction, 
   real* counts_2D, real* avg_2D, real* m2_2D, real* potential_2D,
   int* min_dUdL_id, int* max_dUdL_id,
   bool sample_weighting,
@@ -267,7 +269,10 @@ void __global__ reweight_dUdL_kernel(
   real* ensemble_dUdL, real* variance_dUdL)
 {
   int X = blockIdx.x*blockDim.x + threadIdx.x; // L bin
-  if(X >= n_L) return;
+  int curr_bin = histogram_index(lambdas[1], n_L, 0.0, 1.0);
+  X -= (L_search-1)/2; // [-half, half]
+  X = curr_bin + X;
+  if(X < 0 || X >= n_L) return;
 
   real offset = 0.0;
   real wsum = 0.0; // sum weights
@@ -309,28 +314,31 @@ void update_osrw_potential(System* system){
   Run* run = system->run;
   // Build potential everywhere
   int id = system->msld->siteBound[osrw->target_site];
-  int blocks  = 2*osrw->half_search_bins_L + 1;
-  int threads = 2*osrw->half_search_bins_dUdL + 1;
-  real* bonded = (osrw->remove_bonded && state->dUdL_BA_d) ? & state->dUdL_BA_d[id] : NULL;
-  real* recip = (osrw->remove_recip && state->dUdL_recip_d) ? & state->dUdL_recip_d[id] : NULL;
-  real* restrain = state->dUdL_restrain_d ? &state->dUdL_restrain_d[id] : NULL;
-  getforce_osrw_meta_kernel<<<blocks, threads, 0, run->enhancedStream>>>(
-    osrw->n_L_bins, osrw->n_dUdL_bins, osrw->dUdL_min, osrw->dUdL_max,
-    osrw->half_search_bins_L, osrw->half_search_bins_dUdL,
-    osrw->meta_bias_mag,osrw->meta_L_std, osrw->meta_dUdL_std,
-    &state->lambda_fd[id], &state->lambdaForce_d[id], bonded, recip, restrain,
-    osrw->hist_weights_2D_d,
-    true, // update potential
-    // Outputs (lambda force at the site, and dGdF at the site)
-    osrw->potential_2D_d,
-    &state->lambdaForce_d[id], &osrw->dGdF_d[id], NULL);
+  if(osrw->do_meta){ // if meta is off, <dU/dL> should be calculated with uniform weights (pot_2D=0 everywhere)
+    int nL = 2*osrw->half_search_bins_L + 1;
+    int nF = 2*osrw->half_search_bins_dUdL + 1;
+    real* bonded = (osrw->remove_bonded && state->dUdL_BA_d) ? & state->dUdL_BA_d[id] : NULL;
+    real* recip = (osrw->remove_recip && state->dUdL_recip_d) ? & state->dUdL_recip_d[id] : NULL;
+    real* restrain = state->dUdL_restrain_d ? &state->dUdL_restrain_d[id] : NULL;
+    getforce_osrw_meta_kernel<<<(nL*nF+BLBO-1)/BLBO,BLBO, 0, run->enhancedStream>>>(
+      osrw->n_L_bins, osrw->n_dUdL_bins, osrw->dUdL_min, osrw->dUdL_max,
+      osrw->half_search_bins_L, osrw->half_search_bins_dUdL,
+      osrw->meta_bias_mag,osrw->meta_L_std, osrw->meta_dUdL_std,
+      &state->lambda_fd[id], &state->lambdaForce_d[id], bonded, recip, restrain,
+      osrw->hist_weights_2D_d,
+      true, // update potential
+      // Outputs (lambda force at the site, and dGdF at the site)
+      osrw->potential_2D_d,
+      &state->lambdaForce_d[id], &osrw->dGdF_d[id], NULL);
+  }
 
   // Eq: 7 in: Annu. Rev. Phys. Chem. 2016. 67:159–84 to convert WT potential into -'ve FES
   // Large temper_factor => correction = 1  (untempered limit)
   // Small temper_factor => correction = large (unbiased limit)
   real temper_correction = osrw->do_temper ? 1.0/(1.0 - 1.0/osrw->temper_factor) : 1.0;
-  reweight_dUdL_kernel<<<(osrw->n_L_bins+BLBO-1)/BLBO, BLBO, 0, run->enhancedStream>>>(
-    osrw->n_L_bins, osrw->n_dUdL_bins, kB*run->T, temper_correction, 
+  int L_update = 2*osrw->half_search_bins_L + 1;
+  reweight_dUdL_kernel<<<(L_update+BLBO-1)/BLBO, BLBO, 0, run->enhancedStream>>>(
+    osrw->n_L_bins, osrw->n_dUdL_bins, L_update, &state->lambda_fd[id], kB*run->T, temper_correction, 
     osrw->lambda_counts_2D_d, osrw->avg_dUdL_2D_d, osrw->m2_dUdL_2D_d, osrw->potential_2D_d,
     osrw->min_dUdL_id_d, osrw->max_dUdL_id_d,
     osrw->sample_weighting,
@@ -432,7 +440,8 @@ void __global__ getforce_osrw_abf_kernel(
     }
   }
   if (energy){
-    real_sum_reduce(lEnergy,sEnergy,energy);
+    // ABF adds -'ve F(L)
+    real_sum_reduce(-lEnergy,sEnergy,energy);
   }
 };
 
@@ -453,11 +462,18 @@ void getforce_osrw(System* system, int step, bool calcEnergy){
   real* recip = osrw->remove_recip && state->dUdL_recip_d ? &state->dUdL_recip_d[id] : NULL;
   real* restrain = state->dUdL_restrain_d ? &state->dUdL_restrain_d[id] : NULL;
 
-  if(!osrw->force_test && osrw->do_meta){
-    int blocks  = 2*osrw->half_search_bins_L + 1;
-    int threads = 2*osrw->half_search_bins_dUdL + 1;
+  // Needs to go after meta since it changes dU/dL
+  if(osrw->do_abf && !osrw->force_test){
+    getforce_osrw_abf_kernel<<<(osrw->n_L_bins+BLBO-1)/BLBO, BLBO, shMem, r->enhancedStream>>>(
+      osrw->n_L_bins, &state->lambda_fd[id], osrw->ensemble_dUdL_d, osrw->lambda_counts_1D_d, osrw->abf_warmup,
+      &state->lambdaForce_d[id], pEnergy);
+  }
+
+  if(osrw->do_meta && !osrw->force_test){
+    int nL = 2*osrw->half_search_bins_L + 1;
+    int nF = 2*osrw->half_search_bins_dUdL + 1;
     cudaMemsetAsync(osrw->dGdF_d, 0, system->msld->blockCount*sizeof(real), r->enhancedStream); // reset dGdF memory
-    getforce_osrw_meta_kernel<<<blocks, threads, shMem, r->enhancedStream>>>(
+    getforce_osrw_meta_kernel<<<(nL*nF+BLBO-1)/BLBO,BLBO, shMem, r->enhancedStream>>>(
       osrw->n_L_bins, osrw->n_dUdL_bins, osrw->dUdL_min, osrw->dUdL_max,
       osrw->half_search_bins_L, osrw->half_search_bins_dUdL,
       osrw->meta_bias_mag,osrw->meta_L_std, osrw->meta_dUdL_std,
@@ -467,17 +483,8 @@ void getforce_osrw(System* system, int step, bool calcEnergy){
       // Outputs (lambda force at the site, and dGdF at the site)
       osrw->potential_2D_d,
       &state->lambdaForce_d[id], &osrw->dGdF_d[id], pEnergy);
-  }
 
-  // Needs to go after meta since it changes dU/dL
-  if(osrw->do_abf){
-    getforce_osrw_abf_kernel<<<(osrw->n_L_bins+BLBO-1)/BLBO, BLBO, shMem, r->enhancedStream>>>(
-      osrw->n_L_bins, &state->lambda_fd[id], osrw->ensemble_dUdL_d, osrw->lambda_counts_1D_d, osrw->abf_warmup,
-      &state->lambdaForce_d[id], pEnergy);
-  }
-
-  // Wait on enhancedStream complete then launch on respective kernel streams
-  if (osrw->do_meta){
+    // Wait on enhancedStream complete then launch on respective kernel streams
     cudaEventRecord(r->enhancedComplete, r->enhancedStream);
     int helper=(system->idCount==2); // 0 unless there are 2 GPUs, then it's 1.
     if (system->id == helper) {
@@ -558,7 +565,7 @@ void log_osrw(System* system, int step){
       real kT = kB*system->run->T;
       real mb;
       cudaMemcpy(&mb, osrw->current_temper_bias_d, sizeof(real), cudaMemcpyDefault);
-      real factor = exp(mb/(kT*(osrw->temper_factor-1)));
+      real factor = exp(-mb/(kT*(osrw->temper_factor-1)));
       printf("Current Tempering Bias: %5.2f, Temper Factor: %5.2f, Decay: %5.2f\n",
              mb, osrw->temper_factor, factor);
     }
