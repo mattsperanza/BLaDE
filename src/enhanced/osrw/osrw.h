@@ -79,7 +79,8 @@ class OrthogonalSpaceRandomWalk {
     real* lambda_counts_1D=NULL;
     real* lambda_counts_1D_d=NULL;
     real* ensemble_dUdL=NULL;
-    real* ensemble_dUdL_d=NULL;
+    real* std_dUdL_d=NULL;
+    real* std_dUdL=NULL;
     real* variance_dUdL_d=NULL;
     int* min_dUdL_id_d=NULL;
     int* max_dUdL_id_d=NULL;
