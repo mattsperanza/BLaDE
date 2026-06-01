@@ -135,10 +135,10 @@ void __global__ getforce_abf_kernel(int n_bins,
     real L = 1.0-lambda[0];
     real bin_width = (1.0)/(n_bins-1.0);
     real dUdL_curr = dUdL_avg[i];
-    dUdL_curr *= counts[i] < abf_warmup ? counts[i]/abf_warmup : 1;
+    dUdL_curr *= counts[i] < abf_warmup && abf_warmup > 0 ? counts[i]/abf_warmup : 1;
     if (i >= 1){ // Each thread computes integral from previous bin to this bin
       real dUdL_prev = dUdL_avg[i-1];
-      dUdL_prev *= counts[i-1] < abf_warmup ? counts[i-1]/abf_warmup : 1;
+      dUdL_prev *= counts[i-1] < abf_warmup && abf_warmup > 0 ? counts[i-1]/abf_warmup : 1;
       lEnergy = bin_width*(dUdL_curr+dUdL_prev)/2.0; // trapezoid up to lambda
       if(L >= (i-1.0)*bin_width && L < i*bin_width){ // L is between last bin center and current bin center
         real interp = (L-(i-1.0)*bin_width)/bin_width;
@@ -430,25 +430,25 @@ void MetaAdaptiveBiasingForce::restart(System* system){
     } else if(strcmp(token, "counts") == 0){
       for(int i = 0; i < n_bins; i++){
         nread = 0;
-        int read = sscanf(pos, " %lf%n", &counts[i], &nread);
+        int read = sscanf(pos, " %f%n", &counts[i], &nread);
         pos += nread;
       }
     } else if(strcmp(token, "dUdL_m2") == 0){
       for(int i = 0; i < n_bins; i++){
         int nread = 0;
-        sscanf(pos, " %lf%n", &dUdL_m2[i], &nread);
+        sscanf(pos, " %f%n", &dUdL_m2[i], &nread);
         pos += nread;
       }
     } else if(strcmp(token, "dUdL_avg") == 0){
       for(int i = 0; i < n_bins; i++){
         int nread = 0;
-        sscanf(pos, " %lf%n", &dUdL_avg[i], &nread);
+        sscanf(pos, " %f%n", &dUdL_avg[i], &nread);
         pos += nread;
       }
     } else if(strcmp(token, "meta_weights") == 0){
       for(int i = 0; i < n_bins; i++){
         int nread = 0;
-        sscanf(pos, " %lf%n", &meta_weights[i], &nread);
+        sscanf(pos, " %f%n", &meta_weights[i], &nread);
         pos += nread;
       }
     }

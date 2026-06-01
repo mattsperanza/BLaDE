@@ -30,6 +30,10 @@ real variables_calculate(char *line)
     real r1=variables_calculate(line);
     real r2=variables_calculate(line);
     return r1==r2;
+  } else if (token=="!=") {
+    real r1=variables_calculate(line);
+    real r2=variables_calculate(line);
+    return r1!=r2;
   } else if (token==">=") {
     real r1=variables_calculate(line);
     real r2=variables_calculate(line);

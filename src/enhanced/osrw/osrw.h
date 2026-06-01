@@ -27,11 +27,12 @@ class OrthogonalSpaceRandomWalk {
     bool do_meta=true;
     bool do_sample=true; 
     bool do_restart=true;
+    bool do_temper=true;
 
     // Options - enhance specific DOF
     bool remove_bonded=false;
     bool remove_recip=false;
-    bool sample_weighting=true;
+    bool sample_weighting=false;
 
     // Options - Sampling
     int sample_freq=10; // 1/step
@@ -43,7 +44,6 @@ class OrthogonalSpaceRandomWalk {
     real meta_bias_mag=0.005; 
     real meta_L_std=0.01;
     real meta_dUdL_std=4.00;
-    bool do_temper=true;
     real temper_factor=5; 
     int n_std_search = 6; 
 

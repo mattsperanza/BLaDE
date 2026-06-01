@@ -272,7 +272,7 @@ void __global__ reweight_dUdL_kernel(
   real kT, real temper_correction, 
   real* counts_2D, real* avg_2D, real* m2_2D, real* potential_2D,
   int* min_dUdL_id, int* max_dUdL_id,
-  bool sample_weighting,
+  bool sample_weighting, 
   // Outputs
   real* ensemble_dUdL, real* std_dUdL)
 {
@@ -350,7 +350,7 @@ void update_osrw_potential(System* system){
     osrw->n_L_bins, osrw->n_dUdL_bins, L_update, &state->lambda_fd[id], kB*run->T, temper_correction, 
     osrw->lambda_counts_2D_d, osrw->avg_dUdL_2D_d, osrw->m2_dUdL_2D_d, osrw->potential_2D_d,
     osrw->min_dUdL_id_d, osrw->max_dUdL_id_d,
-    osrw->sample_weighting,
+    osrw->sample_weighting, 
     osrw->std_dUdL_d, osrw->variance_dUdL_d);
 }
 
@@ -432,10 +432,10 @@ void __global__ getforce_osrw_abf_kernel(
     real L = 1.0-lambda[0];
     real bin_width = (1.0)/(n_bins-1.0);
     real dUdL_curr = dUdL_avg[i];
-    dUdL_curr *= counts[i] < abf_warmup ? counts[i]/abf_warmup : 1;
+    dUdL_curr *= counts[i] < abf_warmup && abf_warmup > 0 ? counts[i]/abf_warmup : 1;
     if (i >= 1){ // Each thread computes integral from previous bin to this bin
       real dUdL_prev = dUdL_avg[i-1];
-      dUdL_prev *= counts[i-1] < abf_warmup ? counts[i-1]/abf_warmup : 1;
+      dUdL_prev *= counts[i-1] < abf_warmup && abf_warmup > 0 ? counts[i-1]/abf_warmup : 1;
       lEnergy = bin_width*(dUdL_curr+dUdL_prev)/2.0; // trapezoid up to lambda
       if(L >= (i-1.0)*bin_width && L < i*bin_width){ // L is between last bin center and current bin center
         real interp = (L-(i-1.0)*bin_width)/bin_width;
@@ -587,9 +587,6 @@ void log_osrw(System* system, int step){
       printf("\n");
       printf("<dU/dL>: ");
       osrw_print_real_array(osrw->ensemble_dUdL, osrw->n_L_bins);
-      printf("\n");
-      printf("std dU/dL: ");
-      osrw_print_real_array(osrw->std_dUdL, osrw->n_L_bins);
       printf("\n");
       // dG 0->1 via trapezoidal integral of <dU/dL> over L in [0,1]
       real sum = 0;
