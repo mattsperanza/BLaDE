@@ -97,6 +97,7 @@ __global__ void getforce_nbdirect_kernel(
 #endif
   const int* __restrict__ blockExcls,
   struct Cutoffs cutoffs,
+  real scrVdw, real scrElec,
   const real3* __restrict__ position,
   real3_f* __restrict__ force,
   box_type box,
@@ -260,7 +261,7 @@ __global__ void getforce_nbdirect_kernel(
                 if (bi || bjtmp) {
                   // real rSoft=(2.0*ANGSTROM*sqrt(4.0))*(1.0-lixljtmp);
                   // Elec softcore
-                  real rSoft_elec = SOFTCORERADIUS_ELEC*(1-lixljtmp);
+                  real rSoft_elec = scrElec*(1-lixljtmp);
                   if (r<rSoft_elec) {
                     real rdivrs=r/rSoft_elec;
                     rEff_elec=1-((real)0.5)*rdivrs;
@@ -268,11 +269,11 @@ __global__ void getforce_nbdirect_kernel(
                     dredr_elec=3-2*rdivrs;
                     dredr_elec*=rdivrs*rdivrs;
                     dredll_elec=rEff_elec-dredr_elec*rdivrs;
-                    dredll_elec*=-SOFTCORERADIUS_ELEC;
+                    dredll_elec*=-scrElec;
                     rEff_elec*=rSoft_elec;
                   }
                   // VdW softcore
-                  real rSoft_vdw = SOFTCORERADIUS_VDW*(1-lixljtmp);
+                  real rSoft_vdw = scrVdw*(1-lixljtmp);
                   if (r<rSoft_vdw){
                     real rdivrs=r/rSoft_vdw;
                     rEff_vdw=1-((real)0.5)*rdivrs;
@@ -280,7 +281,7 @@ __global__ void getforce_nbdirect_kernel(
                     dredr_vdw=3-2*rdivrs;
                     dredr_vdw*=rdivrs*rdivrs;
                     dredll_vdw=rEff_vdw-dredr_vdw*rdivrs;
-                    dredll_vdw*=-SOFTCORERADIUS_VDW;
+                    dredll_vdw*=-scrVdw;
                     rEff_vdw*=rSoft_vdw;
                   }
                 }
@@ -487,6 +488,10 @@ void getforce_nbdirectTTTTT(System *system,box_type box)
   real_e *pEnergy=NULL;
 
   if (r->calcTermFlag[eenbdirect]==false) return;
+  if (r->scrElec > r->cutoffs.rSwitch || r->scrVdw > r->cutoffs.rSwitch){
+    printf("Softcore interaction radii extending beyond rSwitch are not supported. Please lower softcore radii or raise switching radius.\n");
+    exit(1);
+  }
 
   if (calcEnergy) {
     // shMem=(1<<WARPSPERBLOCK)*sizeof(real);
@@ -499,7 +504,9 @@ void getforce_nbdirectTTTTT(System *system,box_type box)
 #else
     p->vdwParameters_d,
 #endif
-    system->domdec->blockExcls_d,system->run->cutoffs,d->localPosition_d,d->localForce_d,box,s->lambda_fd,s->lambdaForce_d,pEnergy);
+    system->domdec->blockExcls_d,system->run->cutoffs,
+    system->run->scrVdw, system->run->scrElec,
+    d->localPosition_d,d->localForce_d,box,s->lambda_fd,s->lambdaForce_d,pEnergy);
 
   system->domdec->unpack_forces(system);
 }
