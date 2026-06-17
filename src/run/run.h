@@ -68,6 +68,8 @@ class Run {
   real rCut;
   real rSwitch;
   bool vfSwitch;   //added by clb3
+  real scrVdw;
+  real scrElec;
   bool usePME;
   real gridSpace; // grid spacing for PME calculation
   int grid[3];

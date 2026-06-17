@@ -59,6 +59,8 @@ Run::Run(System *system)
   cutoffs.betaEwald=betaEwald;
   cutoffs.rCut=rCut;
   cutoffs.rSwitch=rSwitch;
+  scrVdw=2;
+  scrElec=2;
 
   shakeTolerance=2e-7; // floating point precision is only 1.2e-7
 
@@ -337,6 +339,10 @@ void Run::set_variable(char *line,char *token,System *system)
   } else if (strcmp(token,"rswitch")==0) {
     rSwitch=io_nextf(line)*ANGSTROM;
     cutoffs.rSwitch=rSwitch;
+  } else if (strcmp(token,"scrvdw")==0){
+    scrVdw=io_nextf(line)*ANGSTROM;
+  } else if (strcmp(token,"screlec")==0){
+    scrElec=io_nextf(line)*ANGSTROM;
   } else if (strcmp(token,"vfswitch")==0) {
     vfSwitch=io_nextb(line);
   } else if (strcmp(token,"usepme")==0) {
