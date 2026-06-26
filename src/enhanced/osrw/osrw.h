@@ -48,7 +48,8 @@ class OrthogonalSpaceRandomWalk {
     int n_std_search = 6; 
 
     // Options - ABF
-    int abf_warmup=100; // number of samples before full activation
+    int abf_warmup=0; // number of samples before full activation
+    int update_abf_freq=1000; // number of samples before <dU/dL> gets updated for ABF
 
     // Derived Parameters - Not optional
     real dUdL_min=-dUdL_max;
@@ -79,9 +80,10 @@ class OrthogonalSpaceRandomWalk {
     real* lambda_counts_1D=NULL;
     real* lambda_counts_1D_d=NULL;
     real* ensemble_dUdL=NULL;
-    real* std_dUdL_d=NULL;
+    real* ensemble_dUdL_d=NULL;
+    real* abf_dUdL_d=NULL;
     real* std_dUdL=NULL;
-    real* variance_dUdL_d=NULL;
+    real* std_dUdL_d=NULL;
     int* min_dUdL_id_d=NULL;
     int* max_dUdL_id_d=NULL;
 

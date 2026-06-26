@@ -32,9 +32,10 @@ OrthogonalSpaceRandomWalk::~OrthogonalSpaceRandomWalk(){
   if(lambda_counts_1D) free(lambda_counts_1D);
   if(lambda_counts_1D_d) cudaFree(lambda_counts_1D_d);
   if(ensemble_dUdL) free(ensemble_dUdL);
-  if(std_dUdL_d) cudaFree(std_dUdL_d);
+  if(ensemble_dUdL_d) cudaFree(ensemble_dUdL_d);
+  if(abf_dUdL_d) cudaFree(abf_dUdL_d);
   if(std_dUdL) free(std_dUdL);
-  if(variance_dUdL_d) cudaFree(variance_dUdL_d);
+  if(std_dUdL_d) cudaFree(std_dUdL_d);
   if(min_dUdL_id_d) cudaFree(min_dUdL_id_d);
   if(max_dUdL_id_d) cudaFree(max_dUdL_id_d);
   if(current_temper_bias_d) cudaFree(current_temper_bias_d);
@@ -64,6 +65,8 @@ void parse_osrw(char* line, OrthogonalSpaceRandomWalk* osrw){
     osrw->sample_weighting = io_nextb(line);
   } else if(strcmp(token, "sample_freq") == 0){
     osrw->sample_freq = io_nexti(line);
+  } else if (strcmp(token, "update_abf_freq") == 0){
+    osrw->update_abf_freq = io_nexti(line);
   // Grid / metadynamics
   } else if(strcmp(token, "L_res") == 0){
     if(!osrw->init){ osrw->L_res = io_nextf(line); }
@@ -150,11 +153,12 @@ void OrthogonalSpaceRandomWalk::initialize(System* system){
   cudaMalloc(&lambda_counts_1D_d, n_L_bins*sizeof(real));
   cudaMemcpy(lambda_counts_1D_d, lambda_counts_1D, n_L_bins*sizeof(real), cudaMemcpyDefault);
   ensemble_dUdL = (real*)calloc(n_L_bins, sizeof(real));
-  cudaMalloc(&std_dUdL_d, n_L_bins*sizeof(real));
-  cudaMemcpy(std_dUdL_d, ensemble_dUdL, n_L_bins*sizeof(real), cudaMemcpyDefault);
+  cudaMalloc(&ensemble_dUdL_d, n_L_bins*sizeof(real));
+  cudaMemcpy(ensemble_dUdL_d, ensemble_dUdL, n_L_bins*sizeof(real), cudaMemcpyDefault);
+  cudaMalloc(&abf_dUdL_d, n_L_bins*sizeof(real));
   std_dUdL = (real*)calloc(n_L_bins, sizeof(real));
-  cudaMalloc(&variance_dUdL_d, n_L_bins*sizeof(real));
-  cudaMemset(variance_dUdL_d, 0, n_L_bins*sizeof(real));
+  cudaMalloc(&std_dUdL_d, n_L_bins*sizeof(real));
+  cudaMemset(std_dUdL_d, 0, n_L_bins*sizeof(real));
   dUdL_copy = (real*)calloc(system->msld->blockCount, sizeof(real));
   cudaMalloc(&dUdL_copy_d, system->msld->blockCount*sizeof(real));
   cudaMemcpy(dUdL_copy_d, dUdL_copy, system->msld->blockCount*sizeof(real), cudaMemcpyDefault);
@@ -351,7 +355,7 @@ void update_osrw_potential(System* system){
     osrw->lambda_counts_2D_d, osrw->avg_dUdL_2D_d, osrw->m2_dUdL_2D_d, osrw->potential_2D_d,
     osrw->min_dUdL_id_d, osrw->max_dUdL_id_d,
     osrw->sample_weighting, 
-    osrw->std_dUdL_d, osrw->variance_dUdL_d);
+    osrw->ensemble_dUdL_d, osrw->std_dUdL_d);
 }
 
 void __global__ add_sample_osrw_kernel(
@@ -469,8 +473,11 @@ void getforce_osrw(System* system, int step, bool calcEnergy){
   int id = system->msld->siteBound[osrw->target_site];
 
   if(osrw->do_abf && !osrw->force_test){
+    if(r->step % osrw->update_abf_freq == 0) {
+      cudaMemcpyAsync(osrw->abf_dUdL_d, osrw->ensemble_dUdL_d, osrw->n_L_bins*sizeof(real), cudaMemcpyDefault, r->enhancedStream);
+    }
     getforce_osrw_abf_kernel<<<(osrw->n_L_bins+BLBO-1)/BLBO, BLBO, shMem, r->enhancedStream>>>(
-      osrw->n_L_bins, &state->lambda_fd[id], osrw->std_dUdL_d, osrw->lambda_counts_1D_d, osrw->abf_warmup,
+      osrw->n_L_bins, &state->lambda_fd[id], osrw->abf_dUdL_d, osrw->lambda_counts_1D_d, osrw->abf_warmup,
       &state->lambdaForce_d[id], pEnergy);
   }
 
@@ -542,8 +549,8 @@ void recv_osrw(System* system){
   cudaMemcpy(osrw->avg_dUdL_2D,      osrw->avg_dUdL_2D_d,      n2D*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(osrw->m2_dUdL_2D,       osrw->m2_dUdL_2D_d,       n2D*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(osrw->lambda_counts_1D, osrw->lambda_counts_1D_d, osrw->n_L_bins*sizeof(real), cudaMemcpyDefault);
-  cudaMemcpy(osrw->ensemble_dUdL,    osrw->std_dUdL_d,    osrw->n_L_bins*sizeof(real), cudaMemcpyDefault);
-  cudaMemcpy(osrw->std_dUdL,    osrw->variance_dUdL_d,    osrw->n_L_bins*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(osrw->ensemble_dUdL,    osrw->ensemble_dUdL_d,    osrw->n_L_bins*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(osrw->std_dUdL,         osrw->std_dUdL_d,         osrw->n_L_bins*sizeof(real), cudaMemcpyDefault);
 };
 
 static void osrw_print_real_array(real* arr, int len){
@@ -587,6 +594,9 @@ void log_osrw(System* system, int step){
       printf("\n");
       printf("<dU/dL>: ");
       osrw_print_real_array(osrw->ensemble_dUdL, osrw->n_L_bins);
+      printf("\n");
+      printf("std[dU/dL]: ");
+      osrw_print_real_array(osrw->std_dUdL, osrw->n_L_bins);
       printf("\n");
       // dG 0->1 via trapezoidal integral of <dU/dL> over L in [0,1]
       real sum = 0;
@@ -758,7 +768,7 @@ void OrthogonalSpaceRandomWalk::restart(System* system){
 
   // Push restored host memory to the GPU
   cudaMemcpy(lambda_counts_1D_d, lambda_counts_1D, n_L*sizeof(real), cudaMemcpyDefault);
-  cudaMemcpy(std_dUdL_d,    ensemble_dUdL,    n_L*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(ensemble_dUdL_d,    ensemble_dUdL,    n_L*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(lambda_counts_2D_d, lambda_counts_2D, n2D*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(hist_weights_2D_d,  hist_weights_2D,  n2D*sizeof(real), cudaMemcpyDefault);
   cudaMemcpy(potential_2D_d,     potential_2D,     n2D*sizeof(real), cudaMemcpyDefault);

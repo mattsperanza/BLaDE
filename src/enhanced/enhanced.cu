@@ -72,6 +72,19 @@ void parse_enhanced(char* line, System* system){
     } else {
       printf("Already instantiated Meta-ABF, reusing exising one!\n");
     }
+  } else if (strcmp(token, "osrw")==0){
+    if (!nhcd->osrw){
+      printf("Instantiating OSRW!\n");
+      nhcd->osrw = new OrthogonalSpaceRandomWalk();
+    } else {
+      printf("Already instantiated OSRW, reusing exising one!\n");
+    }
+  } else if (strcmp(token, "osrw_option")==0){
+    if(!nhcd->osrw){
+      printf("OSRW not defined yet!\n");
+      exit(1);
+    }
+    parse_osrw(line, nhcd->osrw);
   } else if (strcmp(token, "meta_abf_option") == 0){ // see meta_abf.cu for availible options
     if(!nhcd->meta_abf){
       printf("Meta_ABF not defined yet!\n");
