@@ -61,6 +61,8 @@ Run::Run(System *system)
   cutoffs.betaEwald=betaEwald;
   cutoffs.rCut=rCut;
   cutoffs.rSwitch=rSwitch;
+  scrVdw=2;
+  scrElec=2;
 
   shakeTolerance=2e-7; // floating point precision is only 1.2e-7
 
@@ -343,6 +345,10 @@ void Run::set_variable(char *line,char *token,System *system)
   } else if (strcmp(token,"rswitch")==0) {
     rSwitch=io_nextf(line)*ANGSTROM;
     cutoffs.rSwitch=rSwitch;
+  } else if (strcmp(token,"scrvdw")==0){
+    scrVdw=io_nextf(line)*ANGSTROM;
+  } else if (strcmp(token,"screlec")==0){
+    scrElec=io_nextf(line)*ANGSTROM;
   } else if (strcmp(token,"vfswitch")==0) {
     vfSwitch=io_nextb(line);
   } else if (strcmp(token,"usepme")==0) {
@@ -546,8 +552,8 @@ void Run::test(char *line,char *token,System *system)
   real dx;
   int i,j,ij,s;
   int ij0,imax,jmax;
-  real_e E[2];
   real F;
+  real_x X,E[2];
 
   // Initialize data structures
   dynamics_initialize(system);
@@ -616,7 +622,9 @@ void Run::test(char *line,char *token,System *system)
         }
         if (system->id==0) {
           cudaMemcpy(&F,&system->state->forceBuffer_d[ij],sizeof(real),cudaMemcpyDeviceToHost);
-          fprintf(stdout,"ij=%7d, Emin=%20.16g, Emax=%20.16g, (Emax-Emin)/dx=%20.16g, force=%20.16g\n",ij,E[0],E[1],(E[1]-E[0])/dx,F);
+          cudaMemcpy(&X,&system->state->positionBuffer_d[ij],sizeof(real_e),cudaMemcpyDeviceToHost);
+          real_x numeric = (E[1]-E[0])/dx;
+          fprintf(stdout,"ij=%7d, x: %20.16g, Emin=%20.16g, Emax=%20.16g, (Emax-Emin)/dx=%20.16g, force=%20.16g, err (numeric - F)=%20.16g\n",ij,X,E[0],E[1],numeric,F,numeric-F);
         }
       }
     }

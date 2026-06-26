@@ -100,7 +100,7 @@ __global__ void getforce_nbdirect_oss_kernel(
   const struct VdwPotential* __restrict__ vdwParameters,
 #endif
   const int* __restrict__ blockExcls,
-  struct Cutoffs cutoffs,
+  struct Cutoffs cutoffs, real scrVdw, real scrElec,
   const real3* __restrict__ position,
   real3_f* __restrict__ force,
   box_type box,
@@ -128,9 +128,6 @@ __global__ void getforce_nbdirect_oss_kernel(
   int jtmpnp_typeIdx;
   real fij_ost;
   real d2U_drij_dli, d2U_drij_dlj, d2U_dli_dlj, d2U_dli2, d2U_dlj2;
-  real drijp_drij=1;
-  real drijp_dli,drijp_dlj,d2rijp_drij_dlj,d2rijp_drij_dli;
-  real d2rijp_dli_dlj,d2rijp_dli2,d2rijp_dlj2;
   real3 xi,xj,xjtmp;
   // OST Forces (added into normal force array)
   real3 fi_ost,fj_ost,fjtmp_ost;
@@ -255,6 +252,7 @@ __global__ void getforce_nbdirect_oss_kernel(
 
               // Skip env-env interactions 
               if (r<cutoffs.rCut && (bi || bjtmp)) {
+                rEff=r;
                 // Lambda Scaling
                 real dlixlj_dli, dlixlj_dlj, d2lixlj_dli_dlj;
                 if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) { // same site (m == n)
@@ -276,51 +274,16 @@ __global__ void getforce_nbdirect_oss_kernel(
                   dlixlj_dlj = li;
                   d2lixlj_dli_dlj = bi && bjtmp ? 1 : 0;
                 }
-
-                rEff=r;
-                // rSoft derivatives
-                drijp_drij=1;
-                drijp_dli=0;
-                drijp_dlj=0;
-                d2rijp_drij_dlj=0;
-                d2rijp_drij_dli=0;
-                d2rijp_dli_dlj=0;
-                d2rijp_dli2=0;
-                d2rijp_dlj2=0;
-                if (useSoftCore) {
-                  real rSoft=SOFTCORERADIUS*(1-lixljtmp);
-                  if (r<rSoft) {
-                    // Original soft
-                    real rdivrs=r/rSoft;
-                    real r2 = r*r;
-                    real rSoft3 = rSoft*rSoft*rSoft;
-                    rEff=1-((real)0.5)*rdivrs;
-                    rEff=rEff*rdivrs*rdivrs*rdivrs+((real)0.5); // Soft-core: rEff = rL * (.5 + (r/rL)^3 - .5*(r/rL)^4)
-                    rEff*=rSoft;
-                    real r_rsoft3 = rdivrs*rdivrs*rdivrs;
-                    real drijp_drlam = (real)0.5+r_rsoft3*(3*rdivrs/2 - 2);
-                    real d2rijp_drlam_drij = 6*r2*(rdivrs-1)/rSoft3;
-                    real d2rijp_drlam2 = 6*r2*r*(1-rdivrs)/(rSoft3*rSoft);
-                    drijp_drij = r_rsoft3*(3/rdivrs-2);
-                    drijp_dli = drijp_drlam*(-SOFTCORERADIUS*dlixlj_dli);
-                    drijp_dlj = drijp_drlam*(-SOFTCORERADIUS*dlixlj_dlj);
-                    d2rijp_drij_dli = d2rijp_drlam_drij*(-SOFTCORERADIUS*dlixlj_dli);
-                    d2rijp_drij_dlj = d2rijp_drlam_drij*(-SOFTCORERADIUS*dlixlj_dlj);
-                    d2rijp_dli_dlj = SOFTCORERADIUS*(d2rijp_drlam2*dlixlj_dli*dlixlj_dlj*SOFTCORERADIUS - drijp_drlam*d2lixlj_dli_dlj);
-                    d2rijp_dli2 = d2rijp_drlam2*(-SOFTCORERADIUS*dlixlj_dli)*(-SOFTCORERADIUS*dlixlj_dli);
-                    d2rijp_dlj2 = d2rijp_drlam2*(-SOFTCORERADIUS*dlixlj_dlj)*(-SOFTCORERADIUS*dlixlj_dlj);
-                  }
+              
+                // Electrostatics
+                real t[cr_count] = {0};  // Softcore c.r. terms
+                t[drijp_drij] = 1;
+                if (useSoftCore && (bi || bjtmp)) {
+                  set_soft(r, scrElec, 
+                    lixljtmp, dlixlj_dli, dlixlj_dlj, d2lixlj_dli_dlj,
+                    t, &rEff);
                 }
-                rinv=1/rEff;
-
-                // Terms which require calculation for soft-coring - both vdw and elec can be accumulated here
-                fij_ost=0;
-                d2U_drij_dli = 0;
-                d2U_drij_dlj = 0;
-                d2U_dli_dlj = 0;
-                d2U_dli2 = 0;
-                d2U_dlj2 = 0;
-                // PME Electrostatics (define the above variables)
+                real rinv=1/rEff;
                 if(usePME){
                   real br=cutoffs.betaEwald*rEff;
                   real br2 = br*br;
@@ -337,14 +300,24 @@ __global__ void getforce_nbdirect_oss_kernel(
                   real d2U_drijp_dlj = dlixlj_dlj*dU_drijp_tmp;
                   real d2Up_dli_dlj = d2lixlj_dli_dlj*U_dir;
                   // Accumulate forces w/ chain rule terms
-                  d2U_drij_dli = dU_drijp*d2rijp_drij_dli + (d2U_drijp_dli + d2U_drijp2*drijp_dli)*drijp_drij;
-                  d2U_drij_dlj = dU_drijp*d2rijp_drij_dlj + (d2U_drijp_dlj + d2U_drijp2*drijp_dlj)*drijp_drij;
-                  d2U_dli_dlj = d2Up_dli_dlj + d2U_drijp_dlj*drijp_dli + dU_drijp*d2rijp_dli_dlj + (d2U_drijp_dli + d2U_drijp2*drijp_dli)*drijp_dlj;
-                  d2U_dli2 = d2U_drijp_dli*drijp_dli + dU_drijp*d2rijp_dli2 + (d2U_drijp_dli + d2U_drijp2*drijp_dli)*drijp_dli;
-                  d2U_dlj2 = d2U_drijp_dlj*drijp_dlj + dU_drijp*d2rijp_dlj2 + (d2U_drijp_dlj + d2U_drijp2*drijp_dlj)*drijp_dlj;
+                  d2U_drij_dli = dU_drijp*t[d2rijp_drij_dli] + (d2U_drijp_dli + d2U_drijp2*t[drijp_dli])*t[drijp_drij];
+                  d2U_drij_dlj = dU_drijp*t[d2rijp_drij_dlj] + (d2U_drijp_dlj + d2U_drijp2*t[drijp_dlj])*t[drijp_drij];
+                  d2U_dli_dlj = d2Up_dli_dlj + d2U_drijp_dlj*t[drijp_dli] + dU_drijp*t[d2rijp_dli_dlj] + (d2U_drijp_dli + d2U_drijp2*t[drijp_dli])*t[drijp_dlj];
+                  d2U_dli2 = d2U_drijp_dli*t[drijp_dli] + dU_drijp*t[d2rijp_dli2] + (d2U_drijp_dli + d2U_drijp2*t[drijp_dli])*t[drijp_dli];
+                  d2U_dlj2 = d2U_drijp_dlj*t[drijp_dlj] + dU_drijp*t[d2rijp_dlj2] + (d2U_drijp_dlj + d2U_drijp2*t[drijp_dlj])*t[drijp_dlj];
                 }
 
                 // Van der Waals
+                if (abs(scrVdw - scrElec) > 1e-4){ // update softcore cr terms to reflect scrVdw
+                  for(int i = 0; i < cr_count; i++){ t[i] = 0; }
+                  t[drijp_drij] = 1;
+                  if (useSoftCore && (bi || bjtmp)) {
+                     set_soft(r, scrVdw, 
+                      lixljtmp, dlixlj_dli, dlixlj_dlj, d2lixlj_dli_dlj,
+                      t, &rEff);
+                  }
+                  rinv=1/rEff;
+                }
                 real rinv3=rinv*rinv*rinv;
                 real rinv6=rinv3*rinv3;
                 real rCut3=cutoffs.rCut*cutoffs.rCut*cutoffs.rCut;
@@ -359,11 +332,11 @@ __global__ void getforce_nbdirect_oss_kernel(
                   real d2U_drijp_dlj = dlixlj_dlj*dU_drijp_tmp;
                   real d2Up_dli_dlj = d2lixlj_dli_dlj*U_dir;
                   // Accumulate with chain rule terms
-                  d2U_drij_dli += dU_drijp*d2rijp_drij_dli + (d2U_drijp_dli + d2U_drijp2*drijp_dli)*drijp_drij;
-                  d2U_drij_dlj += dU_drijp*d2rijp_drij_dlj + (d2U_drijp_dlj + d2U_drijp2*drijp_dlj)*drijp_drij;
-                  d2U_dli_dlj += d2Up_dli_dlj + d2U_drijp_dlj*drijp_dli + dU_drijp*d2rijp_dli_dlj + (d2U_drijp_dli + d2U_drijp2*drijp_dli)*drijp_dlj;
-                  d2U_dli2 += d2U_drijp_dli*drijp_dli + dU_drijp*d2rijp_dli2 + (d2U_drijp_dli + d2U_drijp2*drijp_dli)*drijp_dli;
-                  d2U_dlj2 += d2U_drijp_dlj*drijp_dlj + dU_drijp*d2rijp_dlj2 + (d2U_drijp_dlj + d2U_drijp2*drijp_dlj)*drijp_dlj;
+                  d2U_drij_dli += dU_drijp*t[d2rijp_drij_dli] + (d2U_drijp_dli + d2U_drijp2*t[drijp_dli])*t[drijp_drij];
+                  d2U_drij_dlj += dU_drijp*t[d2rijp_drij_dlj] + (d2U_drijp_dlj + d2U_drijp2*t[drijp_dlj])*t[drijp_drij];
+                  d2U_dli_dlj += d2Up_dli_dlj + d2U_drijp_dlj*t[drijp_dli] + dU_drijp*t[d2rijp_dli_dlj] + (d2U_drijp_dli + d2U_drijp2*t[drijp_dli])*t[drijp_dlj];
+                  d2U_dli2 += d2U_drijp_dli*t[drijp_dli] + dU_drijp*t[d2rijp_dli2] + (d2U_drijp_dli + d2U_drijp2*t[drijp_dli])*t[drijp_dli];
+                  d2U_dlj2 += d2U_drijp_dlj*t[drijp_dlj] + dU_drijp*t[d2rijp_dlj2] + (d2U_drijp_dlj + d2U_drijp2*t[drijp_dlj])*t[drijp_dlj];
                 }
                 else {
                   if ( !usevdWSwitch ) { // Force Switch
@@ -396,14 +369,14 @@ __global__ void getforce_nbdirect_oss_kernel(
                   }
                 }
 
-                // Soft Interaction
-                fij_ost += dGdFi*d2U_drij_dli + dGdFjtmp*d2U_drij_dlj;
+                // Interaction
+                fij_ost = dGdFi*d2U_drij_dli + dGdFjtmp*d2U_drij_dlj;
                 fli_ost += dGdFi*d2U_dli2 + dGdFjtmp*d2U_dli_dlj;
                 if(bjtmp && (bi&0xFFFF0000)!=(bjtmp&0xFFFF0000)){
                   fljtmp_ost += dGdFi*d2U_dli_dlj + dGdFjtmp*d2U_dlj2;
                 }
 
-                // Accumulate OST forces
+                // Accumulate OST spatial forces
                 real3_scaleinc(&fi_ost, fij_ost/r,dr);
                 fjtmp_ost=real3_scale<real3>(-fij_ost/r,dr);
               }
@@ -475,7 +448,7 @@ void getforce_nbdirect_ossTTTT(System *system,box_type box)
 
   if (r->calcTermFlag[eenbdirect]==false) return;
 
-  if (SOFTCORERADIUS > system->run->cutoffs.rSwitch){
+  if (r->scrVdw >= r->cutoffs.rSwitch || r->scrElec >= r->cutoffs.rSwitch){
     printf("Derivatives of soft-core switch function not implemented! Please raise switch radius or decrease SOFT.\n");
     exit(1);
   }
@@ -489,7 +462,9 @@ void getforce_nbdirect_ossTTTT(System *system,box_type box)
 #else
     p->vdwParameters_d,
 #endif
-    system->domdec->blockExcls_d,system->run->cutoffs,d->localPosition_d,
+    system->domdec->blockExcls_d,
+    system->run->cutoffs,r->scrVdw, r->scrElec,
+    d->localPosition_d,
     d->localForce_d,
     box,s->lambda_fd,
     s->lambdaForce_d,

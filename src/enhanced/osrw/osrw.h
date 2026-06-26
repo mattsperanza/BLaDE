@@ -118,4 +118,43 @@ void log_osrw(System* system, int step);
 void recv_osrw(System* system);
 void write_osrw(std::string dir_name, System* system, int step);
 
+// Helpers used in pair and nbdirect kernels
+enum derivative_index {
+    drijp_drij = 0,
+    drijp_dli,
+    drijp_dlj,
+    d2rijp_drij_dlj,
+    d2rijp_drij_dli,
+    d2rijp_dli_dlj,
+    d2rijp_dli2,
+    d2rijp_dlj2,
+    cr_count 
+};
+
+__device__ __forceinline__ void set_soft(real r, real scr, 
+       real lixlj, real dlixlj_dli, real dlixlj_dlj, real d2lixlj_dli_dlj,
+       real* t,real* rEff){
+  real rSoft=scr*(1-lixlj);
+  if (r<rSoft) {
+    real rdivrs=r/rSoft;
+    real r2 = r*r;
+    real rSoft3 = rSoft*rSoft*rSoft;
+    rEff[0]=1-((real)0.5)*rdivrs;
+    rEff[0]=rEff[0]*rdivrs*rdivrs*rdivrs+((real)0.5);
+    rEff[0]*=rSoft;
+    real r_rsoft3 = rdivrs*rdivrs*rdivrs;
+    real drijp_drlam = (real)0.5+r_rsoft3*(3*rdivrs/2 - 2);
+    real d2rijp_drlam_drij = 6*r2*(rdivrs-1)/rSoft3;
+    real d2rijp_drlam2 = 6*r2*r*(1-rdivrs)/(rSoft3*rSoft);
+    t[drijp_drij] = r_rsoft3*(3/rdivrs-2);
+    t[drijp_dli] = drijp_drlam*(-scr*dlixlj_dli);
+    t[drijp_dlj] = drijp_drlam*(-scr*dlixlj_dlj);
+    t[d2rijp_drij_dli] = d2rijp_drlam_drij*(-scr*dlixlj_dli);
+    t[d2rijp_drij_dlj] = d2rijp_drlam_drij*(-scr*dlixlj_dlj);
+    t[d2rijp_dli_dlj] = scr*(d2rijp_drlam2*dlixlj_dli*dlixlj_dlj*scr- drijp_drlam*d2lixlj_dli_dlj);
+    t[d2rijp_dli2] = d2rijp_drlam2*(-scr*dlixlj_dli)*(-scr*dlixlj_dli);
+    t[d2rijp_dlj2] = d2rijp_drlam2*(-scr*dlixlj_dlj)*(-scr*dlixlj_dlj);
+  }
+}
+
 #endif

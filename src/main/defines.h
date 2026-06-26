@@ -45,7 +45,6 @@
 
 // See values in charmm/source/ltm/consta_ltm.F90
 #define ANGSTROM ((real)1.0)
-#define SOFTCORERADIUS ((real)5.0)
 #define KCAL_MOL ((real)1.0)
 // 1 / CHARMM TIMFAC value 0.0488882129
 #define PICOSECOND ((real)20.454828284385908)
@@ -71,7 +70,6 @@
 // ATM 101325 bar
 
 #define ANGSTROM ((real)0.1)
-#define SOFTCORERADIUS ((real)0.5)
 // 4.184 according to CHARMM, this number is from kELECTRIC conversion
 #define KCAL_MOL ((real)4.183900553475091)
 #define PICOSECOND ((real)1.0)
