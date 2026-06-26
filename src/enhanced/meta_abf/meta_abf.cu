@@ -10,7 +10,6 @@
 #include "io/io.h"
 #include <string>
 
-
 MetaAdaptiveBiasingForce::~MetaAdaptiveBiasingForce(){
   if(counts) free(counts);
   if(counts_d) cudaFree(counts_d);
@@ -76,6 +75,7 @@ void parse_meta_abf(char* line, MetaAdaptiveBiasingForce* meta_abf){
 
 // This only gets called the first time enhanced->initialize() gets called
 void MetaAdaptiveBiasingForce::initialize(System* system){
+    printf("Initializing Meta-ABF!\n");
     // ABF Memory
     counts = (real*)calloc(n_bins, sizeof(real));
     cudaMalloc(&counts_d, n_bins*sizeof(real));
@@ -119,7 +119,7 @@ void MetaAdaptiveBiasingForce::initialize(System* system){
     init=true;
 };
 
-int __device__ get_histogram_index(int n_bins, real x, real l, real u){
+int __host__ __device__ get_histogram_index(int n_bins, real x, real l, real u){
   // first part gets x progress through range [0, 1] 
   // bins centered on l and u have half width -> n_bins-1
   return (int)round(((x-l)/(u-l)) * (n_bins-1)); 
@@ -160,6 +160,7 @@ void __global__ getforce_abf_kernel(int n_bins,
 void __global__ getforce_meta_kernel(
   int n_bins, int n_search, real* lambda, 
   real meta_std, real* meta_weights, 
+  bool update_current_only,
   real* lambdaForce, real* current_bias, real_e* energy){
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   extern __shared__ real sEnergy[];
@@ -185,10 +186,10 @@ void __global__ getforce_meta_kernel(
     real mirror_factor = my_bin == 0 || my_bin == n_bins-1 ? 2.0 : 1.0;
     lEnergy = mirror_factor*meta_weights[my_bin]*gauss;
     real dUdL = -dist/meta_std*lEnergy; // need variance in denom
-    atomicAdd(&lambdaForce[1], dUdL); 
+    if(lambdaForce && !update_current_only) atomicAdd(&lambdaForce[1], dUdL); 
   }
-  if (energy){
-    real_sum_reduce(lEnergy,sEnergy,energy);
+  if (energy && current_bias){
+    if (!update_current_only) real_sum_reduce(lEnergy,sEnergy,energy);
     real_sum_reduce(lEnergy,sEnergy,current_bias);
   }
 };
@@ -209,17 +210,17 @@ void getforce_meta_abf(System* system, int step, bool calcEnergy){
   if (m_abf->do_abf) {
     getforce_abf_kernel<<<(m_abf->n_bins+BLBO-1)/BLBO,BLBO,shMem,run->enhancedStream>>>(
       m_abf->n_bins, &state->lambda_fd[id], m_abf->dUdL_avg_d, m_abf->counts_d,m_abf->abf_warmup,
-      &state->lambdaForce_d[id],pEnergy 
-    );
+      &state->lambdaForce_d[id],pEnergy);
   }
   if (m_abf->do_meta) {
     int bins = 2*m_abf->half_search_bins + 1;
     cudaMemsetAsync(m_abf->meta_current_bias_d, 0, sizeof(real), run->enhancedStream);
     getforce_meta_kernel<<<(bins+BLBO-1)/BLBO,BLBO,shMem,run->enhancedStream>>>(
       m_abf->n_bins, bins, &state->lambda_fd[id], m_abf->meta_std, m_abf->meta_weights_d, 
-      &state->lambdaForce_d[id], m_abf->meta_current_bias_d, pEnergy 
-    );
+      false, // update everything
+      &state->lambdaForce_d[id], m_abf->meta_current_bias_d, pEnergy);
   }
+  gpuCheck(cudaPeekAtLastError());
 };
 
 void __global__ add_sample_abf(
@@ -227,10 +228,10 @@ void __global__ add_sample_abf(
   real* counts, real* dUdL_m2, 
   real* dUdL_avg, real* dUdL_std){
     // stable online average and std - Welford's
-    real L = 1.0f-lambda[0]; // lambda = reference state lambda, 1-L means binning means int_0^1 gives dG 0->1
-    int bin = get_histogram_index(n_bins, L, 0.0f, 1.0f);
+    real L = 1-lambda[0]; // lambda = reference state lambda, 1-L means binning means int_0^1 gives dG 0->1
+    int bin = get_histogram_index(n_bins, L, 0, 1);
     real dUdL = lambdaForce[1]-lambdaForce[0];
-    counts[bin] += 1.0f;
+    counts[bin] += 1;
     real prev_delta = dUdL - dUdL_avg[bin];
     dUdL_avg[bin] += prev_delta/counts[bin];
     dUdL_m2[bin] += prev_delta*(dUdL-dUdL_avg[bin]);
@@ -257,18 +258,26 @@ void sample_meta_abf(System* system, int step){
       add_sample_abf<<<1, 1, 0, run->enhancedStream>>>(
         m_abf->n_bins, &state->lambda_fd[id], &state->lambdaForce_d[id],
         m_abf->counts_d, m_abf->dUdL_m2_d, 
-        m_abf->dUdL_avg_d, m_abf->dUdL_std_d
-      );
+        m_abf->dUdL_avg_d, m_abf->dUdL_std_d);
     }
     if(m_abf->do_meta){
-      // TODO: min reduce along meta_weights_d
+      // Update current value of the potential
+      int bins = 2*m_abf->half_search_bins + 1;
+      int shMem=BLBO*sizeof(real)/32;
+      real_e* pEnergy=state->energy_d+eeenhanced;
+      cudaMemsetAsync(m_abf->meta_current_bias_d, 0, sizeof(real), run->enhancedStream);
+      getforce_meta_kernel<<<(bins+BLBO-1)/BLBO,BLBO,shMem,run->enhancedStream>>>(
+        m_abf->n_bins, bins, &state->lambda_fd[id], m_abf->meta_std, m_abf->meta_weights_d, 
+        true, // only update meta_current_bias_d
+        &state->lambdaForce_d[id], m_abf->meta_current_bias_d, pEnergy);
+      // Add sample
       add_sample_meta<<<1, 1, 0, run->enhancedStream>>>(
         m_abf->n_bins, kB*run->T, m_abf->do_temper,
         &state->lambda_fd[id], 
-        m_abf->meta_bias_mag, m_abf->meta_current_bias_d, m_abf->temper_factor,m_abf->meta_weights_d
-      );
+        m_abf->meta_bias_mag, m_abf->meta_current_bias_d, m_abf->temper_factor,m_abf->meta_weights_d);
     }
   }
+  gpuCheck(cudaPeekAtLastError());
 };
 
 void recv_meta_abf(System* system){
@@ -295,11 +304,24 @@ void print_real_array(real* arr, int len){
   }
 }
 
+real eval_weights_at_point(real L, real* weights, real std, int bins, int search){
+  int current_bin = get_histogram_index(bins, L, 0, 1);
+  real U = 0;
+  for(int i = current_bin-search; i <= current_bin+search; i++){
+    int i_mirrored = i < 0 ? -i : i;
+    i_mirrored = i >= bins ? 2*(bins-1)-i : i_mirrored;
+    real L_center = i*(1.0/(bins-1.0));
+    real dist = (L-L_center)/std;
+    U += weights[i_mirrored]*exp(-.5*dist*dist);
+  }
+  return U;
+}
+
 void log_meta_abf(System* system, int step){
   MetaAdaptiveBiasingForce* m_abf = system->enhanced->meta_abf;
   State* state = system->state;
   Msld* msld = system->msld;
-  if(step % m_abf->log_freq == 0){
+  if(m_abf->log_freq != 0 && step % m_abf->log_freq == 0){
     state->recv_energy();
     if(!m_abf->do_sample){ printf("NOT ADDING SAMPLES!!!!\n");}
     printf("Step %d, U_enhanced: %8.2f:\n", step, system->state->energy[eeenhanced]);
@@ -318,6 +340,15 @@ void log_meta_abf(System* system, int step){
       real factor = exp(-m_abf->meta_current_bias/(kT*(m_abf->temper_factor-1.0)));
       printf("Current Bias: %5.2f, Temper Factor: %5.2f,  Decay Factor: %5.2f\n", m_abf->meta_current_bias, m_abf->temper_factor, factor);
     }
+    real dG_meta = 0;
+    real dG_TI = 0;
+    if (m_abf->do_meta){
+      printf("Meta Weights: ");
+      print_real_array(m_abf->meta_weights, m_abf->n_bins);
+      printf("\n");
+      dG_meta = eval_weights_at_point(1, m_abf->meta_weights, m_abf->meta_std, m_abf->n_bins, m_abf->half_search_bins);
+      dG_meta -= eval_weights_at_point(0, m_abf->meta_weights, m_abf->meta_std, m_abf->n_bins, m_abf->half_search_bins);
+    }
     if (m_abf->do_abf){
       printf("Counts: ");
       print_real_array(m_abf->counts, m_abf->n_bins);
@@ -328,19 +359,15 @@ void log_meta_abf(System* system, int step){
       printf("std(dU/dL): ");
       print_real_array(m_abf->dUdL_std, m_abf->n_bins);
       printf("\n");
-      real sum = 0;
       real bin_width = 1.0/(m_abf->n_bins-1.0);
       for(int i = 0; i < m_abf->n_bins-1; i++){
-        sum += bin_width*(m_abf->dUdL_avg[i] + m_abf->dUdL_avg[i+1])/2.0;
+        dG_TI += bin_width*(m_abf->dUdL_avg[i] + m_abf->dUdL_avg[i+1])/2.0;
       }
       // index zero is l0=1, index n_bins-1 is l0=0
-      printf("dG sub0->sub1: %f\n", sum);
     }
-    if (m_abf->do_meta){
-      printf("Meta Bias: ");
-      print_real_array(m_abf->meta_weights, m_abf->n_bins);
-      printf("\n");
-    }
+    printf("dG_{0->1,meta}: %f\n", dG_meta);
+    printf("dG_{0->1,TI}: %f\n", dG_TI);
+    printf("dG_{0->1,combined}: %f\n", dG_meta+dG_TI);
     printf("\n");
   }
 };
@@ -350,8 +377,9 @@ void write_meta_abf(std::string dir_name, System* system, int step){
   MetaAdaptiveBiasingForce* m_abf = system->enhanced->meta_abf;
   if (step % m_abf->write_restart_freq == 0){
     std::string filename = dir_name + "/" +  m_abf->fnm_meta_abf;
+    std::string tmp_filename = filename + "_tmp";
     recv_meta_abf(system);
-    FILE* fp = fopen(filename.c_str(), "w");
+    FILE* fp = fopen(tmp_filename.c_str(), "w");
     if(!fp){
       printf("Error: could not open %s for writing!\n", filename.c_str());
       printf("Exiting...\n"); exit(1);
@@ -393,6 +421,10 @@ void write_meta_abf(std::string dir_name, System* system, int step){
     fprintf(fp, "\n");
     fflush(fp);
     fclose(fp);
+    if(rename(tmp_filename.c_str(), filename.c_str()) != 0){              
+      printf("Error: could not move %s to %s!\n", tmp_filename.c_str(), filename.c_str());  
+      printf("Exiting...\n"); exit(1);                                
+    }
   }
 };
 
@@ -400,67 +432,77 @@ void MetaAdaptiveBiasingForce::restart(System* system){
   std::string fnm = system->enhanced->output_dir + "/" + fnm_meta_abf;
   FILE* fp = fopen(fnm.c_str(), "r");
   if(!fp){
+    printf("MetaABF: output dir (%s)\n", system->enhanced->output_dir.c_str());
     printf("MetaABF: no restart file found (%s), starting fresh.\n", fnm.c_str());
     return;
   }
   printf("MetaABF: reading restart file %s\n", fnm.c_str());
 
-  char line[4096];
+  // Width-limited "%s" so the token read can never overflow `token`.
   char token[MAXLENGTHSTRING];
-  while(fgets(line, sizeof(line), fp)){
-    char* pos = line;
-    int nread=0;
-    if(sscanf(pos, "%s%n", token, &nread) != 1) continue;
-    pos += nread;
+  char tokfmt[16];
+  snprintf(tokfmt, sizeof(tokfmt), "%%%ds", MAXLENGTHSTRING - 1);
+
+  // Reads n_bins values into arr, into a double temp first so it works
+  // whether `real` is float or double. Fails loudly on a short read.
+  auto read_array = [&](real* arr, const char* name){
+    for(int i = 0; i < n_bins; i++){
+      double v;
+      if(fscanf(fp, " %lf", &v) != 1){
+        printf("Error: failed reading '%s' value %d of %d.\n", name, i, n_bins);
+        fclose(fp); exit(1);
+      }
+      arr[i] = (real)v;
+    }
+    printf("Read '%s' from file: ", name);
+    print_real_array(arr, n_bins);
+    printf("\n");
+  };
+
+  while(fscanf(fp, tokfmt, token) == 1){
     if(strcmp(token, "target_site") == 0){
       int read_target_site;
-      sscanf(pos, " %d", &read_target_site);
+      if(fscanf(fp, " %d", &read_target_site) != 1){
+        printf("Error: failed reading target_site value.\n"); fclose(fp); exit(1);
+      }
       if(read_target_site != target_site){
         printf("Warning: restart target_site (%d) differs from current target_site (%d). Using current.\n",
                read_target_site, target_site);
       }
     } else if(strcmp(token, "n_bins") == 0){
       int read_n_bins;
-      sscanf(pos, " %d", &read_n_bins);
+      if(fscanf(fp, " %d", &read_n_bins) != 1){
+        printf("Error: failed reading n_bins value.\n"); fclose(fp); exit(1);
+      }
       if(read_n_bins != n_bins){
         printf("Error: restart n_bins (%d) does not match current n_bins (%d)!\n",
                read_n_bins, n_bins);
-        printf("Exiting...\n"); exit(1);
+        printf("Exiting...\n"); fclose(fp); exit(1);
       }
     } else if(strcmp(token, "counts") == 0){
-      for(int i = 0; i < n_bins; i++){
-        nread = 0;
-        int read = sscanf(pos, " %f%n", &counts[i], &nread);
-        pos += nread;
-      }
+      read_array(counts, "counts");
     } else if(strcmp(token, "dUdL_m2") == 0){
-      for(int i = 0; i < n_bins; i++){
-        int nread = 0;
-        sscanf(pos, " %f%n", &dUdL_m2[i], &nread);
-        pos += nread;
-      }
+      read_array(dUdL_m2, "dUdL_m2");
     } else if(strcmp(token, "dUdL_avg") == 0){
-      for(int i = 0; i < n_bins; i++){
-        int nread = 0;
-        sscanf(pos, " %f%n", &dUdL_avg[i], &nread);
-        pos += nread;
-      }
+      read_array(dUdL_avg, "dUdL_avg");
     } else if(strcmp(token, "meta_weights") == 0){
-      for(int i = 0; i < n_bins; i++){
-        int nread = 0;
-        sscanf(pos, " %f%n", &meta_weights[i], &nread);
-        pos += nread;
-      }
+      read_array(meta_weights, "meta_weights");
     }
+    // Unrecognized tokens are consumed and ignored; because fscanf("%s")
+    // always advances, stray tokens/values can't cause an infinite loop.
   }
-
   fclose(fp);
 
-  // Update GPU memory with memory from file
-  cudaMemcpy(counts_d, counts, n_bins*sizeof(real), cudaMemcpyDefault);
-  cudaMemcpy(dUdL_m2_d, dUdL_m2, n_bins*sizeof(real), cudaMemcpyDefault);
-  cudaMemcpy(dUdL_avg_d, dUdL_avg, n_bins*sizeof(real), cudaMemcpyDefault);
-  cudaMemcpy(meta_weights_d, meta_weights, n_bins*sizeof(real), cudaMemcpyDefault);
+  // Compute std (fabs, not integer abs)
+  for(int i = 0; i < n_bins; i++){
+    dUdL_std[i] = fabs(counts[i]) > 1e-3 ? sqrt(dUdL_m2[i]/counts[i]) : 0;
+  }
 
+  // Update GPU memory with values from file
+  cudaMemcpy(counts_d,       counts,       n_bins*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(dUdL_m2_d,      dUdL_m2,      n_bins*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(dUdL_avg_d,     dUdL_avg,     n_bins*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(dUdL_std_d,     dUdL_std,     n_bins*sizeof(real), cudaMemcpyDefault);
+  cudaMemcpy(meta_weights_d, meta_weights, n_bins*sizeof(real), cudaMemcpyDefault);
   printf("MetaABF: restart complete.\n");
 };

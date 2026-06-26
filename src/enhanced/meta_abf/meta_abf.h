@@ -26,12 +26,12 @@ class MetaAdaptiveBiasingForce {
     bool do_restart=true;
     int target_site=1; // must have two substitiuents at this site
     int total_samples=0;
-    int n_bins=101; // number of bins
-    int abf_warmup=200; // number of samples before full activation
+    int n_bins=201; // number of bins
+    int abf_warmup=500; // number of samples before full activation
     int sample_freq=10; // 1/step
     real meta_bias_mag=0.005; 
     real meta_std=0.02;
-    real temper_factor=5; // units of kT
+    real temper_factor=10; // units of kT
     // Not optional
     real search_std = 6; // look this many std for gaussians
     real bin_width = 1.0/(n_bins-1);
@@ -51,11 +51,11 @@ class MetaAdaptiveBiasingForce {
     real* meta_weights=NULL;
     real* meta_weights_d=NULL;
     // Restart 
-    int write_restart_freq=10000;
+    int write_restart_freq=1000;
     std::string fnm_meta_abf = "meta_abf.rst";
     FILE* fp_meta_abf = NULL;
     // Logging
-    int log_freq=500000;
+    int log_freq=0;
 };
 
 void parse_meta_abf(char* line, MetaAdaptiveBiasingForce* meta_abf);

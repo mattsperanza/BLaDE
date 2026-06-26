@@ -26,10 +26,11 @@ void parse_enhanced(char* line, System* system){
   char token[MAXLENGTHSTRING];
 
   if (system->structure==NULL) {
-    fatal(__FILE__,__LINE__,"selections cannot be defined until structure has been defined\n");
+    fatal(__FILE__,__LINE__,"enhanced selections cannot be defined until structure has been defined\n");
   }
 
   if (system->enhanced==NULL) {
+    printf("Instantiating Enhanced class!\n");
     system->enhanced=new Enhanced();
   }
   Enhanced* nhcd = system->enhanced;
@@ -65,21 +66,18 @@ void parse_enhanced(char* line, System* system){
     }
     nhcd->nbrecip_mode=sel;
   } else if (strcmp(token, "meta_abf") == 0){ // init class
-    nhcd->meta_abf = new MetaAdaptiveBiasingForce();
+    if (!nhcd->meta_abf){
+      printf("Instantiating Meta-ABF!\n");
+      nhcd->meta_abf = new MetaAdaptiveBiasingForce();
+    } else {
+      printf("Already instantiated Meta-ABF, reusing exising one!\n");
+    }
   } else if (strcmp(token, "meta_abf_option") == 0){ // see meta_abf.cu for availible options
     if(!nhcd->meta_abf){
       printf("Meta_ABF not defined yet!\n");
       exit(1);
     }
     parse_meta_abf(line, nhcd->meta_abf);
-  } else if (strcmp(token, "osrw") == 0){ // init class
-    nhcd->osrw = new OrthogonalSpaceRandomWalk();
-  } else if (strcmp(token, "osrw_option") == 0){ // see osrw.cu for availible options
-    if(!nhcd->osrw){
-      printf("OSRW not defined yet!\n");
-      exit(1);
-    }
-    parse_osrw(line, nhcd->osrw);
   } else {
     printf("Didn't recognize option %s\n", token);
     exit(1);

@@ -32,15 +32,18 @@ class Run {
 
   std::string fnmXTC;
   std::string fnmLMD;
+  std::string fnmLMD_FRC;
   std::string fnmNRG;
   std::string fnmCPI;
   std::string fnmCPO;
   XDRFILE *fpXTC;
   XDRFILE *fpXLMD;
   FILE *fpLMD;
+  FILE *fpLMD_FRC;
   FILE *fpNRG;
   int freqXTC;
   int freqLMD;
+  int freqLMD_FRC;
   int freqNRG;
   bool hrLMD;
   bool prettyXTC;

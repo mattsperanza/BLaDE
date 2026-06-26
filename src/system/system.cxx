@@ -31,6 +31,7 @@ System::System() {
   structure=NULL;
   selections=NULL;
   msld=NULL;
+  enhanced=NULL;
   coordinates=NULL;
   enhanced=NULL;
   run=NULL;
@@ -50,6 +51,7 @@ System::~System() {
   if (structure) delete(structure);
   if (selections) delete(selections);
   if (msld) delete(msld);
+  if (enhanced) delete(enhanced);
   if (coordinates) delete(coordinates);
   if (run) delete(run);
   if (rngCPU) delete(rngCPU);
@@ -93,7 +95,7 @@ void System::setup_parse_system()
   parseSystem["msld"]=&System::parse_system_msld;
   helpSystem["msld"]="?msld> Set up MSLD data structures. Determines which atoms are in which groups, how to scale their interactions, and so on. Should be done after calls of structure, because if the indices of atoms change after calls to msld, an error will occur.\n";
   parseSystem["enhanced"]=&System::parse_system_enhanced;
-  helpSystem["enhanced"]="?enhanced> Set up enhanced sampling. Options include: simulated tempering and metadynamics";
+  helpSystem["enhanced"]="?enhanced> Set up enhanced sampling. Options include: meta_abf. Call with \"enhanced meta_abf\".";
   parseSystem["coordinates"]=&System::parse_system_coordinates;
   helpSystem["coordinates"]="?coordinates> Sets the initial conditions of the system, including starting spatial coordinates. Must be called after structure is complete, must be called before run.\n";
   parseSystem["run"]=&System::parse_system_run;
