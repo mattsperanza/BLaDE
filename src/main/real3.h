@@ -26,6 +26,37 @@ double atomicAdd(double* address, double val)
 }
 #endif
 
+__device__ inline double atomicMax(double* address, double val) {
+    unsigned long long int* address_as_ull = (unsigned long long int*)address;
+    unsigned long long int old = *address_as_ull, assumed;
+
+    do {
+        assumed = old;
+        if (__longlong_as_double(assumed) >= val) {
+            break;
+        }
+        old = atomicCAS(address_as_ull, assumed, __double_as_longlong(val));
+    } while (assumed != old);
+
+    return __longlong_as_double(old);
+}
+
+__device__ inline double atomicMin(double* address, double val) {
+    unsigned long long int* address_as_ull = (unsigned long long int*)address;
+    unsigned long long int old = *address_as_ull, assumed;
+
+    do {
+        assumed = old;
+        // Break early if the existing value is already smaller or equal
+        if (__longlong_as_double(assumed) <= val) {
+            break;
+        }
+        old = atomicCAS(address_as_ull, assumed, __double_as_longlong(val));
+    } while (assumed != old);
+
+    return __longlong_as_double(old);
+}
+
 __device__ static inline
 double atomicAdd(double* address, float val)
 {

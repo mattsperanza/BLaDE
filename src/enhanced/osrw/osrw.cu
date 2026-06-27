@@ -39,6 +39,8 @@ OrthogonalSpaceRandomWalk::~OrthogonalSpaceRandomWalk(){
   if(min_dUdL_id_d) cudaFree(min_dUdL_id_d);
   if(max_dUdL_id_d) cudaFree(max_dUdL_id_d);
   if(current_temper_bias_d) cudaFree(current_temper_bias_d);
+  if(min_L_max_dUdL_bias_d) cudaFree(min_L_max_dUdL_bias_d);
+  if(max_dUdL_bias_d) cudaFree(max_dUdL_bias_d);
 };
 
 void parse_osrw(char* line, OrthogonalSpaceRandomWalk* osrw){
@@ -51,12 +53,24 @@ void parse_osrw(char* line, OrthogonalSpaceRandomWalk* osrw){
     osrw->do_abf = io_nextb(line);
   } else if(strcmp(token, "do_meta") == 0){
     osrw->do_meta = io_nextb(line);
+    if (!osrw->do_meta) {
+      printf("Turning on sample_weighting since do_meta is false!!");
+      osrw->sample_weighting = true;
+    }
   } else if(strcmp(token, "do_sample") == 0){
     osrw->do_sample = io_nextb(line);
   } else if(strcmp(token, "do_restart") == 0){
     osrw->do_restart = io_nextb(line);
   } else if(strcmp(token, "do_temper") == 0){
     osrw->do_temper = io_nextb(line);
+  } else if(strcmp(token, "do_transition_temper") == 0){
+    osrw->do_transition_temper = io_nextb(line);
+  } else if (strcmp(token, "adaptive_gaussian") == 0){
+    osrw->adaptive_gaussian = io_nextb(line);
+    if(osrw->adaptive_gaussian){  // Not sure if we should keep this
+      printf("Turning on sample_weighting with adaptive gaussians!\n");
+      osrw->sample_weighting = true;
+    }
   } else if(strcmp(token, "remove_bonded") == 0){
     osrw->remove_bonded = io_nextb(line);
   } else if(strcmp(token, "remove_recip") == 0){
@@ -89,6 +103,8 @@ void parse_osrw(char* line, OrthogonalSpaceRandomWalk* osrw){
       printf("Temper factor less than or too close to 1.\n");
       exit(1);
     }
+  } else if (strcmp(token, "temper_threshold")==0){
+    osrw->temper_threshold=io_nextf(line);
   } else if(strcmp(token, "n_std_search") == 0){
     osrw->n_std_search = io_nexti(line);
   // ABF
@@ -124,7 +140,12 @@ void OrthogonalSpaceRandomWalk::initialize(System* system){
     printf("Exiting...\n"); exit(1);
   }
   half_search_bins_L    = (int) ceil(n_std_search * meta_L_std    / bin_width_L);
-  half_search_bins_dUdL = (int) ceil(n_std_search * meta_dUdL_std / bin_width_dUdL);
+  if (adaptive_gaussian) {
+    lower_dUdL_std = 2*dUdL_res;
+    half_search_bins_dUdL = (int) ceil(n_std_search * upper_dUdL_std / bin_width_dUdL);
+  } else {
+    half_search_bins_dUdL = (int) ceil(n_std_search * meta_dUdL_std / bin_width_dUdL);
+  }
   if(half_search_bins_L > n_L_bins-1){
     printf("OSRW: requested L search wider than the [0,1] interval. The reflecting boundary "
            "does not support multiple reflections. Reduce meta_L_std or n_std_search!\n");
@@ -177,6 +198,11 @@ void OrthogonalSpaceRandomWalk::initialize(System* system){
   cudaMalloc(&current_temper_bias_d, sizeof(real));
   cudaMemset(current_temper_bias_d, 0, sizeof(real));
 
+  cudaMalloc(&max_dUdL_bias_d, n_L_bins*sizeof(real));
+  cudaMemset(max_dUdL_bias_d, 0, n_L_bins*sizeof(real));
+  cudaMalloc(&min_L_max_dUdL_bias_d, sizeof(double));
+  cudaMemset(min_L_max_dUdL_bias_d, 0, sizeof(double));
+
   if(do_restart) restart(system);
 
   // ----- Validate target site -----
@@ -187,6 +213,20 @@ void OrthogonalSpaceRandomWalk::initialize(System* system){
   if(system->msld->blocksPerSite[target_site] != 2){
     printf("OSRW can only be applied on a site with exactly 2 substituents!\n");
     exit(1);
+  }
+
+  if (!do_meta){
+    printf("Turning on sample weighting to compute correct average forces without meta weights!\n");
+    sample_weighting=true;
+  }
+
+  if (adaptive_gaussian){
+    if (do_temper && !do_transition_temper){
+      printf("Cannot do adaptive gaussian std with well tempered metadynamics! Exiting...\n");
+      exit(1);
+    }
+    printf("Turning on sample weighting to compute correct average forces with adaptive gaussian!\n");
+    sample_weighting=true;
   }
 
   init = true;
@@ -202,11 +242,13 @@ static int __device__ histogram_index(real F, int n_bins, real fmin, real fmax){
 void __global__ getforce_osrw_meta_kernel(
   int n_L, int n_F, real fmin, real fmax,
   int search_L, int search_F,
-  real bias_mag, real L_std, real dUdL_std,
+  real bias_mag, real L_std, real fixed_dUdL_std,
   real* lambda, real* dUdL_tot, real* dUdL_bonded, real* dUdL_recip, real* dUdL_restrain,
   real* hist_weights_2D,
   bool update_potential, 
   real* current_bias, real kT, real temper_factor,
+  bool adaptive, real* dUdL_std_arr, real lower_std, real upper_std,
+  real* counts_1D,
   // Outputs
   real* hist_potential_2D,
   real* lambdaForce, real* dGdF, real_e* energy)
@@ -247,8 +289,27 @@ void __global__ getforce_osrw_meta_kernel(
     if(jb >= n_L){ jb = (n_L-1) - (jb-(n_L-1)); }
     if(jb == 0 || jb == n_L-1){ mirror_factor = 2.0; } // edge double counting 
     if(k >= 0 && k < n_F && jb >= 0 && jb < n_L){ // don't index outside
+      // Adaptive gaussian
+      real c = 1.0/5.0;
+      int start = 30;
+      int ramp_length = 20;
+      if (adaptive && counts_1D[jb] >= start){ // update dUdL std
+        real smoothed_std = 0;
+        if(jb == 0){ // for edge bins, account for mirror (factor of two cancels)
+          smoothed_std = (2*dUdL_std_arr[jb+1] + dUdL_std_arr[jb])/3;
+        } else if (jb == n_L-1){
+          smoothed_std = (2*dUdL_std_arr[jb-1] + dUdL_std_arr[jb])/3;
+        } else {
+          smoothed_std = (dUdL_std_arr[jb-1] + dUdL_std_arr[jb] + dUdL_std_arr[jb+1])/3;
+        }
+        real tmp_std = c*smoothed_std;
+        tmp_std = min(upper_std, tmp_std);
+        tmp_std = max(lower_std, tmp_std);
+        real ramp = min(1.0, (counts_1D[jb] - start)/ramp_length); // interpolate 0->1 over 20 samples
+        fixed_dUdL_std = (1-ramp)*fixed_dUdL_std + ramp*tmp_std;
+      }
       real dL = (L - L_center)/L_std;
-      real dF = (F - F_center)/dUdL_std;
+      real dF = (F - F_center)/fixed_dUdL_std;
       real gL = exp(-0.5*dL*dL);
       real gF = exp(-0.5*dF*dF);
       if (!update_potential) { // force call, compute force from grid of bins
@@ -256,7 +317,7 @@ void __global__ getforce_osrw_meta_kernel(
         real bias = bias_mag*mirror_factor*h*gL*gF;
         lEnergy = bias;
         real dGdL = -(dL/L_std)*bias; // dV/dL
-        real dGdF_local = -(dF/dUdL_std)*bias; // dV/dF
+        real dGdF_local = -(dF/fixed_dUdL_std)*bias; // dV/dF
         atomicAdd(&lambdaForce[1], dGdL);
         atomicAdd(&dGdF[1], dGdF_local);
         atomicAdd(&dGdF[0], -dGdF_local);
@@ -278,7 +339,7 @@ void __global__ reweight_dUdL_kernel(
   int* min_dUdL_id, int* max_dUdL_id,
   bool sample_weighting, 
   // Outputs
-  real* ensemble_dUdL, real* std_dUdL)
+  real* ensemble_dUdL, real* std_dUdL, real* max_dUdL_bias)
 {
   int X = blockIdx.x*blockDim.x + threadIdx.x; // L bin
   int curr_bin = histogram_index(lambdas[1], n_L, 0.0, 1.0);
@@ -292,10 +353,12 @@ void __global__ reweight_dUdL_kernel(
   real w_dUdL2 = 0.0; // sum w * <dU/dL>^2 (for variance)
   int low_id = min_dUdL_id[X];
   int high_id = max_dUdL_id[X];
+  real bias_max = 0;
   for(int Y = low_id; Y <= high_id; Y++){
     int idx = X*n_F + Y;
     if(counts_2D[idx] < 1e-5){ continue; } // skip unsampled bins
     real bias = temper_correction * potential_2D[idx] / kT;
+    bias_max = potential_2D[idx] > bias_max ? potential_2D[idx] : bias_max;
     if(bias > offset){
       real corr = exp(offset - bias);
       wsum *= corr;
@@ -306,9 +369,10 @@ void __global__ reweight_dUdL_kernel(
     real w = exp(bias - offset);
     w *= sample_weighting ? counts_2D[idx] : 1.0;
     real mean = avg_2D[idx];
+    real within_var = m2_2D[idx] / counts_2D[idx];
     wsum += w;
     w_dUdL += w * mean;
-    w_dUdL2 += w * mean * mean;
+    w_dUdL2 += w * (mean * mean + within_var); // law of total variance: https://en.wikipedia.org/wiki/Law_of_total_variance
   }
 
   real ens = 0.0, ens2 = 0.0;
@@ -318,6 +382,15 @@ void __global__ reweight_dUdL_kernel(
   }
   std_dUdL[X] = sqrt(ens2 - ens*ens);
   ensemble_dUdL[X] = ens;
+  max_dUdL_bias[X] = bias_max;
+}
+
+void __global__ min_L_kernel(int n_L, real* max_dUdL_bias, double* min_L_max_dUdL_bias)
+{
+  int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if (i < n_L){
+    atomicMin(min_L_max_dUdL_bias, (double)max_dUdL_bias[i]);
+  }
 }
 
 void update_osrw_potential(System* system){
@@ -340,6 +413,8 @@ void update_osrw_potential(System* system){
       osrw->hist_weights_2D_d,
       true, // update potential
       osrw->current_temper_bias_d, kB*system->run->T, osrw->temper_factor,
+      osrw->adaptive_gaussian, osrw->std_dUdL_d, osrw->lower_dUdL_std, osrw->upper_dUdL_std,
+      osrw->lambda_counts_1D_d,
       // Outputs (lambda force at the site, and dGdF at the site)
       osrw->potential_2D_d,
       &state->lambdaForce_d[id], &osrw->dGdF_d[id], NULL);
@@ -348,25 +423,30 @@ void update_osrw_potential(System* system){
   // Eq: 7 in: Annu. Rev. Phys. Chem. 2016. 67:159–84 to convert WT potential into -'ve FES
   // Large temper_factor => correction = 1  (untempered limit)
   // Small temper_factor => correction = large (unbiased limit)
-  real temper_correction = osrw->do_temper ? 1.0/(1.0 - 1.0/osrw->temper_factor) : 1.0;
+  real temper_correction = osrw->do_temper && !osrw->do_transition_temper ? 1.0/(1.0 - 1.0/osrw->temper_factor) : 1.0;
   int L_update = 2*osrw->half_search_bins_L + 1;
   reweight_dUdL_kernel<<<(L_update+BLBO-1)/BLBO, BLBO, 0, run->enhancedStream>>>(
     osrw->n_L_bins, osrw->n_dUdL_bins, L_update, &state->lambda_fd[id], kB*run->T, temper_correction, 
     osrw->lambda_counts_2D_d, osrw->avg_dUdL_2D_d, osrw->m2_dUdL_2D_d, osrw->potential_2D_d,
     osrw->min_dUdL_id_d, osrw->max_dUdL_id_d,
     osrw->sample_weighting, 
-    osrw->ensemble_dUdL_d, osrw->std_dUdL_d);
+    osrw->ensemble_dUdL_d, osrw->std_dUdL_d, osrw->max_dUdL_bias_d);
+  if (osrw->do_transition_temper){
+    double upper = 10000;
+    cudaMemcpy(osrw->min_L_max_dUdL_bias_d, &upper, sizeof(double), cudaMemcpyDefault);
+    min_L_kernel<<<(osrw->n_L_bins+BLBO-1)/BLBO, BLBO, 0, run->enhancedStream>>>(osrw->n_L_bins, osrw->max_dUdL_bias_d, osrw->min_L_max_dUdL_bias_d);
+  }
 }
 
 void __global__ add_sample_osrw_kernel(
   int n_L, int n_F, real fmin, real fmax,
-  real kT, bool do_temper, 
-  real temper_factor, real* potential_2D,
+  real kT, bool do_temper, bool do_transition_temper,
+  real temper_factor, real trans_thresh, real* potential_2D,
   real* lambda, real* lambdaForce, real* dUdL_BA, real* dUdL_recip, real* dUdL_restrain,
   int* min_dUdL_id, int* max_dUdL_id,
   // Outputs
   real* counts_1D, real* counts_2D, real* weights_2D,
-  real* avg_2D, real* m2_2D, real* current_temper_bias)
+  real* avg_2D, real* m2_2D, real* current_temper_bias, double* min_L_max_dUdL)
 {
   real L = 1.0 - lambda[0];
   real dUdL_total = lambdaForce[1] - lambdaForce[0];
@@ -397,9 +477,12 @@ void __global__ add_sample_osrw_kernel(
   avg_2D[idx] += prev_delta / counts_2D[idx];
   m2_2D[idx]  += prev_delta * (dUdL_total - avg_2D[idx]);
 
-  // Add meta sample to (L, dU_cv/dL) - Tempered - Eq: 13 in: Annu. Rev. Phys. Chem. 2016. 67:159–84
+  // Add meta sample to (L, dU_cv/dL)
+  // Tempered - Eq: 13 in: Annu. Rev. Phys. Chem. 2016. 67:159–84
+  // Transition Tempered - Eq. 2 in: J. Chem. Theory Comput. 2014, 10, 9, 3626–3633
   current_temper_bias[0] = potential_2D[idx];
   real factor = do_temper ? exp(-current_temper_bias[0]/((temper_factor-1.0)*kT)) : 1.0;
+  factor = do_temper && do_transition_temper ? exp(-max(min_L_max_dUdL[0]-trans_thresh, 0.0)/((temper_factor-1.0)*kT)) : factor;
   weights_2D[idx] += factor;
 }
 
@@ -415,13 +498,13 @@ void sample_osrw(System* system, int step){
     real* restrain = state->dUdL_restrain_d ? &state->dUdL_restrain_d[id] : NULL;
     add_sample_osrw_kernel<<<1, 1, 0, run->enhancedStream>>>(
       osrw->n_L_bins, osrw->n_dUdL_bins, osrw->dUdL_min, osrw->dUdL_max,
-      kB*run->T, osrw->do_temper, 
-      osrw->temper_factor, osrw->potential_2D_d,
+      kB*run->T, osrw->do_temper, osrw->do_transition_temper,
+      osrw->temper_factor, osrw->temper_threshold, osrw->potential_2D_d,
       &state->lambda_fd[id], &state->lambdaForce_d[id], bonded, recip, restrain,
       osrw->min_dUdL_id_d, osrw->max_dUdL_id_d,
       // Outputs
       osrw->lambda_counts_1D_d, osrw->lambda_counts_2D_d, osrw->hist_weights_2D_d,
-      osrw->avg_dUdL_2D_d, osrw->m2_dUdL_2D_d, osrw->current_temper_bias_d);
+      osrw->avg_dUdL_2D_d, osrw->m2_dUdL_2D_d, osrw->current_temper_bias_d, osrw->min_L_max_dUdL_bias_d);
     update_osrw_potential(system);
   }
 };
@@ -497,6 +580,8 @@ void getforce_osrw(System* system, int step, bool calcEnergy){
         osrw->hist_weights_2D_d,
         false, // update potential
         osrw->current_temper_bias_d, kB*system->run->T, osrw->temper_factor,
+        osrw->adaptive_gaussian, osrw->std_dUdL_d, osrw->lower_dUdL_std, osrw->upper_dUdL_std,
+        osrw->lambda_counts_1D_d,
         // Outputs (lambda force at the site, and dGdF at the site)
         osrw->potential_2D_d,
         &state->lambdaForce_d[id], &osrw->dGdF_d[id], pEnergy);
@@ -582,30 +667,37 @@ void log_osrw(System* system, int step){
 
     if(osrw->do_temper){
       real kT = kB*system->run->T;
-      real mb;
-      cudaMemcpy(&mb, osrw->current_temper_bias_d, sizeof(real), cudaMemcpyDefault);
-      real factor = exp(-mb/(kT*(osrw->temper_factor-1)));
-      printf("Current Tempering Bias: %5.2f, Temper Factor: %5.2f, Decay: %5.2f\n",
+      real factor;
+      if (osrw->do_transition_temper){
+        double mb=0;
+        cudaMemcpy(&mb, osrw->min_L_max_dUdL_bias_d, sizeof(double), cudaMemcpyDefault);
+        factor = exp(-max(mb-osrw->temper_threshold, 0.0)/(kT*(osrw->temper_factor-1)));
+        printf("Transition Tempering Bias: %5.2f, Temper Threshold: %5.2f, Temper Factor: %5.2f, Decay: %5.2f\n",
+             (float)mb, osrw->temper_threshold, osrw->temper_factor, factor);
+      } else {
+        real mb=0;
+        cudaMemcpy(&mb, osrw->current_temper_bias_d, sizeof(real), cudaMemcpyDefault);
+        factor = exp(-mb/(kT*(osrw->temper_factor-1)));
+        printf("Tempering Bias: %5.2f, Temper Factor: %5.2f, Decay: %5.2f\n",
              mb, osrw->temper_factor, factor);
-    }
-    if(osrw->do_abf){
-      printf("Counts: ");
-      osrw_print_real_array(osrw->lambda_counts_1D, osrw->n_L_bins);
-      printf("\n");
-      printf("<dU/dL>: ");
-      osrw_print_real_array(osrw->ensemble_dUdL, osrw->n_L_bins);
-      printf("\n");
-      printf("std[dU/dL]: ");
-      osrw_print_real_array(osrw->std_dUdL, osrw->n_L_bins);
-      printf("\n");
-      // dG 0->1 via trapezoidal integral of <dU/dL> over L in [0,1]
-      real sum = 0;
-      real bw = 1.0/(osrw->n_L_bins-1.0);
-      for(int i = 0; i < osrw->n_L_bins-1; i++){
-        sum += bw*(osrw->ensemble_dUdL[i] + osrw->ensemble_dUdL[i+1])/2.0;
       }
-      printf("dG sub0->sub1: %f\n", sum);
     }
+    printf("Counts: ");
+    osrw_print_real_array(osrw->lambda_counts_1D, osrw->n_L_bins);
+    printf("\n");
+    printf("<dU/dL>: ");
+    osrw_print_real_array(osrw->ensemble_dUdL, osrw->n_L_bins);
+    printf("\n");
+    printf("std[dU/dL]: ");
+    osrw_print_real_array(osrw->std_dUdL, osrw->n_L_bins);
+    printf("\n");
+    // dG 0->1 via trapezoidal integral of <dU/dL> over L in [0,1]
+    real sum = 0;
+    real bw = 1.0/(osrw->n_L_bins-1.0);
+    for(int i = 0; i < osrw->n_L_bins-1; i++){
+      sum += bw*(osrw->ensemble_dUdL[i] + osrw->ensemble_dUdL[i+1])/2.0;
+    }
+    printf("dG sub0->sub1: %f\n", sum);
     printf("\n");
   }
 };

@@ -28,6 +28,8 @@ class OrthogonalSpaceRandomWalk {
     bool do_sample=true; 
     bool do_restart=true;
     bool do_temper=true;
+    bool do_transition_temper=true;
+    bool adaptive_gaussian=true;
 
     // Options - enhance specific DOF
     bool remove_bonded=false;
@@ -39,17 +41,21 @@ class OrthogonalSpaceRandomWalk {
 
     // Options - Grid/Meta
     real L_res = 0.005; // L in [0,1]
-    real dUdL_res = 2.0;
-    real dUdL_max = 2500;
+    real dUdL_res = 1;
+    real dUdL_max = 5000;
     real meta_bias_mag=0.005; 
     real meta_L_std=0.01;
     real meta_dUdL_std=4.00;
-    real temper_factor=5; 
-    int n_std_search = 6; 
+    real temper_factor = 3; 
+    real temper_threshold = 2;
+    int n_std_search = 5; 
+
+    real lower_dUdL_std = 2.0; // adaptive gaussian limits
+    real upper_dUdL_std = 50.0;
 
     // Options - ABF
     int abf_warmup=0; // number of samples before full activation
-    int update_abf_freq=1000; // number of samples before <dU/dL> gets updated for ABF
+    int update_abf_freq=2000; // number of samples before <dU/dL> gets updated for ABF
 
     // Derived Parameters - Not optional
     real dUdL_min=-dUdL_max;
@@ -88,6 +94,9 @@ class OrthogonalSpaceRandomWalk {
     int* max_dUdL_id_d=NULL;
 
     real* current_temper_bias_d=NULL;
+
+    real* max_dUdL_bias_d=NULL;
+    double* min_L_max_dUdL_bias_d=NULL;
 
     // Restart 
     int write_restart_freq=10000;
