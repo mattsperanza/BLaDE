@@ -910,6 +910,18 @@ void Msld::calc_thetaForce_from_lambdaForce(cudaStream_t stream,System *system)
   }
 }
 
+void Msld::calc_thetaForce_from_lambdaForce(cudaStream_t stream,System *system,real* output)
+{
+  State *s=system->state;
+  if (!fix) { // ffix
+    calc_thetaForce_from_lambdaForce_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
+      s->lambda_fd,s->theta_fd,
+      s->lambdaForce_d,output,
+      blockCount,lambdaSite_d,siteBound_d,fnex,
+      new_implicit, theta0_d, dcdt_d);
+  }
+}
+
 __global__ void getforce_fixedBias_kernel(real *lambda,real *lambdaBias,real_f *lambdaForce,real_e *energy,int blockCount)
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;

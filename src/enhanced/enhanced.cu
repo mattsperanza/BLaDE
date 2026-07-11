@@ -85,7 +85,7 @@ void parse_enhanced(char* line, System* system){
 // Gets called each time a new "run" function is called like "run dynamics" or "run minimize"
 void Enhanced::initialize(System* system){
   printf("Initializing Enhanced Class!\n");
-  if(meta_abf && !meta_abf->init) meta_abf->initialize(system); 
+  if(meta_abf) meta_abf->initialize(system); 
   init = true; 
 }
 
@@ -94,12 +94,12 @@ void getforce_enhanced(System* system, int step, bool calcEnergy){
   if (system->run->calcTermFlag[eeenhanced]==false) return;
   bool pressure = step == 0;
   if(nhcd->meta_abf){
-    // internal sample/write/log frequency checks
-    if (!pressure) { // sampling needs to be first
-      sample_meta_abf(system, step); 
-    }
-    getforce_meta_abf(system, step, calcEnergy);
-    if (!pressure) {
+    nhcd->meta_abf->step_reset(system);
+    nhcd->meta_abf->compute_CV(system);
+    getforce_meta_abf(system, step, calcEnergy); // Uabf and Umeta & derivatives w.r.t. cv 
+    nhcd->meta_abf->apply_chain_rule(system); // apply dU/dcv*dcv/dX
+    if (!pressure) { // internal sample/write/log frequency checks
+      sample_meta_abf(system, step); // needs current meta potential for tempering
       write_meta_abf(nhcd->output_dir, system, step); 
       log_meta_abf(system, step);
     };

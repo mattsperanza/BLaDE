@@ -606,7 +606,7 @@ void Run::dynamics_initialize(System *system)
   system->potential->initialize(system);
 
   // don't delete so options don't need to be reset?
-  if (system->enhanced && !system->enhanced->init) system->enhanced->initialize(system);
+  if (system->enhanced) system->enhanced->initialize(system);
 
   // Rectify bond constraints
   holonomic_rectify(system);
