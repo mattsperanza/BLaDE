@@ -61,6 +61,14 @@ class Msld {
   real imp_alpha = 10;
   real imp_xi = 0;
 
+  // lb <= L' <= ub through another (very simple) layer of remapping 
+  // L'(T) = lb + (ub-lb)*L(T); assuming 0 <= L(T) <= 1, this breaks the explicit L1' + L2' = 1
+  // This remapping causes "run test alchemical" to fail by a factor of (ub-lb). Use "run test alchemical-theta"
+  real_x* lambda_lb; 
+  real_x* lambda_lb_d; // defaults to 0
+  real_x* lambda_ub; 
+  real_x* lambda_ub_d; // defaults to 1
+
   bool scaleTerms[6]; // bond,ureyb,angle,dihe,impr,cmap
 
   int variableBiasCount;
@@ -89,6 +97,9 @@ class Msld {
   bool useSoftCore;
   bool useSoftCore14;
   int msldEwaldType; // 1=normal scaling 2=normal scaling squared self interactions 3=correct scaling
+  // Don't know siteCount until "initialize" gets called
+  bool* linearDirect; // [blockCount which is > siteCount] true=scale intra-sub nonbonded by L, false=scale intra-sub nonbonded by L^2
+  bool* linearDirect_d; // [siteCount] the first
 
   real kRestraint;
   // Discrete solvent linear correction (kChargerRestraint1)

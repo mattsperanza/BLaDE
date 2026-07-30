@@ -104,6 +104,7 @@ __global__ void getforce_nbdirect_kernel(
   const real3* __restrict__ position,
   real3_f* __restrict__ force,
   box_type box,
+  const bool* __restrict__ linearDirect,
   const real* __restrict__ lambda,
   real_f* __restrict__ lambdaForce,
   real_e* __restrict__ energy)
@@ -134,6 +135,7 @@ __global__ void getforce_nbdirect_kernel(
   real fli,flj,fljtmp;
   int bi,bj,bjtmp;
   real li,lj,ljtmp,lixljtmp;
+  bool linDirecti;
   real rEff,dredr,dredll; // Soft core stuff
   int exclAddress, exclMask;
 
@@ -153,6 +155,7 @@ __global__ void getforce_nbdirect_kernel(
       bi=inp.siteBlock;
       li=1;
       if (bi) li=lambda[0xFFFF & bi];
+      linDirecti=linearDirect[bi >> 16]; // gets the site
       }
     }
     // iBlockVolume=blockVolume[iBlock];
@@ -242,7 +245,7 @@ __global__ void getforce_nbdirect_kernel(
             if (r<cutoffs.rCut) {
               // Scaling
               if (calcAlch) {
-              if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) {
+              if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000) && linDirecti) {
                 if (bi==bjtmp) {
                   lixljtmp=li;
                 } else {
@@ -403,7 +406,7 @@ __global__ void getforce_nbdirect_kernel(
                 } else {
                   fljtmp=eij;
                 }
-                if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000)) {
+                if ((bi&0xFFFF0000)==(bjtmp&0xFFFF0000) && linDirecti) {
                   if (bi==bjtmp) {
                     fli+=fljtmp;
                   }
@@ -499,6 +502,7 @@ void getforce_nbdirectTTTTT(System *system,box_type box)
   State *s=system->state;
   Run *r=system->run;
   Domdec *d=system->domdec;
+  Msld* m=system->msld;
   int id=d->id;
   int startBlock=d->blockCount[id];
   int endBlock=d->blockCount[id+1];
@@ -519,7 +523,7 @@ void getforce_nbdirectTTTTT(System *system,box_type box)
 #else
     p->vdwParameters_d,
 #endif
-    system->domdec->blockExcls_d,system->run->cutoffs,d->localPosition_d,d->localForce_d,box,s->lambda_fd,s->lambdaForce_d,pEnergy);
+    system->domdec->blockExcls_d,system->run->cutoffs,d->localPosition_d,d->localForce_d,box,m->linearDirect_d,s->lambda_fd,s->lambdaForce_d,pEnergy);
   gpuCheck(cudaGetLastError());
 
   system->domdec->unpack_forces(system);

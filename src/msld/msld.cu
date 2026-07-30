@@ -50,6 +50,11 @@ Msld::Msld() {
   theta0_d=NULL;
   dcdt_d=NULL;
 
+  lambda_lb=NULL; 
+  lambda_lb_d=NULL;
+  lambda_ub=NULL; 
+  lambda_ub_d=NULL;
+
   for (int i=0; i<6; i++) {
     scaleTerms[i]=true;
   }
@@ -75,6 +80,9 @@ Msld::Msld() {
   atomRestraintBounds_d=NULL;
   atomRestraintIdx=NULL;
   atomRestraintIdx_d=NULL;
+
+  linearDirect=NULL;
+  linearDirect_d=NULL;
 
   useSoftCore=false;
   useSoftCore14=false;
@@ -124,6 +132,14 @@ Msld::~Msld() {
   if (theta0_d) gpuCheck(cudaFree(theta0_d));
   if (dcdt_d) gpuCheck(cudaFree(dcdt_d));
   if (blockFixed_d) gpuCheck(cudaFree(blockFixed_d));
+
+  if (lambda_lb) free(lambda_lb);
+  if (lambda_lb_d) gpuCheck(cudaFree(lambda_lb_d));
+  if (lambda_ub) free(lambda_ub);
+  if (lambda_ub_d) gpuCheck(cudaFree(lambda_ub_d));
+
+  if (linearDirect) free(linearDirect);
+  if (linearDirect_d) gpuCheck(cudaFree(linearDirect_d));
 
   if (blocksPerSite) free(blocksPerSite);
   if (blocksPerSite_d) gpuCheck(cudaFree(blocksPerSite_d));
@@ -181,12 +197,21 @@ void parse_msld(char *line,System *system)
     for (i=0; i<system->msld->blockCount; i++) {
       system->msld->blockFixed[i]=false;
     }
+    system->msld->lambda_lb=(real_x*)calloc(system->msld->blockCount,sizeof(real_x));
+    system->msld->lambda_ub=(real_x*)calloc(system->msld->blockCount,sizeof(real_x));
+    for (int i = 0; i < system->msld->blockCount; i++){ system->msld->lambda_ub[i] = 1.0; }
+    system->msld->linearDirect=(bool*)calloc(system->msld->blockCount,sizeof(bool)); // gpu mem of length [siteCount] created 
+    for(int i = 0; i < system->msld->blockCount; i++) {system->msld->linearDirect[i] = true;}
 
     gpuCheck(cudaMalloc(&(system->msld->atomBlock_d),system->structure->atomCount*sizeof(int)));
     gpuCheck(cudaMalloc(&(system->msld->lambdaSite_d),system->msld->blockCount*sizeof(int)));
     gpuCheck(cudaMalloc(&(system->msld->lambdaBias_d),system->msld->blockCount*sizeof(real)));
     gpuCheck(cudaMalloc(&(system->msld->lambdaCharge_d),system->msld->blockCount*sizeof(real)));
     gpuCheck(cudaMalloc(&(system->msld->netCharge_d),sizeof(real)));
+    gpuCheck(cudaMalloc(&(system->msld->lambda_lb_d),system->msld->blockCount*sizeof(real_x)));
+    gpuCheck(cudaMalloc(&(system->msld->lambda_ub_d),system->msld->blockCount*sizeof(real_x)));
+    gpuCheck(cudaMemcpy(system->msld->lambda_lb_d, system->msld->lambda_lb, system->msld->blockCount*sizeof(real_x), cudaMemcpyDefault));
+    gpuCheck(cudaMemcpy(system->msld->lambda_ub_d, system->msld->lambda_ub, system->msld->blockCount*sizeof(real_x), cudaMemcpyDefault));
 
     // NYI - this would be a lot easier to read if these were split in to parsing functions.
     printlog("NYI - Initialize all blocks in first site %s:%d\n",__FILE__,__LINE__);
@@ -355,6 +380,13 @@ void parse_msld(char *line,System *system)
     if (system->msld->msldEwaldType<=0 || system->msld->msldEwaldType>3) {
       fatal(__FILE__,__LINE__,"Invalid choice of %d for msld ewaldtype. Must choose 1, 2, or 3 (default 2).\n",system->msld->msldEwaldType);
     }
+  } else if (strcmp(token, "linearDirect")==0){
+    int site=io_nexti(line);
+    if(site < system->msld->blockCount){
+      system->msld->linearDirect[site]=io_nextb(line);
+    } else {
+      fatal(__FILE__,__LINE__,"Site %d exceeds number of blocks %d.\n",site,system->msld->blockCount);
+    }
   } else if (strcmp(token,"parameter")==0) {
     std::string parameterToken=io_nexts(line);
     if (parameterToken=="krestraint") {
@@ -460,6 +492,14 @@ void parse_msld(char *line,System *system)
     system->msld->imp_alpha=io_nextf(line);
   } else if (strcmp(token, "imp_xi")==0){
     system->msld->imp_xi=io_nextf(line);
+  } else if (strcmp(token, "lambda_bounds")==0){
+    int blocki = io_nexti(line);
+    if(blocki < system->msld->blockCount){
+      system->msld->lambda_lb[blocki] = io_nextf(line);
+      system->msld->lambda_ub[blocki] = io_nextf(line);
+    } else {
+      fatal(__FILE__,__LINE__,"Cannot assign bounds to block %d which exceeds nblocks %d", blocki, system->msld->blockCount);
+    }
   } else if (strcmp(token,"print")==0) {
     system->selections->dump();
   } else {
@@ -613,8 +653,42 @@ bool Msld::cmap_scaling(int idx[8],int siteBlock[3])
 }
 
 void Msld::nb14_scaling(int idx[2],int siteBlock[2])
-{
-  nonbonded_scaling(idx,siteBlock,2);
+{ // TODO: Test this works
+  //nonbonded_scaling(idx,siteBlock,2);
+  int Nat=2;
+  int i,j;
+  int ab;
+  int Nsc=Nat;
+  int block[NscMAX+2]={0}; // First term is blockCount, last term is for error checking
+  block[0]=blockCount;
+
+  if (Nsc>NscMAX) {
+    fatal(__FILE__,__LINE__,"Nsc=%d greater than NscMAX=%d\n",Nsc,NscMAX);
+  }
+
+  int ab0 = atomBlock[idx[0]];
+  int ab1 = atomBlock[idx[1]];
+  if(ab0 == ab1 && !linearDirect[lambdaSite[ab0]]){
+    // intra-substituent interactions where L^2 scaling was requested
+    // Order doesn't matter
+    block[1] = ab0;
+    block[2] = ab1;
+  } else {
+    // Sort into a descending list with no duplicates.
+    for (i=1; i<Nsc+2; i++) {
+      for (j=0; j<Nat; j++) {
+        ab=atomBlock[idx[j]];
+        if (ab>block[i] && ab<block[i-1]) {
+          block[i]=ab;
+        }
+      }
+    }
+  }
+
+  for (i=0; i<Nsc; i++) {
+    siteBlock[i]=merge_site_block(lambdaSite[block[i+1]],block[i+1]);
+  }
+
   if ((siteBlock[0]!=siteBlock[1]) && ((siteBlock[0]&0xFFFF0000)==(siteBlock[1]&0xFFFF0000))) {
     fatal(__FILE__,__LINE__,"Illegal 14 interaction between atom %d and %d\n",idx[0],idx[1]);
   }
@@ -746,6 +820,13 @@ void Msld::initialize(System *system)
   gpuCheck(cudaMalloc(&blockFixed_d, blockCount*sizeof(bool)));
   gpuCheck(cudaMemcpy(blockFixed_d, blockFixed, blockCount*sizeof(bool), cudaMemcpyHostToDevice));
 
+  // update the lambda lb and ub based on input commands
+  gpuCheck(cudaMemcpy(lambda_lb_d, lambda_lb, blockCount*sizeof(real_x), cudaMemcpyDefault));
+  gpuCheck(cudaMemcpy(lambda_ub_d, lambda_ub, blockCount*sizeof(real_x), cudaMemcpyDefault));
+
+  gpuCheck(cudaMalloc(&linearDirect_d, siteCount*sizeof(bool)));
+  gpuCheck(cudaMemcpy(linearDirect_d, linearDirect, siteCount*sizeof(bool), cudaMemcpyDefault));
+
   // Zero mass and velocity for fixed blocks so integrator skips them
   // (isfinite(1/sqrt(0)) == false, so update kernels won't touch these DOFs)
   for (i=0; i<blockCount; i++) {
@@ -864,7 +945,7 @@ __global__ void calc_lambda_from_theta_kernel(
   real_x *lambda,real_x *theta,
   int siteCount,int *siteBound,real fnex,
   bool new_implicit, real_x* theta0, real* dcdt,
-  bool *blockFixed
+  bool *blockFixed, real_x* lambda_lb, real_x* lambda_ub
 )
 {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -904,6 +985,9 @@ __global__ void calc_lambda_from_theta_kernel(
         dcdt[j] /= norm;
       }
     }
+    for(j=ji; j<jf; j++){ // apply lb and ub mapping
+      lambda[j] = lambda_lb[j] + (lambda_ub[j]-lambda_lb[j])*lambda[j];
+    }
   }
 }
 
@@ -913,7 +997,7 @@ void Msld::calc_lambda_from_theta(cudaStream_t stream,System *system)
   if (!fix) { // ffix
     calc_lambda_from_theta_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
       s->lambda_d,s->theta_d,siteCount,siteBound_d,fnex,
-      new_implicit, theta0_d, dcdt_d, blockFixed_d);
+      new_implicit, theta0_d, dcdt_d, blockFixed_d, lambda_lb_d, lambda_ub_d);
     gpuCheck(cudaGetLastError());
   } else {
     gpuCheck(cudaMemcpy(s->theta_d,s->lambda_d,s->lambdaCount*sizeof(real_x),cudaMemcpyDeviceToDevice));
@@ -926,11 +1010,18 @@ void Msld::init_lambda_from_theta(cudaStream_t stream,System *system)
   if (!fix) { // ffix
     calc_lambda_from_theta_kernel<<<(siteCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
       s->lambda_d,s->theta_d,siteCount,siteBound_d,fnex,
-      new_implicit, theta0_d, dcdt_d, blockFixed_d
+      new_implicit, theta0_d, dcdt_d, blockFixed_d, lambda_lb_d, lambda_ub_d
     );
     gpuCheck(cudaGetLastError());
   } else {
     gpuCheck(cudaMemcpy(s->lambda_d,s->theta_d,s->lambdaCount*sizeof(real_x),cudaMemcpyDeviceToDevice));
+  }
+}
+
+__global__ void apply_lb_ub_chainRule_kernel(int blockCount, real_x* lambda_lb, real_x* lambda_ub, real_f* lambdaForce){
+  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  if (i<blockCount) {
+    lambdaForce[i] *= (lambda_ub[i]-lambda_lb[i]);
   }
 }
 
@@ -988,6 +1079,7 @@ void Msld::calc_thetaForce_from_lambdaForce(cudaStream_t stream,System *system)
 {
   State *s=system->state;
   if (!fix) { // ffix
+    apply_lb_ub_chainRule_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,0,stream>>>(blockCount, lambda_lb_d, lambda_ub_d, s->lambdaForce_d);
     calc_thetaForce_from_lambdaForce_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
       s->lambda_fd,s->theta_fd,
       s->lambdaForce_d,s->thetaForce_d,
