@@ -165,6 +165,7 @@ class State {
   void send_state();
   void recv_position();
   void recv_lambda();
+  void recv_lambda_force();
   void recv_energy();
   void reset_nan_flag();
   void check_nan_flag();

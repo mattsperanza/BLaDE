@@ -1075,6 +1075,19 @@ __global__ void calc_thetaForce_from_lambdaForce_kernel(
   }
 }
 
+void Msld::calc_thetaForce_from_lambdaForce(cudaStream_t stream,System *system,real* input,real* output)
+{
+  State *s=system->state;
+  if (!fix) { // ffix
+    apply_lb_ub_chainRule_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,0,stream>>>(blockCount, lambda_lb_d, lambda_ub_d, input);
+    calc_thetaForce_from_lambdaForce_kernel<<<(blockCount+BLMS-1)/BLMS,BLMS,0,stream>>>(
+      s->lambda_fd,s->theta_fd,
+      input,output,
+      blockCount,lambdaSite_d,siteBound_d,fnex,
+      new_implicit, theta0_d, dcdt_d, blockFixed_d);
+  }
+}
+
 void Msld::calc_thetaForce_from_lambdaForce(cudaStream_t stream,System *system)
 {
   State *s=system->state;

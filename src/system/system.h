@@ -16,6 +16,7 @@ class Parameters;
 class Structure;
 class Selections;
 class Msld;
+class Enhanced;
 class Coordinates;
 class Run;
 class RngCPU;
@@ -37,6 +38,7 @@ class System {
   Structure *structure;
   Selections *selections;
   Msld *msld;
+  Enhanced *enhanced;
   Coordinates *coordinates;
   Run *run;
 // No command parsing
@@ -63,6 +65,7 @@ class System {
   void parse_system_structure(char *line,char *token,System *system);
   void parse_system_selection(char *line,char *token,System *system);
   void parse_system_msld(char *line,char *token,System *system);
+  void parse_system_enhanced(char *line, char *token, System *system);
   void parse_system_coordinates(char *line,char *token,System *system);
   void parse_system_run(char *line,char *token,System *system);
   void parse_system_stream(char *line,char *token,System *system);

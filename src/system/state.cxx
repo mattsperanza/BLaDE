@@ -349,6 +349,11 @@ void State::recv_lambda()
   gpuCheck(cudaMemcpy(lambda,lambda_d,lambdaCount*sizeof(real_x),cudaMemcpyDeviceToHost));
 }
 
+void State::recv_lambda_force()
+{
+  cudaMemcpy(lambdaForce,lambdaForce_d,lambdaCount*sizeof(real_f),cudaMemcpyDeviceToHost);
+}
+
 void State::recv_energy()
 {
   int i;

@@ -30,6 +30,7 @@ typedef enum eeterm {
   eenbrecipself,
   eenbrecipexcl,
   eelambda,
+  eeenhanced,
   eetheta,      // MSLD theta bias energy
   eecats,
   eenoe,        // NOE restraint energy
