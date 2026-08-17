@@ -576,6 +576,7 @@ bool Msld::bonded_scaling(int *idx,int *siteBlock,int type,int Nat,int Nsc)
       }
     }
   }
+  // TODO: Add L^2 REST2 scaling for bonded terms
   // Check for errors
   for (i=1; i<Nsc+1; i++) {
     for (j=i+1; j<Nsc+1; j++) {

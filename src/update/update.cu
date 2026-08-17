@@ -241,6 +241,9 @@ void State::update(int step,System *system)
 #ifdef REPLICAEXCHANGE
   if (system->run->freqREx>0 && (system->run->step%system->run->freqREx)==0) {
     replica_exchange(system);
+    if (system->msld->new_implicit){ // need to fill dcdt
+      system->msld->calc_lambda_from_theta(r->updateStream,system);
+    }
   }
 #endif
 
