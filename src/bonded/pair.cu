@@ -180,13 +180,19 @@ __device__ void function_pair(Nb14Potential pp,Cutoffs rc,real r,real *fpair,rea
 
 __device__ void function_pair(NbExPotential pp,Cutoffs rc,real r,real *fpair,real *lE,bool calcEnergy,int vdwMethod,int elecMethod)
 {
-  real rinv=1/r;
   real br=rc.betaEwald*r;
   real kqq=kELECTRIC*pp.qxq;
+  if (r<((real)1e-8)) { // DrudeIns - general BLaDE bugfix (not Drude-specific): analytic r->0 limit for excluded reciprocal correction. Protects all simulations with overlapping excluded atom pairs.
+    fpair[0]=0; 
+    if (calcEnergy) { 
+      lE[0]=-kqq*((real)1.128379167095513)*rc.betaEwald; // DrudeIns - general BLaDE bugfix: lim(r->0) -q*erfc(beta*r)/r = -q*(2/sqrt(pi))*beta.
+    } 
+    return; 
+  } // DrudeIns - provenance marker for Drude PR.
 
-#warning "No nan guard"
-  // fpair[0]=kqq*(erf(br)*rinv-(2/sqrt(M_PI))*rc.betaEwald*exp(-br*br))*rinv;
-  fpair[0]=kqq*(erf(br)*rinv-((real)1.128379167095513)*rc.betaEwald*exp(-br*br))*rinv;
+  real rinv=1/r; 
+  // fpair[0]=kqq*(erff(br)*rinv-(2/sqrt(M_PI))*rc.betaEwald*expf(-br*br))*rinv;
+  fpair[0]=kqq*(erff(br)*rinv-((real)1.128379167095513)*rc.betaEwald*expf(-br*br))*rinv;
   if (calcEnergy) {
     lE[0]=-kqq*erf(br)*rinv;
   }
