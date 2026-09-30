@@ -479,8 +479,8 @@ void Run::test(char *line,char *token,System *system)
   real dx;
   int i,j,ij,s;
   int ij0,imax,jmax;
-  // real_e F,E[2]; // DrudeDel - pre-existing BLaDE bug in "run test alchemical": F was declared as real_e but cudaMemcpy read sizeof(real) bytes from a real_f buffer, causing type-width mismatch on mixed-precision builds (real_f=float, real_e=double). Discovered during Drude alchemical FD validation.
-  real_e E[2]; // DrudeIns - general BLaDE bugfix (not Drude-specific): removed mismatched F variable; force is now read via correctly-typed real_f below.
+  // real_e F,E[2]; 
+  real_e E[2]; 
 
   // Initialize data structures
   dynamics_initialize(system);
@@ -518,6 +518,10 @@ void Run::test(char *line,char *token,System *system)
 
   for (i=0; i<imax; i++) {
     if (jmax==1 || system->selections->selectionMap[name].boolSelection[i]) {
+      if(!std::isfinite(system->state->invsqrtMassBuffer[ij0+jmax*i])){
+        printf("Skipping index %d due to non-finite invsqrt mass!\n", i);
+        continue;
+      }
       for (j=0; j<jmax; j++) {
         ij=ij0+i*jmax+j;
         for (s=0; s<2; s++) {
@@ -545,8 +549,10 @@ void Run::test(char *line,char *token,System *system)
         if (system->id==0) {
           real_f Ffd; 
           gpuCheck(cudaMemcpy(&Ffd,&system->state->forceBuffer_d[ij],sizeof(real_f),cudaMemcpyDeviceToHost)); 
-          printlog("ij=%7d, Emin=%20.16g, Emax=%20.16g, (Emax-Emin)/dx=%20.16g, force=%20.16g\n", 
-            ij,E[0],E[1],(E[1]-E[0])/dx,(double)Ffd); 
+          real_e num = (E[1]-E[0])/dx;
+          real_e diff = num - Ffd;
+          printlog("ij=%7d, Emin=%20.16g, Emax=%20.16g, (Emax-Emin)/dx=%20.16g, force=%20.16g, num-frc: %20.16g\n", 
+            ij,E[0],E[1],num,(double)Ffd,diff); 
         }
       }
     }

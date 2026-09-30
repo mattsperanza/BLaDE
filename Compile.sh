@@ -11,7 +11,7 @@ cd build
 # -DPROFILE=ON # Compile with serial execution of all kernels for simpler profiling
 # -DCMAKE_CUDA_ARCHITECTURES=70 # choose appropriately for your cuda hardware and compilers, but don't use below 60 unless you're willing to take a performance hit. Cuda 13 requires at least 75
 # -DCMAKE_BUILD_TYPE=Release || -DCMAKE_BUILD_TYPE=Debug
-cmake -DCMAKE_CUDA_ARCHITECTURES=70 -DUNITS=AKMA -DCMAKE_BUILD_TYPE=Release ../src
+cmake -DPRECISION=DOUBLE -DCMAKE_CUDA_ARCHITECTURES=70 -DUNITS=AKMA -DCMAKE_BUILD_TYPE=Release ../src
 
 # -j8 # compile with 8 threads
 # VERBOSE=1 # Show all the compilation commands

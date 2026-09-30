@@ -315,7 +315,7 @@ real_x cubic_interp(real_x a, real_x fa, real_x ga, real_x b, real_x fb, real_x 
 
 // Ch3.5, p60 of Nocedal & Wright (Algorithm 3.5)
 real_x LBFGS::linesearch(real_x f0){
-  real_x max_iter = 5;
+  real_x max_iter = 10;
   real_x aim1 = 0; 
   real_x ai = 1;
   if (step_count == 0) { ai = 1e-2; } // steepest decent step
@@ -344,7 +344,11 @@ real_x LBFGS::linesearch(real_x f0){
     real_x tmp = ai;
     ai = cubic_interp(aim1, phiim1[0], phiim1[1], ai, phii[0], phii[1]);
     phi(ai, phii);
-    if (verbose) printlog("alpha: %f, phi: %f, phi': %f\n", ai, phii[0], phii[1]);
+    if (verbose) { 
+      printlog("alpha: %f, phi: %f, phi': %f, ", ai, phii[0], phii[1]);
+      printlog("sufficient decent: %s, ", phii[0] <= phi0[0] + c1*ai*phi0[1] ? "pass" : "fail");
+      printlog("curvature: %s\n", abs(phii[1]) <= c2*abs(phi0[1])    ? "pass" : "fail");
+    }
     aim1 = tmp;
     memcpy(phiim1, phii, 2*sizeof(real_x));
     if(ai < 0 || ai > amax){

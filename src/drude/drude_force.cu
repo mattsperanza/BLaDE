@@ -63,7 +63,7 @@ __global__ void getforce_drude_spring_kernel(int pairCount,const struct DrudeSpr
     if ((hasAxis1 || hasAxis2) && pp.r0==(real)0) {
       real a1=(hasAxis1? pp.aniso12 : (real)1);
       real a2=(hasAxis2? pp.aniso34 : (real)1);
-      real a3=(real)3-a1-a2;
+      real a3=(real)3-a1-a2; // claude warning, isotropic remainder dropped when only one axis is defined?
       real k3=pp.k/a3;
       real k1=pp.k/a1-k3;
       real k2=pp.k/a2-k3;
@@ -238,9 +238,11 @@ void getforce_drudeT(System *system,box_type box,bool calcEnergy)
   }
 
   if (plugin->springPairCount>0) {
+    pEnergy=s->energy_d+eebond;
     getforce_drude_spring_kernel<flagBox><<<(plugin->springPairCount+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(
       plugin->springPairCount,plugin->springPairs_d,(real3*)s->position_fd,(real3_f*)s->force_d,box,pEnergy);
       gpuCheck(cudaGetLastError());
+    pEnergy=s->energy_d+eedrude;
   }
   if (plugin->screenedPairCount>0) {
     getforce_drude_screened_kernel<flagBox><<<(plugin->screenedPairCount+BLBO-1)/BLBO,BLBO,shMem,r->bondedStream>>>(

@@ -19,9 +19,9 @@ public:
     void minimize_step(real_x f0);
 
 private:
-    // Line search parameters
+    // Line search parameters -> lowering either relaxes the conditions
     real_x c1 = 1e-4; // sufficient decent
-    real_x c2 = .9; // curvature cond.
+    real_x c2 = .8; // curvature cond.
     // Convergence
     real_x eps_tol = 1; // rms criteria 
     real_x grad_mag = 0; // |g| 

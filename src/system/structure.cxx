@@ -13,64 +13,64 @@
 #include "io/io.h"
 
 static bool structure_read_next_psf_section_line(FILE *fp,char *line) // DrudeIns - provenance marker for Drude PR.
-{ // DrudeIns - provenance marker for Drude PR.
-  while (fgets(line,MAXLENGTHSTRING,fp)) { // DrudeIns - provenance marker for Drude PR.
-    if (strstr(line,"!")) return true; // DrudeIns - provenance marker for Drude PR.
-  } // DrudeIns - provenance marker for Drude PR.
-  line[0]='\0'; // DrudeIns - provenance marker for Drude PR.
-  return false; // DrudeIns - provenance marker for Drude PR.
-} // DrudeIns - provenance marker for Drude PR.
+{ 
+  while (fgets(line,MAXLENGTHSTRING,fp)) { 
+    if (strstr(line,"!")) return true; 
+  } 
+  line[0]='\0'; 
+  return false; 
+} 
 
 static real structure_round5(real value) // DrudeIns - provenance marker for Drude PR.
-{ // DrudeIns - provenance marker for Drude PR.
-  return (real)(floor((double)value*100000.0+0.5)/100000.0); // DrudeIns - provenance marker for Drude PR.
-} // DrudeIns - provenance marker for Drude PR.
+{ 
+  return (real)(floor((double)value*100000.0+0.5)/100000.0); 
+} 
 
 static void structure_openmm_anisotropy_factors(real k11,real k22,real k33, // DrudeIns - provenance marker for Drude PR.
-  real *aniso12,real *aniso34) // DrudeIns - provenance marker for Drude PR.
-{ // DrudeIns - provenance marker for Drude PR.
-  double a=(double)k11+(double)k22+3.0*(double)k33; // DrudeIns - provenance marker for Drude PR.
-  double b=2.0*(double)k11*(double)k22+ // DrudeIns - provenance marker for Drude PR.
-    4.0*(double)k11*(double)k33+ // DrudeIns - provenance marker for Drude PR.
-    4.0*(double)k22*(double)k33+ // DrudeIns - provenance marker for Drude PR.
-    6.0*(double)k33*(double)k33; // DrudeIns - provenance marker for Drude PR.
-  double c=3.0*(double)k33*((double)k11+(double)k33)*((double)k22+(double)k33); // DrudeIns - provenance marker for Drude PR.
-  double disc=b*b-4.0*a*c; // DrudeIns - provenance marker for Drude PR.
+  real *aniso12,real *aniso34) 
+{ 
+  double a=(double)k11+(double)k22+3.0*(double)k33; 
+  double b=2.0*(double)k11*(double)k22+ 
+    4.0*(double)k11*(double)k33+ 
+    4.0*(double)k22*(double)k33+ 
+    6.0*(double)k33*(double)k33; 
+  double c=3.0*(double)k33*((double)k11+(double)k33)*((double)k22+(double)k33); 
+  double disc=b*b-4.0*a*c; 
 
-  if (!isfinite(a) || !isfinite(b) || !isfinite(c) || fabs(a)<1e-12) { // DrudeIns - provenance marker for Drude PR.
-    fatal(__FILE__,__LINE__, // DrudeIns - provenance marker for Drude PR.
-      "Invalid Drude anisotropy tensor: k11=%g k22=%g k33=%g\n", // DrudeIns - provenance marker for Drude PR.
-      (double)k11,(double)k22,(double)k33); // DrudeIns - provenance marker for Drude PR.
-  } // DrudeIns - provenance marker for Drude PR.
-  if (disc<0.0 && disc>-1e-7) disc=0.0; // DrudeIns - provenance marker for Drude PR.
-  if (!isfinite(disc) || disc<0.0) { // DrudeIns - provenance marker for Drude PR.
-    fatal(__FILE__,__LINE__, // DrudeIns - provenance marker for Drude PR.
-      "Invalid Drude anisotropy discriminant: k11=%g k22=%g k33=%g disc=%g\n", // DrudeIns - provenance marker for Drude PR.
-      (double)k11,(double)k22,(double)k33,disc); // DrudeIns - provenance marker for Drude PR.
-  } // DrudeIns - provenance marker for Drude PR.
+  if (!isfinite(a) || !isfinite(b) || !isfinite(c) || fabs(a)<1e-12) { 
+    fatal(__FILE__,__LINE__, 
+      "Invalid Drude anisotropy tensor: k11=%g k22=%g k33=%g\n", 
+      (double)k11,(double)k22,(double)k33); 
+  } 
+  if (disc<0.0 && disc>-1e-7) disc=0.0; 
+  if (!isfinite(disc) || disc<0.0) { 
+    fatal(__FILE__,__LINE__, 
+      "Invalid Drude anisotropy discriminant: k11=%g k22=%g k33=%g disc=%g\n", 
+      (double)k11,(double)k22,(double)k33,disc); 
+  } 
 
-  double drudeK=(sqrt(disc)-b)/(2.0*a); // DrudeIns - provenance marker for Drude PR.
-  double denom12=(double)k11+(double)k33+drudeK; // DrudeIns - provenance marker for Drude PR.
-  double denom34=(double)k22+(double)k33+drudeK; // DrudeIns - provenance marker for Drude PR.
-  double a12=drudeK/denom12; // DrudeIns - provenance marker for Drude PR.
-  double a34=drudeK/denom34; // DrudeIns - provenance marker for Drude PR.
-  if (!isfinite(drudeK) || !isfinite(a12) || !isfinite(a34) || // DrudeIns - provenance marker for Drude PR.
-      a12<=0.0 || a34<=0.0 || 3.0-a12-a34<=0.0) { // DrudeIns - provenance marker for Drude PR.
-    fatal(__FILE__,__LINE__, // DrudeIns - provenance marker for Drude PR.
-      "Invalid Drude anisotropy factors from tensor: k11=%g k22=%g k33=%g drudeK=%g aniso12=%g aniso34=%g\n", // DrudeIns - provenance marker for Drude PR.
-      (double)k11,(double)k22,(double)k33,drudeK,a12,a34); // DrudeIns - provenance marker for Drude PR.
-  } // DrudeIns - provenance marker for Drude PR.
+  double drudeK=(sqrt(disc)-b)/(2.0*a); 
+  double denom12=(double)k11+(double)k33+drudeK; 
+  double denom34=(double)k22+(double)k33+drudeK; 
+  double a12=drudeK/denom12; 
+  double a34=drudeK/denom34; 
+  if (!isfinite(drudeK) || !isfinite(a12) || !isfinite(a34) || 
+      a12<=0.0 || a34<=0.0 || 3.0-a12-a34<=0.0) { 
+    fatal(__FILE__,__LINE__, 
+      "Invalid Drude anisotropy factors from tensor: k11=%g k22=%g k33=%g drudeK=%g aniso12=%g aniso34=%g\n", 
+      (double)k11,(double)k22,(double)k33,drudeK,a12,a34); 
+  } 
 
-  *aniso12=structure_round5((real)a12); // DrudeIns - provenance marker for Drude PR.
-  *aniso34=structure_round5((real)a34); // DrudeIns - provenance marker for Drude PR.
-} // DrudeIns - provenance marker for Drude PR.
+  *aniso12=structure_round5((real)a12); 
+  *aniso34=structure_round5((real)a34); 
+} 
 
 static void structure_check_psf_atom_index(int idx,int atomCount,const char *tag) // DrudeIns - provenance marker for Drude PR.
-{ // DrudeIns - provenance marker for Drude PR.
-  if (idx<0 || idx>=atomCount) { // DrudeIns - provenance marker for Drude PR.
-    fatal(__FILE__,__LINE__,"Atom %d in %s is out of range\n",idx,tag); // DrudeIns - provenance marker for Drude PR.
-  } // DrudeIns - provenance marker for Drude PR.
-} // DrudeIns - provenance marker for Drude PR.
+{ 
+  if (idx<0 || idx>=atomCount) { 
+    fatal(__FILE__,__LINE__,"Atom %d in %s is out of range\n",idx,tag); 
+  } 
+} 
 
 
 

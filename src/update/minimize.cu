@@ -96,6 +96,26 @@ __global__ void type_conversion_copy(int N, real_type_src* buffer1, real_type_ds
   }
 }
 
+__global__ void zero_virt2_force(int N, struct VirtualSite2* virt2, real* forceBuffer){
+  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  if (i<N){
+    int ii=3*virt2[i].vidx;
+    forceBuffer[ii+0]=0;
+    forceBuffer[ii+1]=0;
+    forceBuffer[ii+2]=0;
+  }
+}
+
+__global__ void zero_virt3_force(int N, struct VirtualSite3* virt3, real* forceBuffer){
+  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  if (i<N){
+    int ii=3*virt3[i].vidx;
+    forceBuffer[ii+0]=0;
+    forceBuffer[ii+1]=0;
+    forceBuffer[ii+2]=0;
+  }
+}
+
 void State::min_init(System *system)
 {
   // Set masses to 1 for shake during minimization, except virtual sites
@@ -124,11 +144,20 @@ void State::min_init(System *system)
       // Potential & Grad Eval -> step=0 to calc energy
       system->domdec->update_domdec(system,true); // domdec and updates single precision array with double precision values
       system->potential->calc_force(0, system);
+      // Zero out virtual site forces
+      int shift = system->state->lambdaCount;
+      int n_virt = system->potential->virtualSite2Count;
+      if (n_virt > 0){
+        zero_virt2_force<<<(n_virt+BLUP-1)/BLUP, BLUP, 0, system->run->updateStream>>>(n_virt, system->potential->virtualSite2_d, &system->state->forceBuffer_d[shift]);
+      }
+      n_virt = system->potential->virtualSite3Count;
+      if (n_virt > 0){
+        zero_virt3_force<<<(n_virt+BLUP-1)/BLUP, BLUP, 0, system->run->updateStream>>>(n_virt, system->potential->virtualSite3_d, &system->state->forceBuffer_d[shift]);
+      }
       // grad(F(X)) G already stored
       system->state->recv_energy();
       // Copy float array written by BLaDE onto double used by L-BFGS
       int DOF = system->state->atomCount*3;
-      int shift = system->state->lambdaCount;
       type_conversion_copy<real, real_x><<<(DOF+BLUP-1)/BLUP,BLUP,0,system->run->updateStream>>>(
             DOF, system->state->forceBuffer_d+shift, system->state->forceBufferX_d+shift);
       gpuCheck(cudaGetLastError());
